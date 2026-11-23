@@ -131,6 +131,7 @@ class BrowserTab(
     private val onCompatRedirect: (String) -> Unit = {},
     private val isAdBlockEnabled: () -> Boolean = { true },
     private val onLinkContext: (String) -> Unit = {},
+    private val onImageContext: (String) -> Unit = {},
     private val textZoomProvider: () -> Int = { 100 },
     private val webDarkProvider: () -> Boolean = { false },
     private val onFullscreenShow: (android.view.View) -> Unit = {},
@@ -224,6 +225,21 @@ class BrowserTab(
         }
     }
 
+    /** Print the page (or save as PDF) through the system print service. */
+    fun printPage(context: Context): Boolean {
+        val view = webView ?: return false
+        return try {
+            val manager = context.getSystemService(
+                Context.PRINT_SERVICE
+            ) as android.print.PrintManager
+            val jobName = title.ifBlank { "TuxunBrowse 网页" }
+            manager.print(jobName, view.createPrintDocumentAdapter(jobName), null)
+            true
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
     fun applyTextZoom(percent: Int) {
         webView?.settings?.textZoom = percent
     }
@@ -265,6 +281,8 @@ class BrowserTab(
         view.settings.javaScriptEnabled = true
         view.settings.domStorageEnabled = true
         view.settings.loadsImagesAutomatically = true
+        view.settings.builtInZoomControls = true
+        view.settings.displayZoomControls = false
         view.settings.textZoom = textZoomProvider()
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             view.settings.setAlgorithmicDarkeningAllowed(webDarkProvider())
@@ -277,14 +295,19 @@ class BrowserTab(
         view.setOnLongClickListener { v ->
             val hit = (v as WebView).hitTestResult
             val extra = hit.extra
-            if ((hit.type == WebView.HitTestResult.SRC_ANCHOR_TYPE ||
+            when {
+                hit.type == WebView.HitTestResult.IMAGE_TYPE &&
+                    !extra.isNullOrBlank() -> {
+                    onImageContext(extra)
+                    true
+                }
+                (hit.type == WebView.HitTestResult.SRC_ANCHOR_TYPE ||
                     hit.type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) &&
-                !extra.isNullOrBlank()
-            ) {
-                onLinkContext(extra)
-                true
-            } else {
-                false
+                    !extra.isNullOrBlank() -> {
+                    onLinkContext(extra)
+                    true
+                }
+                else -> false
             }
         }
         view.webViewClient = object : WebViewClient() {

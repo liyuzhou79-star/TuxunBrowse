@@ -112,6 +112,7 @@ import com.tuxunbrowse.android.data.resolveInput
 import com.tuxunbrowse.android.engine.BrowserTab
 import com.tuxunbrowse.android.engine.GeckoHolder
 import com.tuxunbrowse.android.engine.TabContent
+import com.tuxunbrowse.android.engine.startSystemDownload
 import kotlinx.coroutines.flow.collect
 
 private enum class Screen { PICKER, BROWSER, BOOKMARKS, HISTORY, SETTINGS, DOWNLOADS, CLEAR_DATA }
@@ -141,6 +142,7 @@ fun BrowserApp(
         mutableStateListOf<String>().apply { addAll(store.loadCompatSites()) }
     }
     var linkMenuTarget by remember { mutableStateOf<String?>(null) }
+    var imageMenuTarget by remember { mutableStateOf<String?>(null) }
     var lastClosedTab by remember { mutableStateOf<ClosedTabInfo?>(null) }
     var startupDone by remember { mutableStateOf(false) }
     var fullscreenView by remember { mutableStateOf<android.view.View?>(null) }
@@ -181,6 +183,7 @@ fun BrowserApp(
             onCompatRedirect = { target -> compatRedirectHandler(target) },
             isAdBlockEnabled = { store.adBlockEnabled },
             onLinkContext = { link -> linkMenuTarget = link },
+            onImageContext = { img -> imageMenuTarget = img },
             textZoomProvider = { store.textZoomPercent },
             webDarkProvider = { store.webDarkMode },
             onFullscreenShow = { view -> fullscreenView = view },
@@ -514,6 +517,24 @@ fun BrowserApp(
                         else -> tab.enterReaderMode()
                     }
                 },
+                onPrintPage = {
+                    val tab = activeTab() ?: return@BrowserScreen
+                    when {
+                        tab.engine == Engine.GECKO -> android.widget.Toast.makeText(
+                            context,
+                            "火狐标签暂时不能打印，可以先切到 WebView 内核再打印或存 PDF",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                        tab.isHome -> android.widget.Toast.makeText(
+                            context, "先打开一个网页再打印",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                        !tab.printPage(context) -> android.widget.Toast.makeText(
+                            context, "打印没能打开，请重试",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                },
                 onOpenDownloads = { screen = Screen.DOWNLOADS },
                 onOpenBookmarks = { screen = Screen.BOOKMARKS },
                 onOpenHistory = { screen = Screen.HISTORY },
@@ -702,6 +723,75 @@ fun BrowserApp(
             },
             confirmButton = {
                 TextButton(onClick = { linkMenuTarget = null }) { Text("取消") }
+            }
+        )
+    }
+
+    val imageTarget = imageMenuTarget
+    if (imageTarget != null) {
+        AlertDialog(
+            onDismissRequest = { imageMenuTarget = null },
+            title = { Text("图片") },
+            text = {
+                LazyColumn {
+                    item {
+                        Text(
+                            imageTarget,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("在新标签页打开图片") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    imageMenuTarget = null
+                                    newTab(store.mainEngine, false, imageTarget)
+                                    screen = Screen.BROWSER
+                                }
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("保存图片") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    imageMenuTarget = null
+                                    startSystemDownload(
+                                        context, imageTarget, null, null, null
+                                    )
+                                }
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("复制图片地址") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    val clipboard = context.getSystemService(
+                                        android.content.Context.CLIPBOARD_SERVICE
+                                    ) as android.content.ClipboardManager
+                                    clipboard.setPrimaryClip(
+                                        android.content.ClipData.newPlainText(
+                                            "image", imageTarget
+                                        )
+                                    )
+                                    android.widget.Toast.makeText(
+                                        context, "图片地址已复制",
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
+                                    imageMenuTarget = null
+                                }
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { imageMenuTarget = null }) { Text("取消") }
             }
         )
     }
@@ -1031,6 +1121,7 @@ private fun BrowserScreen(
     chromeHidden: Boolean,
     onExitFullscreen: () -> Unit,
     onToggleReaderMode: () -> Unit,
+    onPrintPage: () -> Unit,
     onOpenDownloads: () -> Unit,
     onOpenBookmarks: () -> Unit,
     onOpenHistory: () -> Unit,
@@ -1243,6 +1334,13 @@ private fun BrowserScreen(
                                 )
                             },
                             onClick = { onToggleDesktopMode(!activeDesktopMode) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("打印 / 存为 PDF") },
+                            leadingIcon = {
+                                Icon(Icons.Filled.FileUpload, contentDescription = null)
+                            },
+                            onClick = { showMenu = false; onPrintPage() }
                         )
                         DropdownMenuItem(
                             text = { Text("下载") },
