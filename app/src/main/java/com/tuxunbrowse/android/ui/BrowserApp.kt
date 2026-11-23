@@ -6508,6 +6508,56 @@ private fun DownloadsScreen(
         )
         refreshTick++
     }
+
+    // Open a completed download through the official DownloadManager
+    // channel (v0.44.0): getUriForDownloadedFile hands out a content
+    // URI for the file, the type comes from the entry's
+    // COLUMN_MEDIA_TYPE value (falling back to the manager's own
+    // lookup), and ACTION_VIEW with a read grant lets the system
+    // pick the handler — an APK therefore lands in the system
+    // installer, other files in whatever app claims their type.
+    // Every failure says so in plain language instead of doing
+    // nothing: a null URI means the record outlived the file, and
+    // ActivityNotFoundException means no installed app can open
+    // this type.
+    fun openDownloadedFile(entry: DownloadEntry) {
+        try {
+            val manager = context.getSystemService(
+                android.content.Context.DOWNLOAD_SERVICE
+            ) as android.app.DownloadManager
+            val uri = manager.getUriForDownloadedFile(entry.id)
+            if (uri == null) {
+                android.widget.Toast.makeText(
+                    context, "文件已不存在，可能已被删除或移动",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+                return
+            }
+            val mime = entry.mediaType?.takeIf { it.isNotBlank() }
+                ?: manager.getMimeTypeForDownloadedFile(entry.id)
+            val intent = android.content.Intent(
+                android.content.Intent.ACTION_VIEW
+            )
+                .setDataAndType(uri, mime)
+                .addFlags(
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+                .addFlags(
+                    android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                )
+            context.startActivity(intent)
+        } catch (e: android.content.ActivityNotFoundException) {
+            android.widget.Toast.makeText(
+                context, "没有能打开这种文件的应用",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        } catch (t: Throwable) {
+            android.widget.Toast.makeText(
+                context, "打开失败，文件可能已被删除或移动",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
+    }
     // System back returns to the browser (v0.37.0).
     BackHandler { onBack() }
     Scaffold(
@@ -6573,11 +6623,29 @@ private fun DownloadsScreen(
                         if (!entry.mediaType.isNullOrBlank()) {
                             parts.add(entry.mediaType)
                         }
+                        if (entry.status ==
+                            android.app.DownloadManager.STATUS_SUCCESSFUL
+                        ) {
+                            // Discoverability (v0.44.0): a completed
+                            // entry can be tapped to open the file,
+                            // and the row says so.
+                            parts.add("点按打开")
+                        }
                         Text(parts.joinToString(" · "))
                     },
                     leadingContent = { Icon(Icons.Filled.Download, contentDescription = null) },
                     trailingContent = {
                         Row {
+                            if (entry.status ==
+                                android.app.DownloadManager.STATUS_SUCCESSFUL
+                            ) {
+                                IconButton(onClick = { openDownloadedFile(entry) }) {
+                                    Icon(
+                                        Icons.Filled.OpenInNew,
+                                        contentDescription = "打开文件"
+                                    )
+                                }
+                            }
                             if (entry.status ==
                                 android.app.DownloadManager.STATUS_FAILED
                             ) {
@@ -6617,32 +6685,7 @@ private fun DownloadsScreen(
                                 ).show()
                                 return@clickable
                             }
-                            try {
-                                val manager = context.getSystemService(
-                                    android.content.Context.DOWNLOAD_SERVICE
-                                ) as android.app.DownloadManager
-                                val uri = manager.getUriForDownloadedFile(entry.id)
-                                if (uri != null) {
-                                    val intent = android.content.Intent(
-                                        android.content.Intent.ACTION_VIEW
-                                    )
-                                        .setDataAndType(
-                                            uri, manager.getMimeTypeForDownloadedFile(entry.id)
-                                        )
-                                        .addFlags(
-                                            android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-                                        )
-                                        .addFlags(
-                                            android.content.Intent.FLAG_ACTIVITY_NEW_TASK
-                                        )
-                                    context.startActivity(intent)
-                                }
-                            } catch (t: Throwable) {
-                                android.widget.Toast.makeText(
-                                    context, "这个文件暂时打不开",
-                                    android.widget.Toast.LENGTH_SHORT
-                                ).show()
-                            }
+                            openDownloadedFile(entry)
                         }
                 )
                 HorizontalDivider()
