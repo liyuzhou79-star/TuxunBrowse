@@ -6787,6 +6787,211 @@ private fun DownloadsScreen(
         )
     }
 
+    // Bulk clear of finished records (v0.49.0). Records that are
+    // still going (pending / running / paused) are never in scope:
+    // the target filter below only ever matches STATUS_SUCCESSFUL
+    // and STATUS_FAILED, so a half-finished download cannot be
+    // wiped by accident. The wording follows the single-delete
+    // dialog above: DownloadManager.remove deletes the downloaded
+    // file together with the record, and the counts shown are the
+    // real counts from the loaded list, never hard-coded.
+    val completedCount = entries.count {
+        it.status == android.app.DownloadManager.STATUS_SUCCESSFUL
+    }
+    val failedCount = entries.count {
+        it.status == android.app.DownloadManager.STATUS_FAILED
+    }
+    val finishedCount = completedCount + failedCount
+    var showBulkClearPicker by remember { mutableStateOf(false) }
+    var bulkPick by remember { mutableStateOf(0) }
+    var bulkConfirmScope by remember { mutableStateOf<Int?>(null) }
+    val bulkScope = rememberCoroutineScope()
+
+    // Scope encoding: 0 = completed only, 1 = failed only,
+    // 2 = all finished (completed + failed).
+    fun bulkTargetIds(scope: Int): List<Long> = entries.filter { entry ->
+        when (scope) {
+            0 -> entry.status == android.app.DownloadManager.STATUS_SUCCESSFUL
+            1 -> entry.status == android.app.DownloadManager.STATUS_FAILED
+            else -> entry.status ==
+                android.app.DownloadManager.STATUS_SUCCESSFUL ||
+                entry.status == android.app.DownloadManager.STATUS_FAILED
+        }
+    }.map { it.id }
+
+    if (showBulkClearPicker) {
+        val pickCount = when (bulkPick) {
+            0 -> completedCount
+            1 -> failedCount
+            else -> finishedCount
+        }
+        AlertDialog(
+            onDismissRequest = { showBulkClearPicker = false },
+            title = { Text("清除下载记录") },
+            text = {
+                LazyColumn {
+                    item {
+                        Text(
+                            "选择要清除的范围。下载中、排队中和已暂停的" +
+                                "记录不在范围内，不会被清掉。"
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("已完成的记录") },
+                            supportingContent = {
+                                Text(
+                                    "共 $completedCount 条；记录删掉后，" +
+                                        "已经下载好的文件也会一起删掉"
+                                )
+                            },
+                            leadingContent = {
+                                RadioButton(
+                                    selected = bulkPick == 0,
+                                    onClick = { bulkPick = 0 },
+                                    enabled = completedCount > 0
+                                )
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = completedCount > 0) {
+                                    bulkPick = 0
+                                }
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("失败的记录") },
+                            supportingContent = {
+                                Text("共 $failedCount 条")
+                            },
+                            leadingContent = {
+                                RadioButton(
+                                    selected = bulkPick == 1,
+                                    onClick = { bulkPick = 1 },
+                                    enabled = failedCount > 0
+                                )
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = failedCount > 0) {
+                                    bulkPick = 1
+                                }
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("全部已结束的记录") },
+                            supportingContent = {
+                                Text(
+                                    "已完成加失败，共 $finishedCount 条；" +
+                                        "已完成记录对应的文件也会一起删掉"
+                                )
+                            },
+                            leadingContent = {
+                                RadioButton(
+                                    selected = bulkPick == 2,
+                                    onClick = { bulkPick = 2 },
+                                    enabled = finishedCount > 0
+                                )
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = finishedCount > 0) {
+                                    bulkPick = 2
+                                }
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showBulkClearPicker = false
+                    if (pickCount == 0) {
+                        android.widget.Toast.makeText(
+                            context, "没有可清除的记录",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    } else {
+                        bulkConfirmScope = bulkPick
+                    }
+                }) { Text("下一步") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBulkClearPicker = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
+    val confirmScope = bulkConfirmScope
+    if (confirmScope != null) {
+        val targetIds = bulkTargetIds(confirmScope)
+        val confirmText = when (confirmScope) {
+            0 -> "将清除 ${targetIds.size} 条已完成的下载记录。记录删掉后，" +
+                "已经下载好的文件也会一起从下载文件夹里删掉，没法恢复。" +
+                "下载中、排队中和已暂停的记录不会被清掉。"
+            1 -> "将清除 ${targetIds.size} 条失败的下载记录，没法恢复；" +
+                "如果留有没下完的文件，也会一起删掉。" +
+                "下载中、排队中和已暂停的记录不会被清掉。"
+            else -> "将清除 ${targetIds.size} 条已结束的下载记录" +
+                "（已完成 $completedCount 条、失败 $failedCount 条）。" +
+                "已完成记录对应的文件也会一起从下载文件夹里删掉，没法恢复。" +
+                "下载中、排队中和已暂停的记录不会被清掉。"
+        }
+        AlertDialog(
+            onDismissRequest = { bulkConfirmScope = null },
+            title = { Text("确认清除？") },
+            text = { Text(confirmText) },
+            confirmButton = {
+                Button(onClick = {
+                    bulkConfirmScope = null
+                    if (targetIds.isEmpty()) {
+                        android.widget.Toast.makeText(
+                            context, "没有可清除的记录",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    } else {
+                        // The remove calls run off the main thread:
+                        // with many records they must not block the UI.
+                        bulkScope.launch {
+                            val removed = kotlinx.coroutines.withContext(
+                                kotlinx.coroutines.Dispatchers.IO
+                            ) {
+                                try {
+                                    val manager = context.getSystemService(
+                                        android.content.Context.DOWNLOAD_SERVICE
+                                    ) as android.app.DownloadManager
+                                    manager.remove(*targetIds.toLongArray())
+                                } catch (t: Throwable) {
+                                    -1
+                                }
+                            }
+                            if (removed >= 0) {
+                                android.widget.Toast.makeText(
+                                    context, "已清除 $removed 条记录",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            } else {
+                                android.widget.Toast.makeText(
+                                    context, "清除失败，请重试",
+                                    android.widget.Toast.LENGTH_LONG
+                                ).show()
+                            }
+                            refreshTick++
+                        }
+                    }
+                }) { Text("清除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { bulkConfirmScope = null }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
     fun retryDownload(entry: DownloadEntry) {
         val source = entry.sourceUrl
         if (source.isNullOrBlank()) {
@@ -6871,6 +7076,28 @@ private fun DownloadsScreen(
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                     }
+                },
+                actions = {
+                    // Bulk-clear entry (v0.49.0): a plain text
+                    // button in the top bar, matching the page's
+                    // existing controls. With nothing finished it
+                    // still answers honestly instead of opening an
+                    // empty picker.
+                    TextButton(onClick = {
+                        if (finishedCount == 0) {
+                            android.widget.Toast.makeText(
+                                context, "没有可清除的记录",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        } else {
+                            bulkPick = when {
+                                completedCount > 0 -> 0
+                                failedCount > 0 -> 1
+                                else -> 2
+                            }
+                            showBulkClearPicker = true
+                        }
+                    }) { Text("清除记录") }
                 }
             )
         }
