@@ -1228,9 +1228,11 @@ class BrowserTab(
                 val options = prompt.authOptions
                 val onlyPassword = options.flags and
                     PromptDelegate.AuthPrompt.AuthOptions.Flags.ONLY_PASSWORD != 0
+                // options.uri is @Nullable in the 132 AAR.
+                val authUri = options.uri ?: ""
                 onHttpAuth(
                     HttpAuthRequestInfo(
-                        host = hostOf(options.uri) ?: options.uri,
+                        host = hostOf(authUri) ?: authUri,
                         realm = "",
                         message = prompt.message ?: "",
                         prefillUsername = options.username ?: "",
