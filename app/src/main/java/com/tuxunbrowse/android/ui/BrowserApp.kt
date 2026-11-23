@@ -2515,6 +2515,30 @@ fun BrowserApp(
             onDeleteMany = { selected ->
                 bookmarks.removeAll(selected)
                 store.saveBookmarks(bookmarks)
+            },
+            onOpenInNewTab = {
+                // Background open (v0.48.0 rule, same as the history
+                // page): the user stays on the bookmarks page.
+                newTab(store.mainEngine, false, it.url, activate = false)
+                android.widget.Toast.makeText(
+                    context, "已在后台打开新标签",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            },
+            onCopyUrl = {
+                val ok = copyTextToClipboard(context, "url", it.url)
+                android.widget.Toast.makeText(
+                    context, if (ok) "网址已复制" else "复制失败，请重试",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            },
+            onTogglePin = { bm ->
+                // Same pinned-field write as the home grid's toggle.
+                val idx = bookmarks.indexOf(bm)
+                if (idx >= 0) {
+                    bookmarks[idx] = bm.copy(pinned = !bm.pinned)
+                    store.saveBookmarks(bookmarks)
+                }
             }
         )
 
@@ -2668,6 +2692,29 @@ fun BrowserApp(
             onClearRead = {
                 readingList.removeAll { it.read }
                 store.saveReadingList(readingList)
+            },
+            onOpenInNewTab = { item ->
+                // Background open (v0.54.0): the entry counts as
+                // opened, so it goes through the exact same
+                // mark-read step as a tap/menu open before the tab
+                // is created — no open path leaves it unread.
+                val idx = readingList.indexOf(item)
+                if (idx >= 0 && !readingList[idx].read) {
+                    readingList[idx] = readingList[idx].copy(read = true)
+                    store.saveReadingList(readingList)
+                }
+                newTab(store.mainEngine, false, item.url, activate = false)
+                android.widget.Toast.makeText(
+                    context, "已在后台打开新标签",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            },
+            onCopyUrl = {
+                val ok = copyTextToClipboard(context, "url", it.url)
+                android.widget.Toast.makeText(
+                    context, if (ok) "网址已复制" else "复制失败，请重试",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
             }
         )
         }
@@ -6222,7 +6269,7 @@ private fun EmptyState(icon: ImageVector, text: String) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun BookmarksScreen(
     bookmarks: List<Bookmark>,
@@ -6232,7 +6279,10 @@ private fun BookmarksScreen(
     onEdit: (Bookmark, String, String) -> Unit,
     onExport: () -> Unit,
     onImport: () -> Unit,
-    onDeleteMany: (List<Bookmark>) -> Unit = {}
+    onDeleteMany: (List<Bookmark>) -> Unit = {},
+    onOpenInNewTab: (Bookmark) -> Unit = {},
+    onCopyUrl: (Bookmark) -> Unit = {},
+    onTogglePin: (Bookmark) -> Unit = {}
 ) {
     val context = LocalContext.current
     var editing by remember { mutableStateOf<Bookmark?>(null) }
@@ -6314,6 +6364,15 @@ private fun BookmarksScreen(
     var batchMode by remember { mutableStateOf(false) }
     var selectedUrls by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showBatchDeleteConfirm by remember { mutableStateOf(false) }
+    // Long-press menu target (v0.54.0, same shape as the history
+    // page's v0.53.0 menu) and the pending single-delete
+    // confirmation. The menu only exists outside batch mode: in
+    // batch mode a press — short or long — just toggles selection,
+    // so the two gestures never fight.
+    var menuBookmark by remember { mutableStateOf<Bookmark?>(null) }
+    var pendingDeleteBookmark by remember {
+        mutableStateOf<Bookmark?>(null)
+    }
     fun exitBatchMode() {
         batchMode = false
         selectedUrls = emptySet()
@@ -6340,6 +6399,34 @@ private fun BookmarksScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showBatchDeleteConfirm = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+    // Single-delete confirmation for the long-press menu (v0.54.0):
+    // same wording and shape as the home grid's delete confirmation
+    // — the bookmarks page's trailing delete button keeps its
+    // existing one-tap behaviour, the menu path asks first.
+    val pendingBmDelete = pendingDeleteBookmark
+    if (pendingBmDelete != null) {
+        AlertDialog(
+            onDismissRequest = { pendingDeleteBookmark = null },
+            title = { Text("删除这个书签？") },
+            text = {
+                Text(
+                    "会把「${pendingBmDelete.title}」从书签里删掉，" +
+                        "首页的快捷入口也会一起消失。"
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    pendingDeleteBookmark = null
+                    onDelete(pendingBmDelete)
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteBookmark = null }) {
                     Text("取消")
                 }
             }
@@ -6481,21 +6568,141 @@ private fun BookmarksScreen(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable {
-                            if (batchMode) {
-                                selectedUrls = if (selected) {
-                                    selectedUrls - bookmark.url
+                        .combinedClickable(
+                            onClick = {
+                                if (batchMode) {
+                                    selectedUrls = if (selected) {
+                                        selectedUrls - bookmark.url
+                                    } else {
+                                        selectedUrls + bookmark.url
+                                    }
                                 } else {
-                                    selectedUrls + bookmark.url
+                                    onOpen(bookmark)
                                 }
-                            } else {
-                                onOpen(bookmark)
+                            },
+                            onLongClick = {
+                                // No menu in batch mode: a long
+                                // press there means the same toggle
+                                // as a tap, nothing more.
+                                if (!batchMode) {
+                                    menuBookmark = bookmark
+                                }
                             }
-                        }
+                        )
                 )
                 HorizontalDivider()
             }
         }
+    }
+    // Long-press menu (v0.54.0): same AlertDialog + LazyColumn +
+    // ListItem shape as the history page's menu (v0.53.0). Edit
+    // goes through the very same editor dialog as the trailing
+    // edit button; pin toggling and delete reuse the existing
+    // callbacks and storage.
+    val bmMenuTarget = menuBookmark
+    if (bmMenuTarget != null) {
+        AlertDialog(
+            onDismissRequest = { menuBookmark = null },
+            title = {
+                Text(
+                    bmMenuTarget.title.ifBlank { bmMenuTarget.url },
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            },
+            text = {
+                LazyColumn {
+                    item {
+                        Text(
+                            bmMenuTarget.url,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("打开") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    menuBookmark = null
+                                    onOpen(bmMenuTarget)
+                                }
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("在新标签打开") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    menuBookmark = null
+                                    onOpenInNewTab(bmMenuTarget)
+                                }
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("复制网址") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    menuBookmark = null
+                                    onCopyUrl(bmMenuTarget)
+                                }
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("编辑") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    menuBookmark = null
+                                    editing = bmMenuTarget
+                                }
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = {
+                                Text(
+                                    if (bmMenuTarget.pinned) {
+                                        "取消置顶"
+                                    } else {
+                                        "置顶到最前面"
+                                    }
+                                )
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    menuBookmark = null
+                                    onTogglePin(bmMenuTarget)
+                                }
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("删除") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    menuBookmark = null
+                                    pendingDeleteBookmark = bmMenuTarget
+                                }
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { menuBookmark = null }) {
+                    Text("取消")
+                }
+            }
+        )
     }
 }
 
@@ -6788,18 +6995,25 @@ private fun HistoryScreen(
  * opening one marks it read. Stored locally like bookmarks — engine
  * agnostic, entries open through the usual openUrl path.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun ReadingListScreen(
     items: List<ReadingItem>,
     onBack: () -> Unit,
     onOpen: (ReadingItem) -> Unit,
     onDelete: (ReadingItem) -> Unit,
-    onClearRead: () -> Unit
+    onClearRead: () -> Unit,
+    onOpenInNewTab: (ReadingItem) -> Unit = {},
+    onCopyUrl: (ReadingItem) -> Unit = {}
 ) {
     val timeFormat = remember {
         java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
     }
+    // Long-press menu target (v0.54.0, same shape as the history
+    // page's v0.53.0 menu). "Open" here calls the very same onOpen
+    // as a tap, so the mark-read step can never be bypassed by
+    // going through the menu.
+    var menuItem by remember { mutableStateOf<ReadingItem?>(null) }
     // System back returns to the browser (v0.37.0).
     BackHandler { onBack() }
     Scaffold(
@@ -6892,12 +7106,93 @@ private fun ReadingListScreen(
                         },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onOpen(item) }
+                            .combinedClickable(
+                                onClick = { onOpen(item) },
+                                onLongClick = { menuItem = item }
+                            )
                     )
                     HorizontalDivider()
                 }
             }
         }
+    }
+    // Long-press menu (v0.54.0): same AlertDialog + LazyColumn +
+    // ListItem shape as the history page's menu (v0.53.0). Delete
+    // calls the same onDelete as the trailing delete button.
+    val rlMenuTarget = menuItem
+    if (rlMenuTarget != null) {
+        AlertDialog(
+            onDismissRequest = { menuItem = null },
+            title = {
+                Text(
+                    rlMenuTarget.title.ifBlank { rlMenuTarget.url },
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            },
+            text = {
+                LazyColumn {
+                    item {
+                        Text(
+                            rlMenuTarget.url,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("打开") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    menuItem = null
+                                    onOpen(rlMenuTarget)
+                                }
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("在新标签打开") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    menuItem = null
+                                    onOpenInNewTab(rlMenuTarget)
+                                }
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("复制网址") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    menuItem = null
+                                    onCopyUrl(rlMenuTarget)
+                                }
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("删除") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    menuItem = null
+                                    onDelete(rlMenuTarget)
+                                }
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { menuItem = null }) {
+                    Text("取消")
+                }
+            }
+        )
     }
 }
 
