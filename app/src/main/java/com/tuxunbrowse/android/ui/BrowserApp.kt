@@ -8321,10 +8321,9 @@ private fun DownloadsScreen(
                             )
                             record.mimeType?.takeIf { it.isNotBlank() }
                                 ?.let { parts.add(it) }
-                            val host = hostOf(record.sourceUrl)
-                            if (host.isNotBlank()) {
-                                parts.add(host)
-                            }
+                            hostOf(record.sourceUrl)
+                                ?.takeIf { it.isNotBlank() }
+                                ?.let { parts.add(it) }
                             parts.add("点按打开")
                             Text(parts.joinToString(" · "))
                         },
