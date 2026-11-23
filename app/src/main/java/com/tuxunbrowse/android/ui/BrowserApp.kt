@@ -126,9 +126,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.tuxunbrowse.android.data.Bookmark
+import com.tuxunbrowse.android.data.DownloadMode
 import com.tuxunbrowse.android.data.Engine
 import com.tuxunbrowse.android.data.HOME_URL
 import com.tuxunbrowse.android.data.HistoryItem
+import com.tuxunbrowse.android.data.HistoryRetention
+import com.tuxunbrowse.android.data.TUXUNDOWN_PACKAGE
 import com.tuxunbrowse.android.data.ReadingItem
 import com.tuxunbrowse.android.data.SavedTab
 import com.tuxunbrowse.android.data.SearchEngine
@@ -162,6 +165,13 @@ private data class ClosedTabInfo(
     val incognito: Boolean,
     val url: String,
     val desktopMode: Boolean
+)
+
+/** A pending "which downloader?" question (download mode = ask). */
+private data class AskDownloadRequest(
+    val message: String,
+    val onSystem: () -> Unit,
+    val onTuxunDown: () -> Unit
 )
 
 /** A JavaScript dialog (alert/confirm/prompt) waiting for the user. */
@@ -203,6 +213,80 @@ fun BrowserApp(
     var sniffTabId by remember { mutableStateOf(-1) }
     // The tab waiting on the screenshot save/share dialog.
     var screenshotTab by remember { mutableStateOf<BrowserTab?>(null) }
+    // A download waiting on the user's system-vs-TuxunDown choice.
+    var askDownload by remember { mutableStateOf<AskDownloadRequest?>(null) }
+
+    /**
+     * Hand link text to TuxunDown through its only public entry: an
+     * ACTION_SEND share with the link(s) in EXTRA_TEXT. Returns false
+     * when TuxunDown is not installed or refuses the intent.
+     */
+    fun sendToTuxunDown(text: String): Boolean {
+        return try {
+            val intent = android.content.Intent(android.content.Intent.ACTION_SEND)
+                .setType("text/plain")
+                .putExtra(android.content.Intent.EXTRA_TEXT, text)
+                .setPackage(TUXUNDOWN_PACKAGE)
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (context.packageManager.resolveActivity(intent, 0) == null) {
+                return false
+            }
+            context.startActivity(intent)
+            true
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
+    /** Send to TuxunDown; when it is missing, say so and fall back. */
+    fun tuxunDownOrFallback(text: String, systemFallback: () -> Unit) {
+        if (!sendToTuxunDown(text)) {
+            android.widget.Toast.makeText(
+                context, "没有装 TuxunDown，已改用系统下载",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            systemFallback()
+        }
+    }
+
+    /**
+     * The one dispatch point for URL-type downloads (WebView download
+     * listener, sniffer items). Gecko tab downloads never come here —
+     * the app saves those itself. [systemFallback] is the caller's
+     * existing system-download call, unchanged.
+     */
+    fun downloadWithMode(url: String, filenameHint: String?, systemFallback: () -> Unit) {
+        if (url.isBlank()) return
+        when (store.downloadMode) {
+            DownloadMode.SYSTEM -> systemFallback()
+            DownloadMode.TUXUNDOWN -> tuxunDownOrFallback(url, systemFallback)
+            DownloadMode.ASK -> askDownload = AskDownloadRequest(
+                message = filenameHint?.takeIf { it.isNotBlank() } ?: url,
+                onSystem = systemFallback,
+                onTuxunDown = { tuxunDownOrFallback(url, systemFallback) }
+            )
+        }
+    }
+
+    /**
+     * Batch version of [downloadWithMode] (sniffer "download all"):
+     * never asks or shares per item — the whole batch is one share
+     * with one link per line, and ask mode asks exactly once.
+     */
+    fun downloadBatchWithMode(urls: List<String>, systemFallback: () -> Unit) {
+        val clean = urls.filter { it.isNotBlank() }
+        if (clean.isEmpty()) return
+        val joined = clean.joinToString("\n")
+        when (store.downloadMode) {
+            DownloadMode.SYSTEM -> systemFallback()
+            DownloadMode.TUXUNDOWN -> tuxunDownOrFallback(joined, systemFallback)
+            DownloadMode.ASK -> askDownload = AskDownloadRequest(
+                message = "共 ${clean.size} 个链接",
+                onSystem = systemFallback,
+                onTuxunDown = { tuxunDownOrFallback(joined, systemFallback) }
+            )
+        }
+    }
 
     fun recordVisit(title: String, url: String) {
         if (history.firstOrNull()?.url == url) return
@@ -332,6 +416,11 @@ fun BrowserApp(
             },
             onGeckoNewSession = { session, uri ->
                 created?.let { geckoNewSessionHandler(it, session, uri) }
+            },
+            onUrlDownload = { dlUrl, ua, cd, mt ->
+                downloadWithMode(dlUrl, null) {
+                    startSystemDownload(context, dlUrl, ua, cd, mt)
+                }
             }
         )
         created = tab
@@ -501,11 +590,56 @@ fun BrowserApp(
         newTab(store.mainEngine, false)
     }
 
+    /**
+     * Close every tab except the active one. The closed tabs cannot be
+     * brought back as a batch (the undo slot holds a single tab), which
+     * is why the tab sheet asks for confirmation first.
+     */
+    fun closeOtherTabs() {
+        val keep = activeTab() ?: return
+        val others = tabs.filter { it.id != keep.id }
+        if (others.isEmpty()) return
+        val closedIncognito = others.any { it.incognito }
+        others.forEach { it.destroy() }
+        tabs.removeAll(others)
+        if (closedIncognito && tabs.none { it.incognito }) {
+            // Same rule as closing the last incognito tab one by one:
+            // wipe the shared WebView cookie jar and web storage.
+            android.webkit.CookieManager.getInstance().removeAllCookies(null)
+            android.webkit.CookieManager.getInstance().flush()
+            android.webkit.WebStorage.getInstance().deleteAllData()
+        }
+        android.widget.Toast.makeText(
+            context, "已关闭 ${others.size} 个标签页",
+            android.widget.Toast.LENGTH_SHORT
+        ).show()
+    }
+
     // Session restore: reopen the tabs that were open when the app was
     // last closed (normal tabs only — incognito tabs are never saved).
     // Runs once, before the persistence effect below is allowed to save
     // anything, so a fresh start can never wipe the saved session first.
     LaunchedEffect(Unit) {
+        // History retention cleanup: drop normal-history entries older
+        // than the user's chosen window. Runs inside this effect (off
+        // the startup critical path, filtering on a background
+        // dispatcher); incognito visits are never recorded, so they
+        // are untouched by definition.
+        val retentionDays = store.historyRetention.days
+        if (retentionDays > 0 && history.isNotEmpty()) {
+            val cutoff = System.currentTimeMillis() - retentionDays * 86_400_000L
+            val snapshot = history.toList()
+            val kept = kotlinx.coroutines.withContext(
+                kotlinx.coroutines.Dispatchers.Default
+            ) {
+                snapshot.filter { it.time >= cutoff }
+            }
+            if (kept.size != history.size) {
+                history.clear()
+                history.addAll(kept)
+                store.saveHistory(history)
+            }
+        }
         if (store.mainEngineChosen && tabs.isEmpty()) {
             val (saved, savedActive) = store.loadTabs()
             val usable = if (store.startupRestore) {
@@ -896,6 +1030,7 @@ fun BrowserApp(
                 onTabsOpened = { activeTab()?.captureThumbnail() },
                 onCloseTab = { closeTab(it) },
                 onCloseAllTabs = { closeAllTabs() },
+                onCloseOtherTabs = { closeOtherTabs() },
                 canReopenClosed = lastClosedTab != null,
                 onReopenClosed = { reopenLastClosed() },
                 onNewTab = { newTab(store.mainEngine, false) },
@@ -1154,7 +1289,16 @@ fun BrowserApp(
             tab = tabs.firstOrNull { it.id == sniffTabId },
             onBack = { screen = Screen.BROWSER },
             onDownload = { res ->
-                startSystemDownload(context, res.url, null, null, null)
+                downloadWithMode(res.url, res.name) {
+                    startSystemDownload(context, res.url, null, null, null)
+                }
+            },
+            onDownloadAll = { list ->
+                downloadBatchWithMode(list.map { it.url }) {
+                    list.forEach {
+                        startSystemDownload(context, it.url, null, null, null)
+                    }
+                }
             }
         )
 
@@ -1182,6 +1326,33 @@ fun BrowserApp(
             }
         )
         }
+    }
+
+    val ask = askDownload
+    if (ask != null) {
+        AlertDialog(
+            onDismissRequest = { askDownload = null },
+            title = { Text("用哪种方式下载？") },
+            text = {
+                Text(
+                    ask.message + "\n\n系统下载用手机自带的下载器；" +
+                        "TuxunDown 是多线程下载器，下大文件更快，需要另外安装这个 App，" +
+                        "没装会自动改用系统下载。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    askDownload = null
+                    ask.onTuxunDown()
+                }) { Text("TuxunDown 下载") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    askDownload = null
+                    ask.onSystem()
+                }) { Text("系统下载") }
+            }
+        )
     }
 
     val linkTarget = linkMenuTarget
@@ -1836,6 +2007,7 @@ private fun BrowserScreen(
     onTabsOpened: () -> Unit,
     onCloseTab: (BrowserTab) -> Unit,
     onCloseAllTabs: () -> Unit,
+    onCloseOtherTabs: () -> Unit,
     canReopenClosed: Boolean,
     onReopenClosed: () -> Unit,
     onNewTab: () -> Unit,
@@ -1905,6 +2077,27 @@ private fun BrowserScreen(
             clipUrl = text
         }
     }
+    var showCloseOthersConfirm by remember { mutableStateOf(false) }
+    if (showCloseOthersConfirm) {
+        AlertDialog(
+            onDismissRequest = { showCloseOthersConfirm = false },
+            title = { Text("关闭其他标签页？") },
+            text = {
+                Text("会关掉除当前标签外的 ${tabs.size - 1} 个标签页。一次关掉的这些标签没法再恢复。无痕标签关掉后，WebView 的登录状态会按无痕规则清掉。")
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showCloseOthersConfirm = false
+                    showTabs = false
+                    onCloseOtherTabs()
+                }) { Text("关闭其他") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCloseOthersConfirm = false }) { Text("取消") }
+            }
+        )
+    }
+
     var showCloseAllConfirm by remember { mutableStateOf(false) }
     if (showCloseAllConfirm) {
         AlertDialog(
@@ -2678,6 +2871,16 @@ private fun BrowserScreen(
                 if (tabs.size > 1) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         OutlinedButton(
+                            onClick = { showCloseOthersConfirm = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("关闭其他标签页")
+                        }
+                    }
+                }
+                if (tabs.size > 1) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        OutlinedButton(
                             onClick = { showCloseAllConfirm = true },
                             modifier = Modifier.fillMaxWidth()
                         ) {
@@ -3227,7 +3430,8 @@ private fun ReadingListScreen(
 private fun SniffScreen(
     tab: BrowserTab?,
     onBack: () -> Unit,
-    onDownload: (SniffedResource) -> Unit
+    onDownload: (SniffedResource) -> Unit,
+    onDownloadAll: (List<SniffedResource>) -> Unit
 ) {
     var loading by remember(tab?.id) { mutableStateOf(true) }
     var resources by remember(tab?.id) {
@@ -3287,7 +3491,7 @@ private fun SniffScreen(
                 }
                 else -> {
                     Button(
-                        onClick = { resources.forEach(onDownload) },
+                        onClick = { onDownloadAll(resources) },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 8.dp)
@@ -3798,6 +4002,8 @@ private fun SettingsScreen(
     var textZoom by remember { mutableStateOf(store.textZoomPercent) }
     var webDark by remember { mutableStateOf(store.webDarkMode) }
     var startupRestore by remember { mutableStateOf(store.startupRestore) }
+    var downloadMode by remember { mutableStateOf(store.downloadMode) }
+    var historyRetention by remember { mutableStateOf(store.historyRetention) }
     var compatList by remember { mutableStateOf(store.loadCompatSites().sorted()) }
     var showCleared by remember { mutableStateOf(false) }
     var defaultTick by remember { mutableStateOf(0) }
@@ -3990,6 +4196,44 @@ private fun SettingsScreen(
                 )
             }
             item {
+                Text("下载", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "在网页里点到下载链接、或者用资源嗅探下载文件时，文件交给谁来下。" +
+                        "TuxunDown 是多线程下载器，下大文件更快，需要另外安装这个 App；" +
+                        "没装的时候会自动改用系统下载，不会下不了。",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            items(DownloadMode.entries) { mode ->
+                ElevatedCard(
+                    onClick = {
+                        downloadMode = mode
+                        store.downloadMode = mode
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    ListItem(
+                        headlineContent = { Text(mode.label) },
+                        trailingContent = {
+                            RadioButton(
+                                selected = downloadMode == mode,
+                                onClick = {
+                                    downloadMode = mode
+                                    store.downloadMode = mode
+                                }
+                            )
+                        }
+                    )
+                }
+            }
+            item {
+                Text(
+                    "火狐标签的下载由浏览器直接保存，不走此设置。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            item {
                 Text("显示", style = MaterialTheme.typography.titleMedium)
                 Text(
                     "网页文字大小对两个内核都生效，改完已经打开的网页立刻跟着变。",
@@ -4128,6 +4372,36 @@ private fun SettingsScreen(
             item {
                 TextButton(onClick = { defaultTick++ }) {
                     Text("重新检测默认浏览器状态")
+                }
+            }
+            item {
+                Text("隐私", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "历史记录保留多久。超过期限的记录会在下次打开应用时自动清掉。" +
+                        "无痕标签的访问本来就不记历史，不受这个设置影响。",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            items(HistoryRetention.entries) { retention ->
+                ElevatedCard(
+                    onClick = {
+                        historyRetention = retention
+                        store.historyRetention = retention
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    ListItem(
+                        headlineContent = { Text("历史记录 · ${retention.label}") },
+                        trailingContent = {
+                            RadioButton(
+                                selected = historyRetention == retention,
+                                onClick = {
+                                    historyRetention = retention
+                                    store.historyRetention = retention
+                                }
+                            )
+                        }
+                    )
                 }
             }
             item {

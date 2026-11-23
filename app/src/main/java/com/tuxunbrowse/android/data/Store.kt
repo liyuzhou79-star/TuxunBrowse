@@ -76,6 +76,33 @@ data class SavedTab(val engine: Engine, val url: String, val desktopMode: Boolea
 /** Internal URL of the native home page. Never handed to a web engine. */
 const val HOME_URL = "tuxun://home"
 
+/** Package name of the TuxunDown multi-thread downloader app. */
+const val TUXUNDOWN_PACKAGE = "com.tuxundown.android"
+
+/** Where a URL-type download goes: the system downloader, TuxunDown, or ask. */
+enum class DownloadMode(val id: String, val label: String) {
+    SYSTEM("system", "系统下载"),
+    TUXUNDOWN("tuxundown", "TuxunDown 多线程下载"),
+    ASK("ask", "每次下载时询问");
+
+    companion object {
+        fun fromId(id: String?): DownloadMode =
+            entries.firstOrNull { it.id == id } ?: SYSTEM
+    }
+}
+
+/** How long normal (never incognito) history is kept. days = 0 means forever. */
+enum class HistoryRetention(val id: String, val label: String, val days: Int) {
+    FOREVER("forever", "永久保留", 0),
+    DAYS_30("days30", "保留 30 天", 30),
+    DAYS_7("days7", "保留 7 天", 7);
+
+    companion object {
+        fun fromId(id: String?): HistoryRetention =
+            entries.firstOrNull { it.id == id } ?: FOREVER
+    }
+}
+
 fun hostOf(url: String): String? = try {
     java.net.URI(url).host?.lowercase()
 } catch (e: Exception) {
@@ -129,6 +156,16 @@ class Store(context: Context) {
     var startupRestore: Boolean
         get() = prefs.getBoolean(KEY_STARTUP_RESTORE, true)
         set(value) = prefs.edit().putBoolean(KEY_STARTUP_RESTORE, value).apply()
+
+    /** Where URL-type downloads go. Gecko tab downloads never use this. */
+    var downloadMode: DownloadMode
+        get() = DownloadMode.fromId(prefs.getString(KEY_DOWNLOAD_MODE, null))
+        set(value) = prefs.edit().putString(KEY_DOWNLOAD_MODE, value.id).apply()
+
+    /** How long normal history entries are kept before cleanup on launch. */
+    var historyRetention: HistoryRetention
+        get() = HistoryRetention.fromId(prefs.getString(KEY_HISTORY_RETENTION, null))
+        set(value) = prefs.edit().putString(KEY_HISTORY_RETENTION, value.id).apply()
 
     fun loadCompatSites(): MutableSet<String> {
         val raw = prefs.getString(KEY_COMPAT_SITES, null) ?: return mutableSetOf()
@@ -253,6 +290,8 @@ class Store(context: Context) {
         private const val KEY_TEXT_ZOOM = "text_zoom"
         private const val KEY_WEB_DARK = "web_dark"
         private const val KEY_STARTUP_RESTORE = "startup_restore"
+        private const val KEY_DOWNLOAD_MODE = "download_mode"
+        private const val KEY_HISTORY_RETENTION = "history_retention"
     }
 }
 

@@ -304,7 +304,10 @@ class BrowserTab(
         PermissionDelegate.MediaCallback
     ) -> Unit = { _, _, _, callback -> callback.reject() },
     private val onNewWindowRequest: (String) -> Unit = {},
-    private val onGeckoNewSession: (GeckoSession, String) -> Unit = { _, _ -> }
+    private val onGeckoNewSession: (GeckoSession, String) -> Unit = { _, _ -> },
+    private val onUrlDownload: (
+        String, String?, String?, String?
+    ) -> Unit = { _, _, _, _ -> }
 ) {
     val id: Int = nextTabId++
     var url by mutableStateOf(startUrl)
@@ -821,7 +824,9 @@ class BrowserTab(
         }
         view.setDownloadListener(
             DownloadListener { dlUrl, userAgent, contentDisposition, mimetype, _ ->
-                startSystemDownload(context, dlUrl, userAgent, contentDisposition, mimetype)
+                // URL-type download: the app decides where it goes
+                // (system downloader / TuxunDown / ask), per settings.
+                onUrlDownload(dlUrl, userAgent, contentDisposition, mimetype)
             }
         )
         webView = view
