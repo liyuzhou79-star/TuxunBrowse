@@ -680,10 +680,12 @@ class BrowserTab(
         session.permissionDelegate = object : PermissionDelegate {
             override fun onAndroidPermissionsRequest(
                 s: GeckoSession,
-                permissions: Array<String>,
+                // @Nullable in the 132 AAR (checked with javap -v): the
+                // Kotlin override must declare it nullable to match.
+                permissions: Array<String>?,
                 callback: PermissionDelegate.Callback
             ) {
-                onGeckoAndroidPermissions(permissions, callback)
+                onGeckoAndroidPermissions(permissions ?: emptyArray(), callback)
             }
 
             override fun onContentPermissionRequest(

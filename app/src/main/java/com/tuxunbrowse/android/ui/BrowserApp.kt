@@ -650,22 +650,21 @@ fun BrowserApp(
         }
     }
     geckoContentPermHandler = { perm ->
-        val pd = GeckoSession.PermissionDelegate
-        val cp = GeckoSession.PermissionDelegate.ContentPermission
         when (perm.permission) {
-            pd.PERMISSION_GEOLOCATION ->
+            GeckoSession.PermissionDelegate.PERMISSION_GEOLOCATION ->
                 if (androidx.core.content.ContextCompat.checkSelfPermission(
                         context, android.Manifest.permission.ACCESS_FINE_LOCATION
                     ) == android.content.pm.PackageManager.PERMISSION_GRANTED
                 ) {
-                    cp.VALUE_ALLOW
+                    GeckoSession.PermissionDelegate.ContentPermission.VALUE_ALLOW
                 } else {
-                    cp.VALUE_DENY
+                    GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY
                 }
-            pd.PERMISSION_AUTOPLAY_INAUDIBLE,
-            pd.PERMISSION_AUTOPLAY_AUDIBLE,
-            pd.PERMISSION_MEDIA_KEY_SYSTEM_ACCESS -> cp.VALUE_ALLOW
-            else -> cp.VALUE_DENY
+            GeckoSession.PermissionDelegate.PERMISSION_AUTOPLAY_INAUDIBLE,
+            GeckoSession.PermissionDelegate.PERMISSION_AUTOPLAY_AUDIBLE,
+            GeckoSession.PermissionDelegate.PERMISSION_MEDIA_KEY_SYSTEM_ACCESS ->
+                GeckoSession.PermissionDelegate.ContentPermission.VALUE_ALLOW
+            else -> GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY
         }
     }
     geckoMediaPermHandler = { _, video, audio, callback ->
