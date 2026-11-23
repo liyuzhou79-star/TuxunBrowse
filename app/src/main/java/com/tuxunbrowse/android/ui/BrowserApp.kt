@@ -2946,7 +2946,7 @@ private fun LoadErrorContent(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun BrowserScreen(
     tabs: List<BrowserTab>,
