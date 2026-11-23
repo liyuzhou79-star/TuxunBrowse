@@ -1121,13 +1121,48 @@ fun BrowserApp(
         desktopSites.toList().forEach { removeDesktopSite(it) }
     }
 
+    /**
+     * Forget the compat memory covering [host]: every stored entry
+     * this host belongs to (the host itself may be remembered
+     * through a parent domain, which only a backup import can
+     * create) is removed. Twin of [removeDesktopMemoryForHost];
+     * exact-host removal alone silently left parent-domain entries
+     * in place while the UI claimed the memory was gone
+     * (v0.61.0 regression fix).
+     */
+    fun removeCompatMemoryForHost(host: String) {
+        compatSites.filter { hostMatchesSite(host, it) }
+            .forEach { removeCompatSite(it) }
+    }
+
     fun switchTabEngine(tab: BrowserTab, newEngine: Engine, rememberSite: Boolean) {
-        if (tab.engine == newEngine) return
+        if (tab.engine == newEngine) {
+            // Already on the picked engine: the one promise the
+            // switch dialog can still make in this state is
+            // cancelling the site's compat memory (it offers the
+            // switch whenever a Gecko tab sits on a compat-listed
+            // site — reachable after an error-page one-time bypass
+            // or a backup import). Honour it instead of silently
+            // doing nothing (v0.61.0 regression fix).
+            if (newEngine == Engine.GECKO && rememberSite) {
+                val host = hostOf(tab.url)
+                if (host != null &&
+                    compatSites.any { hostMatchesSite(host, it) }
+                ) {
+                    removeCompatMemoryForHost(host)
+                    android.widget.Toast.makeText(
+                        context, "已取消这个网站的自动兼容记忆",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+            return
+        }
         val host = hostOf(tab.url)
         if (rememberSite && host != null) {
             when (newEngine) {
                 Engine.WEBVIEW -> addCompatSite(host)
-                Engine.GECKO -> removeCompatSite(host)
+                Engine.GECKO -> removeCompatMemoryForHost(host)
             }
         }
         replaceTabEngine(tab, newEngine)
@@ -1799,7 +1834,7 @@ fun BrowserApp(
         val tab = activeTab() ?: return
         val host = hostOf(tab.url) ?: return
         if (isCompatHost(host, compatSites.toSet())) {
-            removeCompatSite(host)
+            removeCompatMemoryForHost(host)
             if (tab.engine == Engine.WEBVIEW) {
                 replaceTabEngine(tab, Engine.GECKO)
             }
@@ -2357,6 +2392,18 @@ fun BrowserApp(
                 onIncognitoEngineChosen = { store.incognitoEngine = it },
                 onToggleBookmark = {
                     val tab = activeTab() ?: return@BrowserScreen
+                    if (tab.isHome) {
+                        // The star sits in the home tab's bar too;
+                        // without this branch the tap silently did
+                        // nothing (v0.61.0 regression fix — every
+                        // other home-tab action answers with the
+                        // same kind of toast).
+                        android.widget.Toast.makeText(
+                            context, "先打开一个网页再收藏",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                        return@BrowserScreen
+                    }
                     val existing = bookmarks.firstOrNull { it.url == tab.url }
                     if (existing != null) {
                         bookmarks.remove(existing)
@@ -5180,12 +5227,26 @@ private fun BrowserScreen(
                             },
                             onClick = { showMenu = false; onToggleReaderMode() }
                         )
+                        // The home tab has no site and no engine:
+                        // a desktop-mode switch there flips a state
+                        // that can never take effect, so the item is
+                        // not offered on it (v0.61.0 regression fix;
+                        // same treatment as "加入阅读列表" below).
+                        if (activeTab?.isHome != true) {
                         DropdownMenuItem(
                             text = {
                                 Column {
                                     Text("桌面版网站")
                                     Text(
-                                        "打开后会记住这个网站，下次打开自动用桌面版",
+                                        // Incognito toggles are never
+                                        // remembered (v0.56.0), so the
+                                        // subtitle must not promise
+                                        // memory there (v0.61.0).
+                                        if (activeTab?.incognito == true) {
+                                            "无痕标签里只对这个标签生效，不会记住这个网站"
+                                        } else {
+                                            "打开后会记住这个网站，下次打开自动用桌面版"
+                                        },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -5202,6 +5263,7 @@ private fun BrowserScreen(
                             },
                             onClick = { onToggleDesktopMode(!activeDesktopMode) }
                         )
+                        }
                         DropdownMenuItem(
                             text = { Text("下载") },
                             leadingIcon = {
