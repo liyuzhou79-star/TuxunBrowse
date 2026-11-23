@@ -145,6 +145,9 @@ class BrowserTab(
     var canGoForward by mutableStateOf(false)
     var readerActive by mutableStateOf(false)
 
+    /** Find-in-page match counter text ("2 / 9"); WebView only. */
+    var findInfo by mutableStateOf("")
+
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
 
     fun enterReaderMode() {
@@ -232,6 +235,7 @@ class BrowserTab(
     }
 
     fun clearFind() {
+        findInfo = ""
         when (engine) {
             Engine.WEBVIEW -> webView?.clearMatches()
             Engine.GECKO -> geckoSession?.finder?.clear()
@@ -330,6 +334,13 @@ class BrowserTab(
             override fun onHideCustomView() {
                 customViewCallback = null
                 onFullscreenHide()
+            }
+        }
+        view.setFindListener { activeMatchOrdinal, numberOfMatches, _ ->
+            findInfo = if (numberOfMatches == 0) {
+                "没有找到"
+            } else {
+                "${activeMatchOrdinal + 1} / $numberOfMatches"
             }
         }
         view.setDownloadListener(

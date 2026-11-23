@@ -124,7 +124,10 @@ private data class ClosedTabInfo(
 )
 
 @Composable
-fun BrowserApp() {
+fun BrowserApp(
+    initialUrl: String? = null,
+    onInitialUrlConsumed: () -> Unit = {}
+) {
     val context = LocalContext.current
     val store = remember { Store(context) }
     var screen by remember {
@@ -419,6 +422,14 @@ fun BrowserApp() {
         }
         if (tab.url != url) tab.load(url)
         screen = Screen.BROWSER
+    }
+
+    // A link opened from another app: show it once the session is ready.
+    LaunchedEffect(initialUrl, startupDone) {
+        if (startupDone && initialUrl != null) {
+            openUrl(initialUrl)
+            onInitialUrlConsumed()
+        }
     }
 
     BackHandler(enabled = fullscreenView != null) {
@@ -1444,6 +1455,15 @@ private fun BrowserScreen(
                             onSearch = { onFind(findQuery, true) }
                         )
                     )
+                    if (activeTab.engine == Engine.WEBVIEW &&
+                        activeTab.findInfo.isNotEmpty()
+                    ) {
+                        Text(
+                            activeTab.findInfo,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(horizontal = 4.dp)
+                        )
+                    }
                     IconButton(onClick = { onFind(findQuery, false) }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "上一个")
                     }
@@ -2058,6 +2078,35 @@ private fun DownloadsScreen(onBack: () -> Unit) {
         entries = loaded.reversed()
     }
 
+    var pendingDeleteEntry by remember { mutableStateOf<DownloadEntry?>(null) }
+    val toDeleteEntry = pendingDeleteEntry
+    if (toDeleteEntry != null) {
+        AlertDialog(
+            onDismissRequest = { pendingDeleteEntry = null },
+            title = { Text("删除这条下载记录？") },
+            text = {
+                Text("「${toDeleteEntry.title}」的记录会被删掉，已经下载好的文件也会一起从下载文件夹里删掉，没法恢复。")
+            },
+            confirmButton = {
+                Button(onClick = {
+                    try {
+                        val manager = context.getSystemService(
+                            android.content.Context.DOWNLOAD_SERVICE
+                        ) as android.app.DownloadManager
+                        manager.remove(toDeleteEntry.id)
+                    } catch (t: Throwable) {
+                        // Best-effort; the list refresh below shows the truth.
+                    }
+                    pendingDeleteEntry = null
+                    refreshTick++
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteEntry = null }) { Text("取消") }
+            }
+        )
+    }
+
     fun retryDownload(entry: DownloadEntry) {
         val source = entry.sourceUrl
         if (source.isNullOrBlank()) {
@@ -2136,16 +2185,25 @@ private fun DownloadsScreen(onBack: () -> Unit) {
                         Text(parts.joinToString(" · "))
                     },
                     leadingContent = { Icon(Icons.Filled.Download, contentDescription = null) },
-                    trailingContent = if (
-                        entry.status == android.app.DownloadManager.STATUS_FAILED
-                    ) {
-                        {
-                            IconButton(onClick = { retryDownload(entry) }) {
-                                Icon(Icons.Filled.Refresh, contentDescription = "重新下载")
+                    trailingContent = {
+                        Row {
+                            if (entry.status ==
+                                android.app.DownloadManager.STATUS_FAILED
+                            ) {
+                                IconButton(onClick = { retryDownload(entry) }) {
+                                    Icon(
+                                        Icons.Filled.Refresh,
+                                        contentDescription = "重新下载"
+                                    )
+                                }
+                            }
+                            IconButton(onClick = { pendingDeleteEntry = entry }) {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    contentDescription = "删除这条记录"
+                                )
                             }
                         }
-                    } else {
-                        null
                     },
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2392,7 +2450,22 @@ private fun SettingsScreen(
     var startupRestore by remember { mutableStateOf(store.startupRestore) }
     var compatList by remember { mutableStateOf(store.loadCompatSites().sorted()) }
     var showCleared by remember { mutableStateOf(false) }
+    var defaultTick by remember { mutableStateOf(0) }
     val settingsContext = LocalContext.current
+    val roleManager = remember {
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            settingsContext.getSystemService(android.app.role.RoleManager::class.java)
+        } else {
+            null
+        }
+    }
+    val isDefaultBrowser = remember(defaultTick) {
+        try {
+            roleManager?.isRoleHeld(android.app.role.RoleManager.ROLE_BROWSER) ?: false
+        } catch (t: Throwable) {
+            false
+        }
+    }
     val versionName = remember {
         try {
             settingsContext.packageManager
@@ -2627,6 +2700,76 @@ private fun SettingsScreen(
                         )
                     }
                 )
+            }
+            item {
+                Text("默认浏览器", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "设成默认浏览器后，在微信、短信等其他应用里点到的网页链接会用 TuxunBrowse 打开。",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            item {
+                ListItem(
+                    headlineContent = {
+                        Text(
+                            if (isDefaultBrowser) {
+                                "已经是默认浏览器了"
+                            } else {
+                                "还不是默认浏览器"
+                            }
+                        )
+                    },
+                    supportingContent = {
+                        Text(
+                            if (isDefaultBrowser) {
+                                "别的 App 里的链接会用 TuxunBrowse 打开。"
+                            } else {
+                                "点右边按钮去系统里选一下；回来后点「重新检测」刷新状态。"
+                            }
+                        )
+                    },
+                    trailingContent = if (!isDefaultBrowser) {
+                        {
+                            Button(onClick = {
+                                try {
+                                    if (roleManager != null &&
+                                        roleManager.isRoleAvailable(
+                                            android.app.role.RoleManager.ROLE_BROWSER
+                                        )
+                                    ) {
+                                        settingsContext.startActivity(
+                                            roleManager.createRequestRoleIntent(
+                                                android.app.role.RoleManager.ROLE_BROWSER
+                                            )
+                                        )
+                                    } else {
+                                        settingsContext.startActivity(
+                                            android.content.Intent(
+                                                android.provider.Settings
+                                                    .ACTION_MANAGE_DEFAULT_APPS_SETTINGS
+                                            )
+                                        )
+                                    }
+                                } catch (t: Throwable) {
+                                    android.widget.Toast.makeText(
+                                        settingsContext,
+                                        "没能打开系统设置，请到系统设置的应用管理里手动设",
+                                        android.widget.Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            }) {
+                                Text("去设置")
+                            }
+                        }
+                    } else {
+                        null
+                    }
+                )
+            }
+            item {
+                TextButton(onClick = { defaultTick++ }) {
+                    Text("重新检测默认浏览器状态")
+                }
             }
             item {
                 Text("数据", style = MaterialTheme.typography.titleMedium)
