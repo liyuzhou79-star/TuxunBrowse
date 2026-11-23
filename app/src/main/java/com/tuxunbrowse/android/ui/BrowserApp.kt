@@ -8319,9 +8319,8 @@ private fun DownloadsScreen(
                                 formatStorageSize(record.sizeBytes),
                                 geckoTimeFormat.format(java.util.Date(record.time))
                             )
-                            if (!record.mimeType.isNullOrBlank()) {
-                                parts.add(record.mimeType)
-                            }
+                            record.mimeType?.takeIf { it.isNotBlank() }
+                                ?.let { parts.add(it) }
                             val host = hostOf(record.sourceUrl)
                             if (host.isNotBlank()) {
                                 parts.add(host)
