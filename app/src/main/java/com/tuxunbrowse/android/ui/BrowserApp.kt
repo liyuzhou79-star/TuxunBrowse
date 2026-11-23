@@ -115,6 +115,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -1461,6 +1462,58 @@ fun BrowserApp(
                     answer(emptySet())
                 }
             }
+        }
+    }
+
+    // Recreation safety net for pending page callbacks (v0.34.0
+    // audit): every pending answer below lives in remember{} state —
+    // the file picker's answer, the system-permission answer and the
+    // JS / auth / SSL dialogs. If this composition is disposed while
+    // one of them is still waiting (an activity recreation from a
+    // configuration change this app does not handle itself, e.g. a
+    // SIM or hardware-keyboard change), disposing is NOT the same as
+    // dismissing: none of the dialogs' answer paths run, and the page
+    // side would be left waiting on a callback nobody will ever call.
+    // Answer everything still pending here, each with its "cancel"
+    // value, so nothing dangles. Every engine-side answer wrapper
+    // already guards against double answers with try/catch, and the
+    // engines themselves are being torn down by the same recreation,
+    // so a late cancel is harmless. Normal tab closing never reaches
+    // this: BrowserApp only leaves the composition when the activity
+    // itself goes away.
+    DisposableEffect(Unit) {
+        onDispose {
+            try {
+                pendingFileAnswer?.invoke(emptyList())
+            } catch (t: Throwable) {
+                // Engine already gone; nothing left to answer.
+            }
+            pendingFileAnswer = null
+            try {
+                pendingSysPermAnswer?.invoke(emptySet())
+            } catch (t: Throwable) {
+                // Engine already gone; nothing left to answer.
+            }
+            pendingSysPermAnswer = null
+            pendingSysPerms = emptyList()
+            try {
+                jsPromptRequest?.respond?.invoke(false, null)
+            } catch (t: Throwable) {
+                // Engine already gone; nothing left to answer.
+            }
+            jsPromptRequest = null
+            try {
+                authPromptRequest?.respond?.invoke(null, null)
+            } catch (t: Throwable) {
+                // Engine already gone; nothing left to answer.
+            }
+            authPromptRequest = null
+            try {
+                sslPromptRequest?.respond?.invoke(false)
+            } catch (t: Throwable) {
+                // Engine already gone; nothing left to answer.
+            }
+            sslPromptRequest = null
         }
     }
 
