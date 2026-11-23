@@ -28,6 +28,7 @@ import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.GeckoView
+import org.mozilla.geckoview.WebResponse
 
 /** Shared Gecko runtime; created lazily, null when Gecko fails to start. */
 object GeckoHolder {
@@ -234,6 +235,7 @@ class BrowserTab(
 
     fun obtainGecko(context: Context): GeckoView? {
         geckoView?.let { return it }
+        val appContext = context.applicationContext
         val runtime = GeckoHolder.ensure(context) ?: return null
         val settingsBuilder = GeckoSessionSettings.Builder()
             .usePrivateMode(incognito)
@@ -312,6 +314,16 @@ class BrowserTab(
                 val link = element.linkUri
                 if (!link.isNullOrBlank()) onLinkContext(link)
             }
+
+            // Gecko hands responses it cannot display (files to download)
+            // to the app as a WebResponse with a body stream. Verified
+            // against the GeckoView 132 AAR: ContentDelegate has
+            // onExternalResponse(GeckoSession, WebResponse) and
+            // WebResponse carries uri/headers (WebMessage) plus a public
+            // body InputStream that the app must consume itself.
+            override fun onExternalResponse(s: GeckoSession, response: WebResponse) {
+                saveGeckoDownload(appContext, response)
+            }
         }
         session.open(runtime)
         geckoSession = session
@@ -324,6 +336,84 @@ class BrowserTab(
         geckoView = view
         if (url.isNotBlank() && url != HOME_URL) session.loadUri(url)
         return view
+    }
+}
+
+private val geckoDownloadExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+/**
+ * Save a Gecko "external response" (a download) to the public Downloads
+ * folder. The body stream already carries the Gecko session's cookies and
+ * request state, so unlike a DownloadManager re-request it also works for
+ * downloads that need a login. On Android 10+ the file lands in the system
+ * Downloads folder via MediaStore (no permission needed); on older systems
+ * it goes to the app's own download folder, which needs no permission
+ * either.
+ */
+fun saveGeckoDownload(context: Context, response: WebResponse) {
+    val uri = response.uri
+    val headers = response.headers
+    fun header(name: String): String? = headers.entries
+        .firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
+    val contentType = header("Content-Type")?.substringBefore(";")?.trim()
+    val fileName = android.webkit.URLUtil.guessFileName(
+        uri, header("Content-Disposition"), contentType
+    )
+    val body = response.body
+    if (body == null) {
+        Toast.makeText(context, "这个文件没有可下载的内容", Toast.LENGTH_LONG).show()
+        return
+    }
+    Toast.makeText(context, "开始下载：$fileName", Toast.LENGTH_LONG).show()
+    geckoDownloadExecutor.execute {
+        var ok = false
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                val resolver = context.contentResolver
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName)
+                    if (!contentType.isNullOrBlank()) {
+                        put(android.provider.MediaStore.Downloads.MIME_TYPE, contentType)
+                    }
+                    put(
+                        android.provider.MediaStore.Downloads.RELATIVE_PATH,
+                        Environment.DIRECTORY_DOWNLOADS
+                    )
+                    put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
+                }
+                val dest = resolver.insert(
+                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+                )
+                if (dest != null) {
+                    resolver.openOutputStream(dest)?.use { out -> body.copyTo(out) }
+                    val done = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
+                    }
+                    resolver.update(dest, done, null, null)
+                    ok = true
+                }
+            } else {
+                val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                    ?: context.filesDir
+                java.io.File(dir, fileName).outputStream().use { out -> body.copyTo(out) }
+                ok = true
+            }
+        } catch (t: Throwable) {
+            ok = false
+        } finally {
+            try {
+                body.close()
+            } catch (t: Throwable) {
+                // Nothing useful to do about a failed close.
+            }
+        }
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            Toast.makeText(
+                context,
+                if (ok) "已下载：$fileName（在系统下载文件夹）" else "下载失败：$fileName",
+                Toast.LENGTH_LONG
+            ).show()
+        }
     }
 }
 

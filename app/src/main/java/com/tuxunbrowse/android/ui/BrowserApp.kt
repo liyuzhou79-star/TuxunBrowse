@@ -1,6 +1,8 @@
 package com.tuxunbrowse.android.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -22,8 +24,10 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Language
@@ -31,6 +35,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.SwapHoriz
@@ -70,6 +75,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
@@ -79,6 +85,7 @@ import com.tuxunbrowse.android.data.Bookmark
 import com.tuxunbrowse.android.data.Engine
 import com.tuxunbrowse.android.data.HOME_URL
 import com.tuxunbrowse.android.data.HistoryItem
+import com.tuxunbrowse.android.data.SavedTab
 import com.tuxunbrowse.android.data.SearchEngine
 import com.tuxunbrowse.android.data.Store
 import com.tuxunbrowse.android.data.hostOf
@@ -86,8 +93,16 @@ import com.tuxunbrowse.android.data.isCompatHost
 import com.tuxunbrowse.android.data.resolveInput
 import com.tuxunbrowse.android.engine.BrowserTab
 import com.tuxunbrowse.android.engine.TabContent
+import kotlinx.coroutines.flow.collect
 
 private enum class Screen { PICKER, BROWSER, BOOKMARKS, HISTORY, SETTINGS, DOWNLOADS }
+
+private data class ClosedTabInfo(
+    val engine: Engine,
+    val incognito: Boolean,
+    val url: String,
+    val desktopMode: Boolean
+)
 
 @Composable
 fun BrowserApp() {
@@ -104,6 +119,8 @@ fun BrowserApp() {
         mutableStateListOf<String>().apply { addAll(store.loadCompatSites()) }
     }
     var linkMenuTarget by remember { mutableStateOf<String?>(null) }
+    var lastClosedTab by remember { mutableStateOf<ClosedTabInfo?>(null) }
+    var startupDone by remember { mutableStateOf(false) }
 
     fun recordVisit(title: String, url: String) {
         if (history.firstOrNull()?.url == url) return
@@ -147,8 +164,13 @@ fun BrowserApp() {
             isCompatHost(hostOf(url), compatSites.toSet())
         ) Engine.WEBVIEW else engine
 
-    fun newTab(engine: Engine, incognito: Boolean, url: String = HOME_URL): BrowserTab {
-        val tab = makeTab(effectiveEngine(engine, url), incognito, url)
+    fun newTab(
+        engine: Engine,
+        incognito: Boolean,
+        url: String = HOME_URL,
+        desktopMode: Boolean = false
+    ): BrowserTab {
+        val tab = makeTab(effectiveEngine(engine, url), incognito, url, desktopMode)
         tabs.add(tab)
         activeTabId = tab.id
         return tab
@@ -201,6 +223,7 @@ fun BrowserApp() {
     fun closeTab(tab: BrowserTab) {
         val idx = tabs.indexOf(tab)
         val wasIncognito = tab.incognito
+        lastClosedTab = ClosedTabInfo(tab.engine, tab.incognito, tab.url, tab.desktopMode)
         tab.destroy()
         tabs.remove(tab)
         if (wasIncognito && tabs.none { it.incognito }) {
@@ -218,6 +241,53 @@ fun BrowserApp() {
             newTab(store.mainEngine, false)
         } else if (activeTabId == tab.id) {
             activeTabId = tabs[minOf(idx, tabs.size - 1)].id
+        }
+    }
+
+    fun reopenLastClosed() {
+        val info = lastClosedTab ?: return
+        lastClosedTab = null
+        newTab(info.engine, info.incognito, info.url, info.desktopMode)
+        screen = Screen.BROWSER
+    }
+
+    // Session restore: reopen the tabs that were open when the app was
+    // last closed (normal tabs only — incognito tabs are never saved).
+    // Runs once, before the persistence effect below is allowed to save
+    // anything, so a fresh start can never wipe the saved session first.
+    LaunchedEffect(Unit) {
+        if (store.mainEngineChosen && tabs.isEmpty()) {
+            val (saved, savedActive) = store.loadTabs()
+            val usable = saved.filter { it.url.startsWith("http") || it.url == HOME_URL }
+            if (usable.isNotEmpty()) {
+                usable.forEach { st ->
+                    tabs.add(
+                        makeTab(
+                            effectiveEngine(st.engine, st.url),
+                            false, st.url, st.desktopMode
+                        )
+                    )
+                }
+                activeTabId = tabs[savedActive.coerceIn(0, tabs.lastIndex)].id
+            } else {
+                newTab(store.mainEngine, false)
+            }
+        }
+        startupDone = true
+    }
+
+    // Keep the saved session in sync with the live tab list.
+    LaunchedEffect(startupDone) {
+        if (!startupDone) return@LaunchedEffect
+        snapshotFlow {
+            val normal = tabs.filter { !it.incognito }
+            normal.map { Triple(it.engine, it.url, it.desktopMode) } to
+                normal.indexOfFirst { it.id == activeTabId }
+        }.collect { (list, idx) ->
+            store.saveTabs(
+                list.map { SavedTab(it.first, it.second, it.third) },
+                idx.coerceAtLeast(0)
+            )
         }
     }
 
@@ -256,6 +326,8 @@ fun BrowserApp() {
                 } ?: false,
                 onSelectTab = { activeTabId = it.id },
                 onCloseTab = { closeTab(it) },
+                canReopenClosed = lastClosedTab != null,
+                onReopenClosed = { reopenLastClosed() },
                 onNewTab = { newTab(store.mainEngine, false) },
                 onNewIncognitoTab = { engine -> newTab(engine, true) },
                 incognitoEngine = store.incognitoEngine,
@@ -296,6 +368,10 @@ fun BrowserApp() {
                         searchEngine = store.searchEngine,
                         onSearchUrl = { url -> openUrl(url) },
                         onOpenBookmark = { openUrl(it.url) },
+                        onDeleteBookmark = {
+                            bookmarks.remove(it)
+                            store.saveBookmarks(bookmarks)
+                        },
                         onOpenHistoryItem = { openUrl(it.url) },
                         onOpenAllBookmarks = { screen = Screen.BOOKMARKS },
                         onOpenAllHistory = { screen = Screen.HISTORY }
@@ -311,6 +387,13 @@ fun BrowserApp() {
             onDelete = {
                 bookmarks.remove(it)
                 store.saveBookmarks(bookmarks)
+            },
+            onEdit = { old, newTitle, newUrl ->
+                val idx = bookmarks.indexOf(old)
+                if (idx >= 0) {
+                    bookmarks[idx] = Bookmark(newTitle, newUrl)
+                    store.saveBookmarks(bookmarks)
+                }
             }
         )
 
@@ -421,6 +504,7 @@ fun BrowserApp() {
  * box, a bookmark shortcut grid and recent history. It never loads an
  * external start page.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun HomeContent(
     bookmarks: List<Bookmark>,
@@ -428,11 +512,30 @@ private fun HomeContent(
     searchEngine: SearchEngine,
     onSearchUrl: (String) -> Unit,
     onOpenBookmark: (Bookmark) -> Unit,
+    onDeleteBookmark: (Bookmark) -> Unit,
     onOpenHistoryItem: (HistoryItem) -> Unit,
     onOpenAllBookmarks: () -> Unit,
     onOpenAllHistory: () -> Unit
 ) {
     var query by remember { mutableStateOf("") }
+    var pendingDelete by remember { mutableStateOf<Bookmark?>(null) }
+    val toDelete = pendingDelete
+    if (toDelete != null) {
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("删除这个书签？") },
+            text = { Text("会把「${toDelete.title}」从书签里删掉，首页的快捷入口也会一起消失。") },
+            confirmButton = {
+                Button(onClick = {
+                    onDeleteBookmark(toDelete)
+                    pendingDelete = null
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text("取消") }
+            }
+        )
+    }
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
         modifier = Modifier
@@ -492,8 +595,12 @@ private fun HomeContent(
         } else {
             gridItems(bookmarks.take(8), key = { it.url }) { bookmark ->
                 ElevatedCard(
-                    onClick = { onOpenBookmark(bookmark) },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .combinedClickable(
+                            onClick = { onOpenBookmark(bookmark) },
+                            onLongClick = { pendingDelete = bookmark }
+                        )
                 ) {
                     ListItem(
                         headlineContent = { Text(bookmark.title, maxLines = 2) },
@@ -639,6 +746,8 @@ private fun BrowserScreen(
     currentHostIsCompat: Boolean,
     onSelectTab: (BrowserTab) -> Unit,
     onCloseTab: (BrowserTab) -> Unit,
+    canReopenClosed: Boolean,
+    onReopenClosed: () -> Unit,
     onNewTab: () -> Unit,
     onNewIncognitoTab: (Engine) -> Unit,
     incognitoEngine: Engine,
@@ -657,6 +766,7 @@ private fun BrowserScreen(
     onOpenSettings: () -> Unit,
     homeContent: @Composable () -> Unit
 ) {
+    val context = LocalContext.current
     var showTabs by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showIncognitoPicker by remember { mutableStateOf(false) }
@@ -710,6 +820,66 @@ private fun BrowserScreen(
                             text = { Text("回到首页") },
                             leadingIcon = { Icon(Icons.Filled.Home, contentDescription = null) },
                             onClick = { showMenu = false; onGoHome() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("分享当前页") },
+                            leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
+                            onClick = {
+                                showMenu = false
+                                val tab = activeTab
+                                if (tab == null || tab.isHome) {
+                                    android.widget.Toast.makeText(
+                                        context, "先打开一个网页再分享",
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
+                                } else {
+                                    val intent = android.content.Intent(
+                                        android.content.Intent.ACTION_SEND
+                                    )
+                                        .setType("text/plain")
+                                        .putExtra(
+                                            android.content.Intent.EXTRA_SUBJECT,
+                                            tab.title.ifBlank { tab.url }
+                                        )
+                                        .putExtra(
+                                            android.content.Intent.EXTRA_TEXT, tab.url
+                                        )
+                                    context.startActivity(
+                                        android.content.Intent.createChooser(
+                                            intent, "分享当前页"
+                                        )
+                                    )
+                                }
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("复制当前网址") },
+                            leadingIcon = {
+                                Icon(Icons.Filled.ContentCopy, contentDescription = null)
+                            },
+                            onClick = {
+                                showMenu = false
+                                val tab = activeTab
+                                if (tab == null || tab.isHome) {
+                                    android.widget.Toast.makeText(
+                                        context, "现在没有可复制的网址",
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
+                                } else {
+                                    val clipboard = context.getSystemService(
+                                        android.content.Context.CLIPBOARD_SERVICE
+                                    ) as android.content.ClipboardManager
+                                    clipboard.setPrimaryClip(
+                                        android.content.ClipData.newPlainText(
+                                            "url", tab.url
+                                        )
+                                    )
+                                    android.widget.Toast.makeText(
+                                        context, "网址已复制",
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
                         )
                         DropdownMenuItem(
                             text = { Text("页面内查找") },
@@ -945,6 +1115,16 @@ private fun BrowserScreen(
                         Text("新建标签页")
                     }
                 }
+                if (canReopenClosed) {
+                    item {
+                        OutlinedButton(
+                            onClick = { showTabs = false; onReopenClosed() },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("恢复刚关闭的标签页")
+                        }
+                    }
+                }
             }
         }
     }
@@ -1065,8 +1245,58 @@ private fun BookmarksScreen(
     bookmarks: List<Bookmark>,
     onBack: () -> Unit,
     onOpen: (Bookmark) -> Unit,
-    onDelete: (Bookmark) -> Unit
+    onDelete: (Bookmark) -> Unit,
+    onEdit: (Bookmark, String, String) -> Unit
 ) {
+    var editing by remember { mutableStateOf<Bookmark?>(null) }
+    val editingBookmark = editing
+    if (editingBookmark != null) {
+        var editTitle by remember(editingBookmark) { mutableStateOf(editingBookmark.title) }
+        var editUrl by remember(editingBookmark) { mutableStateOf(editingBookmark.url) }
+        AlertDialog(
+            onDismissRequest = { editing = null },
+            title = { Text("编辑书签") },
+            text = {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    item {
+                        OutlinedTextField(
+                            value = editTitle,
+                            onValueChange = { editTitle = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("名称") },
+                            singleLine = true
+                        )
+                    }
+                    item {
+                        OutlinedTextField(
+                            value = editUrl,
+                            onValueChange = { editUrl = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("网址") },
+                            singleLine = true
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val resolved = resolveInput(editUrl)
+                        onEdit(
+                            editingBookmark,
+                            editTitle.ifBlank { resolved },
+                            resolved
+                        )
+                        editing = null
+                    },
+                    enabled = editUrl.isNotBlank()
+                ) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { editing = null }) { Text("取消") }
+            }
+        )
+    }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -1099,8 +1329,13 @@ private fun BookmarksScreen(
                     supportingContent = { Text(bookmark.url) },
                     leadingContent = { Icon(Icons.Filled.Bookmark, contentDescription = null) },
                     trailingContent = {
-                        IconButton(onClick = { onDelete(bookmark) }) {
-                            Icon(Icons.Filled.Delete, contentDescription = "删除书签")
+                        Row {
+                            IconButton(onClick = { editing = bookmark }) {
+                                Icon(Icons.Filled.Edit, contentDescription = "编辑书签")
+                            }
+                            IconButton(onClick = { onDelete(bookmark) }) {
+                                Icon(Icons.Filled.Delete, contentDescription = "删除书签")
+                            }
                         }
                     },
                     modifier = Modifier
@@ -1315,6 +1550,15 @@ private fun SettingsScreen(
     var adBlock by remember { mutableStateOf(store.adBlockEnabled) }
     var compatList by remember { mutableStateOf(store.loadCompatSites().sorted()) }
     var showCleared by remember { mutableStateOf(false) }
+    val settingsContext = LocalContext.current
+    val versionName = remember {
+        try {
+            settingsContext.packageManager
+                .getPackageInfo(settingsContext.packageName, 0).versionName ?: ""
+        } catch (t: Throwable) {
+            ""
+        }
+    }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -1490,7 +1734,7 @@ private fun SettingsScreen(
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text("关于 TuxunBrowse", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "版本 0.3.0。免费开源的双内核浏览器：火狐 GeckoView 与系统 WebView 由用户自选，" +
+                            "版本 $versionName。免费开源的双内核浏览器：火狐 GeckoView 与系统 WebView 由用户自选，" +
                                 "首页是应用自己的页面（搜索框、常用书签、最近历史），不拿任何网站的页面冒充首页。" +
                                 "两个内核的登录状态互不相通，这是双内核的固有代价。",
                             style = MaterialTheme.typography.bodyMedium

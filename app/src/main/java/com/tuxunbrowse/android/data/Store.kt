@@ -32,6 +32,9 @@ enum class SearchEngine(val id: String, val label: String, val template: String)
 data class Bookmark(val title: String, val url: String)
 data class HistoryItem(val title: String, val url: String, val time: Long)
 
+/** A normal (never incognito) tab saved so the session survives a restart. */
+data class SavedTab(val engine: Engine, val url: String, val desktopMode: Boolean)
+
 /** Internal URL of the native home page. Never handed to a web engine. */
 const val HOME_URL = "tuxun://home"
 
@@ -118,6 +121,39 @@ class Store(context: Context) {
 
     fun clearHistory() = prefs.edit().remove(KEY_HISTORY).apply()
 
+    fun saveTabs(list: List<SavedTab>, activeIndex: Int) {
+        val arr = JSONArray()
+        list.forEach {
+            arr.put(
+                JSONObject()
+                    .put("e", it.engine.id)
+                    .put("u", it.url)
+                    .put("d", it.desktopMode)
+            )
+        }
+        val obj = JSONObject().put("tabs", arr).put("active", activeIndex)
+        prefs.edit().putString(KEY_TABS, obj.toString()).apply()
+    }
+
+    fun loadTabs(): Pair<List<SavedTab>, Int> {
+        val raw = prefs.getString(KEY_TABS, null) ?: return emptyList<SavedTab>() to 0
+        return try {
+            val obj = JSONObject(raw)
+            val arr = obj.optJSONArray("tabs") ?: JSONArray()
+            val list = (0 until arr.length()).map {
+                val o = arr.getJSONObject(it)
+                SavedTab(
+                    Engine.fromId(o.optString("e")),
+                    o.optString("u"),
+                    o.optBoolean("d")
+                )
+            }.filter { it.url.isNotBlank() }
+            list to obj.optInt("active", 0)
+        } catch (e: Exception) {
+            emptyList<SavedTab>() to 0
+        }
+    }
+
     private fun <T> readList(key: String, parse: (JSONObject) -> T): List<T> {
         val raw = prefs.getString(key, null) ?: return emptyList()
         return try {
@@ -142,6 +178,7 @@ class Store(context: Context) {
         private const val KEY_COMPAT_SITES = "compat_sites"
         private const val KEY_BOOKMARKS = "bookmarks"
         private const val KEY_HISTORY = "history"
+        private const val KEY_TABS = "saved_tabs"
     }
 }
 
