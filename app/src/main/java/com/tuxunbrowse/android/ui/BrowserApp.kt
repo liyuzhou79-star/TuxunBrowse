@@ -78,6 +78,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -123,6 +124,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -143,6 +145,10 @@ import com.tuxunbrowse.android.data.pickLatestRelease
 import com.tuxunbrowse.android.data.SavedTab
 import com.tuxunbrowse.android.data.SearchEngine
 import com.tuxunbrowse.android.data.Store
+import com.tuxunbrowse.android.data.BackupData
+import com.tuxunbrowse.android.data.BackupSettings
+import com.tuxunbrowse.android.data.backupToJson
+import com.tuxunbrowse.android.data.parseBackup
 import com.tuxunbrowse.android.data.bookmarksFromHtml
 import com.tuxunbrowse.android.data.bookmarksFromJson
 import com.tuxunbrowse.android.data.bookmarksToJson
@@ -479,7 +485,8 @@ fun BrowserApp(
                 downloadWithMode(dlUrl, null) {
                     startSystemDownload(context, dlUrl, ua, cd, mt)
                 }
-            }
+            },
+            onBlockedRequest = { store.noteBlocked() }
         )
         created = tab
         return tab
@@ -811,6 +818,245 @@ fun BrowserApp(
             android.widget.Toast.makeText(
                 context, "导入失败，请换一个书签文件重试",
                 android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    // ---- Full backup / restore (settings page "备份与恢复") ----
+    // A parsed backup waiting for the user's overwrite confirmation.
+    var pendingBackup by remember { mutableStateOf<BackupData?>(null) }
+
+    fun exportBackup() {
+        val json = backupToJson(
+            bookmarks, history, readingList, speedDials,
+            BackupSettings(
+                mainEngine = store.mainEngine,
+                incognitoEngine = store.incognitoEngine,
+                searchEngine = store.searchEngine,
+                customSearchName = store.customSearchName,
+                customSearchTemplate = store.customSearchTemplate,
+                adBlockEnabled = store.adBlockEnabled,
+                downloadMode = store.downloadMode,
+                historyRetention = store.historyRetention,
+                textZoomPercent = store.textZoomPercent,
+                startupRestore = store.startupRestore
+            )
+        )
+        val fileName = "tuxunbrowse-backup.json"
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                val resolver = context.contentResolver
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName)
+                    put(android.provider.MediaStore.Downloads.MIME_TYPE, "application/json")
+                    put(
+                        android.provider.MediaStore.Downloads.RELATIVE_PATH,
+                        android.os.Environment.DIRECTORY_DOWNLOADS
+                    )
+                }
+                val dest = resolver.insert(
+                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+                ) ?: throw IllegalStateException("insert failed")
+                resolver.openOutputStream(dest)?.use {
+                    it.write(json.toByteArray(Charsets.UTF_8))
+                }
+            } else {
+                val dir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
+                    ?: context.filesDir
+                java.io.File(dir, fileName).writeText(json, Charsets.UTF_8)
+            }
+            android.widget.Toast.makeText(
+                context, "备份已导出到下载文件夹：$fileName",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        } catch (t: Throwable) {
+            android.widget.Toast.makeText(
+                context, "导出失败，请重试", android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    /**
+     * Merge a confirmed backup into the live data: lists merge with
+     * de-duplication (bookmarks/reading list/speed dials by URL,
+     * history by URL + time), settings overwrite. Returns the
+     * per-list added counts for the result toast.
+     */
+    fun applyBackup(data: BackupData): String {
+        var addedBookmarks = 0
+        data.bookmarks.distinctBy { it.url }.forEach { bm ->
+            if (bookmarks.none { it.url == bm.url }) {
+                bookmarks.add(bm)
+                addedBookmarks++
+            }
+        }
+        if (addedBookmarks > 0) store.saveBookmarks(bookmarks)
+        var addedHistory = 0
+        val historyKeys = history.map { it.url + "|" + it.time }.toHashSet()
+        data.history.forEach { item ->
+            if (historyKeys.add(item.url + "|" + item.time)) {
+                history.add(item)
+                addedHistory++
+            }
+        }
+        if (addedHistory > 0) {
+            val sorted = history.sortedByDescending { it.time }.take(500)
+            history.clear()
+            history.addAll(sorted)
+            store.saveHistory(history)
+        }
+        var addedReading = 0
+        data.readingList.distinctBy { it.url }.forEach { item ->
+            if (readingList.none { it.url == item.url }) {
+                readingList.add(item)
+                addedReading++
+            }
+        }
+        if (addedReading > 0) {
+            while (readingList.size > 200) {
+                readingList.removeAt(readingList.lastIndex)
+            }
+            store.saveReadingList(readingList)
+        }
+        var addedDials = 0
+        data.speedDials.distinctBy { it.url }.forEach { dial ->
+            if (speedDials.size < 12 && speedDials.none { it.url == dial.url }) {
+                speedDials.add(dial)
+                addedDials++
+            }
+        }
+        if (addedDials > 0) store.saveSpeedDials(speedDials)
+        val s = data.settings
+        s.mainEngine?.let { store.mainEngine = it }
+        s.incognitoEngine?.let { store.incognitoEngine = it }
+        s.searchEngine?.let { store.searchEngine = it }
+        s.customSearchName?.let { store.customSearchName = it }
+        s.customSearchTemplate?.let { store.customSearchTemplate = it }
+        s.adBlockEnabled?.let { store.adBlockEnabled = it }
+        s.downloadMode?.let { store.downloadMode = it }
+        s.historyRetention?.let { store.historyRetention = it }
+        s.startupRestore?.let { store.startupRestore = it }
+        s.textZoomPercent?.let { percent ->
+            store.textZoomPercent = percent
+            tabs.forEach { it.applyTextZoom(percent) }
+            GeckoHolder.applyFontSizeFactor(percent / 100f)
+        }
+        return "书签 +$addedBookmarks 条、历史 +$addedHistory 条、" +
+            "阅读列表 +$addedReading 条、快捷方式 +$addedDials 条"
+    }
+
+    // Backup import: system file picker. The file is validated by
+    // its format marker first — anything else is refused in plain
+    // language and no data is touched. A valid file still changes
+    // nothing until the user confirms the overwrite dialog.
+    val importBackupLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        try {
+            val raw = context.contentResolver.openInputStream(uri)
+                ?.bufferedReader()?.readText() ?: ""
+            val parsed = parseBackup(raw)
+            if (parsed == null) {
+                android.widget.Toast.makeText(
+                    context,
+                    "这个文件不是 TuxunBrowse 的备份文件，数据没有动",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            } else {
+                pendingBackup = parsed
+            }
+        } catch (t: Throwable) {
+            android.widget.Toast.makeText(
+                context, "这个文件读不出来，请换一个备份文件重试",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    // Backup import confirmation: lists merge (duplicates skipped),
+    // but settings are overwritten — so the dialog names exactly
+    // which settings would change before anything is written.
+    val backupToConfirm = pendingBackup
+    if (backupToConfirm != null) {
+        val overwrite = backupToConfirm.settings.overwriteSummary()
+        AlertDialog(
+            onDismissRequest = { pendingBackup = null },
+            title = { Text("导入这个备份？") },
+            text = {
+                Text(
+                    "备份里的书签 ${backupToConfirm.bookmarks.size} 条、" +
+                        "历史 ${backupToConfirm.history.size} 条、" +
+                        "阅读列表 ${backupToConfirm.readingList.size} 条、" +
+                        "快捷方式 ${backupToConfirm.speedDials.size} 条会合并进来，" +
+                        "和现有的重复的会跳过，不会删掉现有的任何东西。" +
+                        if (overwrite.isNotEmpty()) {
+                            "\n\n下面这些设置会被备份里的值覆盖：\n" +
+                                overwrite.joinToString("\n") { "· $it" }
+                        } else {
+                            ""
+                        }
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    pendingBackup = null
+                    val counts = applyBackup(backupToConfirm)
+                    android.widget.Toast.makeText(
+                        context,
+                        "导入完成：$counts" +
+                            if (overwrite.isNotEmpty()) "，设置已按备份更新" else "",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }) { Text("导入") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingBackup = null }) { Text("取消") }
+            }
+        )
+    }
+
+    /**
+     * Clear one site's data: Gecko's per-host clear plus this app's
+     * own history entries for the host (subdomains included). The
+     * system WebView has no per-site API, so WebView data is NOT
+     * touched here — callers say so in their copy.
+     */
+    fun clearSiteData(host: String) {
+        GeckoHolder.clearDataFromHost(host)
+        val before = history.size
+        history.removeAll {
+            val h = hostOf(it.url)
+            h == host || (h != null && h.endsWith(".$host"))
+        }
+        if (history.size != before) store.saveHistory(history)
+    }
+
+    /**
+     * The site-info sheet's compat toggle: flip this host's compat
+     * memory and move the current tab to the matching engine through
+     * the usual tab-replacement path.
+     */
+    fun toggleSiteCompat() {
+        val tab = activeTab() ?: return
+        val host = hostOf(tab.url) ?: return
+        if (isCompatHost(host, compatSites.toSet())) {
+            removeCompatSite(host)
+            if (tab.engine == Engine.WEBVIEW) {
+                replaceTabEngine(tab, Engine.GECKO)
+            }
+            android.widget.Toast.makeText(
+                context, "已取消 $host 的兼容模式",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+        } else {
+            addCompatSite(host)
+            if (tab.engine == Engine.GECKO) {
+                replaceTabEngine(tab, Engine.WEBVIEW)
+            }
+            android.widget.Toast.makeText(
+                context, "已记住：$host 以后用 WebView 打开",
+                android.widget.Toast.LENGTH_SHORT
             ).show()
         }
     }
@@ -1196,6 +1442,8 @@ fun BrowserApp(
                     val tab = activeTab() ?: return@BrowserScreen
                     switchTabEngine(tab, engine, rememberSite)
                 },
+                onToggleSiteCompat = { toggleSiteCompat() },
+                onClearSiteData = { host -> clearSiteData(host) },
                 activeDesktopMode = current?.desktopMode ?: false,
                 onToggleDesktopMode = { enabled ->
                     val tab = activeTab() ?: return@BrowserScreen
@@ -1376,6 +1624,10 @@ fun BrowserApp(
                 importBookmarksLauncher.launch(
                     arrayOf("application/json", "text/plain", "text/html")
                 )
+            },
+            onDeleteMany = { selected ->
+                bookmarks.removeAll(selected)
+                store.saveBookmarks(bookmarks)
             }
         )
 
@@ -1403,6 +1655,10 @@ fun BrowserApp(
             },
             onRemoveCompatSite = { removeCompatSite(it) },
             onOpenClearData = { screen = Screen.CLEAR_DATA },
+            onExportBackup = { exportBackup() },
+            onImportBackup = {
+                importBackupLauncher.launch(arrayOf("application/json", "text/plain"))
+            },
             onTextZoomChange = { percent ->
                 tabs.forEach { it.applyTextZoom(percent) }
                 GeckoHolder.applyFontSizeFactor(percent / 100f)
@@ -1429,15 +1685,7 @@ fun BrowserApp(
                     GeckoHolder.clearSiteData()
                 }
             },
-            onClearSite = { host ->
-                GeckoHolder.clearDataFromHost(host)
-                val before = history.size
-                history.removeAll {
-                    val h = hostOf(it.url)
-                    h == host || (h != null && h.endsWith(".$host"))
-                }
-                if (history.size != before) store.saveHistory(history)
-            }
+            onClearSite = { host -> clearSiteData(host) }
         )
 
         Screen.DOWNLOADS -> DownloadsScreen(
@@ -2542,6 +2790,8 @@ private fun BrowserScreen(
     onGoHome: () -> Unit,
     onReloadPage: () -> Unit,
     onSwitchEngine: (Engine, Boolean) -> Unit,
+    onToggleSiteCompat: () -> Unit = {},
+    onClearSiteData: (String) -> Unit = {},
     activeDesktopMode: Boolean,
     onToggleDesktopMode: (Boolean) -> Unit,
     onFind: (String, Boolean) -> Unit,
@@ -2598,6 +2848,8 @@ private fun BrowserScreen(
         }
     }
     var showRecentClosed by remember { mutableStateOf(false) }
+    var showSiteInfo by remember { mutableStateOf(false) }
+    var showClearSiteConfirm by remember { mutableStateOf(false) }
     var showCloseOthersConfirm by remember { mutableStateOf(false) }
     if (showCloseOthersConfirm) {
         AlertDialog(
@@ -2991,13 +3243,19 @@ private fun BrowserScreen(
                         Text("输入网址或搜索", maxLines = 1, softWrap = false)
                     },
                     leadingIcon = {
-                        when {
-                            activeTab == null || activeTab.isHome ->
-                                Icon(Icons.Filled.Search, contentDescription = null)
-                            activeTab.url.startsWith("https://") ->
-                                Icon(Icons.Filled.Lock, contentDescription = "安全连接")
-                            else ->
-                                Icon(Icons.Filled.Warning, contentDescription = "非安全连接")
+                        // Tapping the status icon opens the site-info
+                        // sheet (for the home page it shows the
+                        // internal-page info, so the icon always does
+                        // something when tapped).
+                        IconButton(onClick = { showSiteInfo = true }) {
+                            when {
+                                activeTab == null || activeTab.isHome ->
+                                    Icon(Icons.Filled.Search, contentDescription = "页面信息")
+                                activeTab.url.startsWith("https://") ->
+                                    Icon(Icons.Filled.Lock, contentDescription = "安全连接，点按看网站信息")
+                                else ->
+                                    Icon(Icons.Filled.Warning, contentDescription = "非安全连接，点按看网站信息")
+                            }
                         }
                     },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
@@ -3248,6 +3506,225 @@ private fun BrowserScreen(
                             onGoHome = onGoHome
                         )
                     else -> TabContent(tab = tab, modifier = Modifier.fillMaxSize())
+                }
+            }
+        }
+    }
+
+    // ---- Site-info sheet (address-bar status icon) ----
+    val siteTab = activeTab
+    val siteHost = siteTab?.let { hostOf(it.url) }
+    val siteSheetState = rememberModalBottomSheetState()
+    if (showClearSiteConfirm && siteHost != null) {
+        AlertDialog(
+            onDismissRequest = { showClearSiteConfirm = false },
+            title = { Text("清除这个网站的数据？") },
+            text = {
+                Text(
+                    "会清掉火狐里 $siteHost 的 Cookie 和网站数据，并删掉本机保存的" +
+                        "这个网站的历史记录。注意：WebView 的网站数据没法按网站单独清" +
+                        "（系统 WebView 没给这个口子），这次不会清 WebView 侧的数据；" +
+                        "要清 WebView 的数据只能去设置里的「清除浏览数据」整清。"
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showClearSiteConfirm = false
+                    onClearSiteData(siteHost)
+                    android.widget.Toast.makeText(
+                        context, "已清除 $siteHost 在火狐里的数据和本机历史",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }) { Text("清除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearSiteConfirm = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+    if (showSiteInfo) {
+        ModalBottomSheet(
+            onDismissRequest = { showSiteInfo = false },
+            sheetState = siteSheetState
+        ) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 640.dp)
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                item {
+                    Text("网站信息", style = MaterialTheme.typography.titleLarge)
+                }
+                if (siteTab == null || siteTab.isHome) {
+                    item {
+                        ListItem(
+                            headlineContent = { Text("TuxunBrowse 首页") },
+                            supportingContent = {
+                                Text("这是应用自己的内部页面，不是一个网站，没有网络连接，也没有网站数据可清。")
+                            },
+                            leadingContent = {
+                                Icon(Icons.Filled.Home, contentDescription = null)
+                            }
+                        )
+                    }
+                    if (siteTab != null) {
+                        item {
+                            ListItem(
+                                headlineContent = { Text("当前标签内核") },
+                                supportingContent = { Text(siteTab.engine.label) },
+                                leadingContent = {
+                                    Icon(Icons.Filled.Language, contentDescription = null)
+                                }
+                            )
+                        }
+                    }
+                } else {
+                    item {
+                        ListItem(
+                            headlineContent = { Text(siteHost ?: siteTab.url) },
+                            supportingContent = { Text("域名") },
+                            leadingContent = {
+                                Icon(Icons.Filled.Language, contentDescription = null)
+                            }
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("完整网址") },
+                            supportingContent = { Text(siteTab.url) },
+                            leadingContent = {
+                                Icon(Icons.Filled.OpenInNew, contentDescription = null)
+                            }
+                        )
+                    }
+                    item {
+                        if (siteTab.url.startsWith("https://")) {
+                            ListItem(
+                                headlineContent = { Text("连接安全") },
+                                supportingContent = {
+                                    Text("这个网站用了加密连接，内容在路上传输时不容易被别人看到或改掉。")
+                                },
+                                leadingContent = {
+                                    Icon(Icons.Filled.Lock, contentDescription = null)
+                                }
+                            )
+                        } else {
+                            ListItem(
+                                headlineContent = { Text("连接不安全") },
+                                supportingContent = {
+                                    Text("这个网站没有加密连接，在这里输入的密码等内容可能被别人看到，重要的事情别在这个网站上做。")
+                                },
+                                leadingContent = {
+                                    Icon(Icons.Filled.Warning, contentDescription = null)
+                                }
+                            )
+                        }
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("当前标签内核") },
+                            supportingContent = { Text(siteTab.engine.label) },
+                            leadingContent = {
+                                Icon(Icons.Filled.SwapHoriz, contentDescription = null)
+                            }
+                        )
+                    }
+                    item {
+                        if (siteTab.engine == Engine.WEBVIEW) {
+                            ListItem(
+                                headlineContent = { Text("本页已拦截") },
+                                supportingContent = {
+                                    Text("这个页面已拦下 ${siteTab.blockedCount} 个广告/跟踪请求。")
+                                },
+                                leadingContent = {
+                                    Icon(Icons.Filled.VisibilityOff, contentDescription = null)
+                                }
+                            )
+                        } else {
+                            ListItem(
+                                headlineContent = { Text("本页已拦截") },
+                                supportingContent = {
+                                    Text("火狐用内核自带的拦截，没有个数统计，所以这里不显示数字。")
+                                },
+                                leadingContent = {
+                                    Icon(Icons.Filled.VisibilityOff, contentDescription = null)
+                                }
+                            )
+                        }
+                    }
+                    if (siteTab.engine == Engine.WEBVIEW &&
+                        (siteTab.certIssuedTo.isNotBlank() || siteTab.certIssuedBy.isNotBlank())
+                    ) {
+                        item {
+                            ListItem(
+                                headlineContent = { Text("证书") },
+                                supportingContent = {
+                                    Text(
+                                        listOfNotNull(
+                                            siteTab.certIssuedTo.takeIf { it.isNotBlank() }
+                                                ?.let { "颁发给：$it" },
+                                            siteTab.certIssuedBy.takeIf { it.isNotBlank() }
+                                                ?.let { "颁发者：$it" }
+                                        ).joinToString("\n")
+                                    )
+                                },
+                                leadingContent = {
+                                    Icon(Icons.Filled.Lock, contentDescription = null)
+                                }
+                            )
+                        }
+                    }
+                    item {
+                        Button(
+                            onClick = {
+                                showSiteInfo = false
+                                onToggleSiteCompat()
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp)
+                        ) {
+                            Text(
+                                if (currentHostIsCompat) {
+                                    "取消本站兼容模式"
+                                } else {
+                                    "本站用兼容模式打开"
+                                }
+                            )
+                        }
+                    }
+                    item {
+                        OutlinedButton(
+                            onClick = {
+                                showSiteInfo = false
+                                showClearSiteConfirm = true
+                            },
+                            enabled = siteHost != null,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("清除本站数据")
+                        }
+                    }
+                    item {
+                        TextButton(
+                            onClick = {
+                                clipboardManager.setText(AnnotatedString(siteTab.url))
+                                showSiteInfo = false
+                                android.widget.Toast.makeText(
+                                    context, "网址已复制",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("复制网址")
+                        }
+                    }
                 }
             }
         }
@@ -3665,7 +4142,8 @@ private fun BookmarksScreen(
     onDelete: (Bookmark) -> Unit,
     onEdit: (Bookmark, String, String) -> Unit,
     onExport: () -> Unit,
-    onImport: () -> Unit
+    onImport: () -> Unit,
+    onDeleteMany: (List<Bookmark>) -> Unit = {}
 ) {
     var editing by remember { mutableStateOf<Bookmark?>(null) }
     val editingBookmark = editing
@@ -3725,21 +4203,75 @@ private fun BookmarksScreen(
                 it.url.contains(bookmarkQuery, ignoreCase = true)
         }
     }
+    // Batch-manage mode: checkboxes on every row, a delete-selected
+    // button on top, and clear ways out (back key, the close icon
+    // and the "完成" button all leave the mode).
+    var batchMode by remember { mutableStateOf(false) }
+    var selectedUrls by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showBatchDeleteConfirm by remember { mutableStateOf(false) }
+    fun exitBatchMode() {
+        batchMode = false
+        selectedUrls = emptySet()
+    }
+    BackHandler(enabled = batchMode) { exitBatchMode() }
+    if (showBatchDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showBatchDeleteConfirm = false },
+            title = { Text("删除所选书签？") },
+            text = {
+                Text("选中的 ${selectedUrls.size} 条书签会被删掉，没法恢复。")
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showBatchDeleteConfirm = false
+                    onDeleteMany(bookmarks.filter { it.url in selectedUrls })
+                    exitBatchMode()
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBatchDeleteConfirm = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("书签") },
+                title = {
+                    Text(if (batchMode) "已选 ${selectedUrls.size} 条" else "书签")
+                },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                    if (batchMode) {
+                        IconButton(onClick = { exitBatchMode() }) {
+                            Icon(Icons.Filled.Close, contentDescription = "退出批量管理")
+                        }
+                    } else {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                        }
                     }
                 },
                 actions = {
-                    IconButton(onClick = onImport) {
-                        Icon(Icons.Filled.FileDownload, contentDescription = "导入书签")
-                    }
-                    IconButton(onClick = onExport) {
-                        Icon(Icons.Filled.FileUpload, contentDescription = "导出书签")
+                    if (batchMode) {
+                        TextButton(onClick = { exitBatchMode() }) {
+                            Text("完成")
+                        }
+                    } else {
+                        if (bookmarks.isNotEmpty()) {
+                            TextButton(onClick = {
+                                selectedUrls = emptySet()
+                                batchMode = true
+                            }) {
+                                Text("批量管理")
+                            }
+                        }
+                        IconButton(onClick = onImport) {
+                            Icon(Icons.Filled.FileDownload, contentDescription = "导入书签")
+                        }
+                        IconButton(onClick = onExport) {
+                            Icon(Icons.Filled.FileUpload, contentDescription = "导出书签")
+                        }
                     }
                 }
             )
@@ -3778,7 +4310,21 @@ private fun BookmarksScreen(
                     }
                 }
             }
+            if (batchMode && visibleBookmarks.isNotEmpty()) {
+                item {
+                    Button(
+                        onClick = { showBatchDeleteConfirm = true },
+                        enabled = selectedUrls.isNotEmpty(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                    ) {
+                        Text("删除所选（${selectedUrls.size}）")
+                    }
+                }
+            }
             items(visibleBookmarks, key = { it.url }) { bookmark ->
+                val selected = bookmark.url in selectedUrls
                 ListItem(
                     headlineContent = { Text(bookmark.title) },
                     supportingContent = {
@@ -3790,20 +4336,49 @@ private fun BookmarksScreen(
                             }
                         )
                     },
-                    leadingContent = { Icon(Icons.Filled.Bookmark, contentDescription = null) },
-                    trailingContent = {
-                        Row {
-                            IconButton(onClick = { editing = bookmark }) {
-                                Icon(Icons.Filled.Edit, contentDescription = "编辑书签")
-                            }
-                            IconButton(onClick = { onDelete(bookmark) }) {
-                                Icon(Icons.Filled.Delete, contentDescription = "删除书签")
+                    leadingContent = {
+                        if (batchMode) {
+                            Checkbox(
+                                checked = selected,
+                                onCheckedChange = { checked ->
+                                    selectedUrls = if (checked) {
+                                        selectedUrls + bookmark.url
+                                    } else {
+                                        selectedUrls - bookmark.url
+                                    }
+                                }
+                            )
+                        } else {
+                            Icon(Icons.Filled.Bookmark, contentDescription = null)
+                        }
+                    },
+                    trailingContent = if (batchMode) {
+                        null
+                    } else {
+                        {
+                            Row {
+                                IconButton(onClick = { editing = bookmark }) {
+                                    Icon(Icons.Filled.Edit, contentDescription = "编辑书签")
+                                }
+                                IconButton(onClick = { onDelete(bookmark) }) {
+                                    Icon(Icons.Filled.Delete, contentDescription = "删除书签")
+                                }
                             }
                         }
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { onOpen(bookmark) }
+                        .clickable {
+                            if (batchMode) {
+                                selectedUrls = if (selected) {
+                                    selectedUrls - bookmark.url
+                                } else {
+                                    selectedUrls + bookmark.url
+                                }
+                            } else {
+                                onOpen(bookmark)
+                            }
+                        }
                 )
                 HorizontalDivider()
             }
@@ -4619,6 +5194,8 @@ private fun SettingsScreen(
     onClearHistory: () -> Unit,
     onRemoveCompatSite: (String) -> Unit,
     onOpenClearData: () -> Unit,
+    onExportBackup: () -> Unit = {},
+    onImportBackup: () -> Unit = {},
     onTextZoomChange: (Int) -> Unit,
     onWebDarkChange: (Boolean) -> Unit
 ) {
@@ -4630,6 +5207,7 @@ private fun SettingsScreen(
     var customSearchTemplate by remember { mutableStateOf(store.customSearchTemplate) }
     var customSearchError by remember { mutableStateOf<String?>(null) }
     var adBlock by remember { mutableStateOf(store.adBlockEnabled) }
+    var totalBlocked by remember { mutableStateOf(store.totalBlocked) }
     var textZoom by remember { mutableStateOf(store.textZoomPercent) }
     var webDark by remember { mutableStateOf(store.webDarkMode) }
     var startupRestore by remember { mutableStateOf(store.startupRestore) }
@@ -4918,6 +5496,36 @@ private fun SettingsScreen(
                 )
             }
             item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "累计已拦截 $totalBlocked 个（WebView 标签统计）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = {
+                        store.resetTotalBlocked()
+                        totalBlocked = 0L
+                        android.widget.Toast.makeText(
+                            settingsContext, "累计拦截数已清零",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    }) {
+                        Text("清零")
+                    }
+                }
+            }
+            item {
+                Text(
+                    "这个累计数只统计 WebView 标签拦下的请求；火狐是内核级拦截，没法计数，不算在里面。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            item {
                 Text("下载", style = MaterialTheme.typography.titleMedium)
                 Text(
                     "在网页里点到下载链接、或者用资源嗅探下载文件时，文件交给谁来下。" +
@@ -5147,6 +5755,31 @@ private fun SettingsScreen(
             }
             if (showCleared) {
                 item { Text("历史记录已清除。") }
+            }
+            item {
+                Text("备份与恢复", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "把书签、历史、阅读列表、首页快捷方式和主要设置存成一个备份文件，" +
+                        "放在下载文件夹里；换手机或重装后，用导入把它们合并回来" +
+                        "（重复的会自动跳过，设置会被备份里的覆盖，导入前会先让你确认）。",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            item {
+                OutlinedButton(
+                    onClick = onExportBackup,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("导出备份到下载文件夹")
+                }
+            }
+            item {
+                OutlinedButton(
+                    onClick = onImportBackup,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("从备份文件导入")
+                }
             }
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {

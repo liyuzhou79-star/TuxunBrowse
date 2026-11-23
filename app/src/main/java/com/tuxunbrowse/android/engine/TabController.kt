@@ -151,6 +151,19 @@ data class HttpAuthRequestInfo(
 )
 
 /** Plain-language description of a WebView SSL error's primary problem. */
+/**
+ * Pull the common name (CN) out of an X.500 distinguished name such
+ * as "CN=example.com, O=Some Org, C=US". Falls back to the whole DN
+ * when there is no CN part; null/blank stays empty.
+ */
+private fun certCommonName(dn: String?): String {
+    if (dn.isNullOrBlank()) return ""
+    val cn = dn.split(",").map { it.trim() }
+        .firstOrNull { it.startsWith("CN=", ignoreCase = true) }
+        ?.substringAfter("=")?.trim()
+    return cn?.ifBlank { dn.trim() } ?: dn.trim()
+}
+
 private fun sslErrorDescription(primaryError: Int): String = when (primaryError) {
     android.net.http.SslError.SSL_EXPIRED -> "这个网站的证书已经过期了"
     android.net.http.SslError.SSL_NOTYETVALID -> "这个网站的证书还没到生效时间"
@@ -351,7 +364,11 @@ class BrowserTab(
     ) -> Unit = { _, _, respond -> respond(false) },
     private val onUrlDownload: (
         String, String?, String?, String?
-    ) -> Unit = { _, _, _, _ -> }
+    ) -> Unit = { _, _, _, _ -> },
+    // Fired from the exact same code path that increments the
+    // per-page blocked counter, so the lifetime total in the Store
+    // can never drift from the per-page numbers.
+    private val onBlockedRequest: () -> Unit = {}
 ) {
     val id: Int = nextTabId++
     var url by mutableStateOf(startUrl)
@@ -373,6 +390,16 @@ class BrowserTab(
      * increments are posted to the WebView's (main) thread.
      */
     var blockedCount by mutableIntStateOf(0)
+
+    /**
+     * Certificate facts of the current page (WebView tabs only, read
+     * from the WebView's SslCertificate after a successful https
+     * load): who the certificate was issued to and who issued it.
+     * Empty when there is no certificate to show — the site-info
+     * sheet then simply omits the row instead of inventing one.
+     */
+    var certIssuedTo by mutableStateOf("")
+    var certIssuedBy by mutableStateOf("")
 
     /** Latest network-level load failure, or null when the page is fine. */
     var loadError by mutableStateOf<TabLoadError?>(null)
@@ -419,6 +446,8 @@ class BrowserTab(
     fun load(target: String) {
         loadError = null
         blockedCount = 0
+        certIssuedTo = ""
+        certIssuedBy = ""
         url = target
         // The native home page is rendered by the app itself; the web
         // engines must never try to load its internal URL.
@@ -679,7 +708,12 @@ class BrowserTab(
                 return if (isAdBlockEnabled() && AdBlocker.isAdRequest(target)) {
                     // Count it on the main thread: this callback runs
                     // on a background thread, the counter is UI state.
-                    wv.post { blockedCount++ }
+                    // The lifetime total rides the very same post, so
+                    // the two counters are one count, not two.
+                    wv.post {
+                        blockedCount++
+                        onBlockedRequest()
+                    }
                     android.webkit.WebResourceResponse(
                         "text/plain", "utf-8",
                         java.io.ByteArrayInputStream(ByteArray(0))
@@ -699,6 +733,9 @@ class BrowserTab(
                 loadError = null
                 // The blocked-request counter belongs to one page.
                 blockedCount = 0
+                // The old page's certificate no longer applies.
+                certIssuedTo = ""
+                certIssuedBy = ""
             }
 
             override fun onReceivedError(
@@ -805,6 +842,20 @@ class BrowserTab(
                 canGoBack = wv.canGoBack()
                 canGoForward = wv.canGoForward()
                 if (!incognito && u.startsWith("http")) onVisit(title, u)
+                // Certificate facts for the site-info sheet: only
+                // what the platform actually reports (the CN out of
+                // the two DN strings); anything missing stays empty
+                // and the sheet hides the row.
+                if (u.startsWith("https://")) {
+                    try {
+                        val cert = wv.certificate
+                        certIssuedTo = certCommonName(cert?.issuedToDN)
+                        certIssuedBy = certCommonName(cert?.issuedByDN)
+                    } catch (t: Throwable) {
+                        certIssuedTo = ""
+                        certIssuedBy = ""
+                    }
+                }
                 // One thumbnail capture per finished load; the other
                 // capture point is the tab being switched away from.
                 captureThumbnail()

@@ -190,6 +190,47 @@ class Store(context: Context) {
         get() = HistoryRetention.fromId(prefs.getString(KEY_HISTORY_RETENTION, null))
         set(value) = prefs.edit().putString(KEY_HISTORY_RETENTION, value.id).apply()
 
+    // ---- Lifetime blocked-request counter (WebView tabs only) ----
+    // shouldInterceptRequest can fire dozens of times per page, so
+    // hits are accumulated in memory and flushed to preferences only
+    // every BLOCKED_FLUSH_EVERY hits or when a few seconds have
+    // passed — never one preferences write per blocked request.
+    private var totalBlockedMemory: Long = -1L
+    private var blockedPendingFlush: Int = 0
+    private var blockedLastFlushAt: Long = 0L
+
+    /** Lifetime total of blocked requests (WebView tabs only). */
+    val totalBlocked: Long
+        get() {
+            if (totalBlockedMemory < 0) {
+                totalBlockedMemory = prefs.getLong(KEY_TOTAL_BLOCKED, 0L)
+            }
+            return totalBlockedMemory
+        }
+
+    /** Count one more blocked request (same call path as the per-page count). */
+    fun noteBlocked() {
+        val now = System.currentTimeMillis()
+        val updated = totalBlocked + 1
+        totalBlockedMemory = updated
+        blockedPendingFlush++
+        if (blockedPendingFlush >= BLOCKED_FLUSH_EVERY ||
+            now - blockedLastFlushAt >= BLOCKED_FLUSH_MS
+        ) {
+            blockedPendingFlush = 0
+            blockedLastFlushAt = now
+            prefs.edit().putLong(KEY_TOTAL_BLOCKED, updated).apply()
+        }
+    }
+
+    /** Reset the lifetime blocked counter to zero, effective at once. */
+    fun resetTotalBlocked() {
+        totalBlockedMemory = 0L
+        blockedPendingFlush = 0
+        blockedLastFlushAt = System.currentTimeMillis()
+        prefs.edit().putLong(KEY_TOTAL_BLOCKED, 0L).apply()
+    }
+
     fun loadCompatSites(): MutableSet<String> {
         val raw = prefs.getString(KEY_COMPAT_SITES, null) ?: return mutableSetOf()
         return try {
@@ -326,7 +367,199 @@ class Store(context: Context) {
         private const val KEY_DOWNLOAD_MODE = "download_mode"
         private const val KEY_HISTORY_RETENTION = "history_retention"
         private const val KEY_SPEED_DIALS = "speed_dials"
+        private const val KEY_TOTAL_BLOCKED = "total_blocked"
+        private const val BLOCKED_FLUSH_EVERY = 20
+        private const val BLOCKED_FLUSH_MS = 5_000L
     }
+}
+
+/** Format marker written into every full-backup file. */
+const val BACKUP_FORMAT = "tuxunbrowse-backup"
+
+/** Backup format version (bump when the layout changes). */
+const val BACKUP_FORMAT_VERSION = 1
+
+/** The settings slice of a full backup. All fields optional on read. */
+data class BackupSettings(
+    val mainEngine: Engine? = null,
+    val incognitoEngine: Engine? = null,
+    val searchEngine: SearchEngine? = null,
+    val customSearchName: String? = null,
+    val customSearchTemplate: String? = null,
+    val adBlockEnabled: Boolean? = null,
+    val downloadMode: DownloadMode? = null,
+    val historyRetention: HistoryRetention? = null,
+    val textZoomPercent: Int? = null,
+    val startupRestore: Boolean? = null
+) {
+    /** Plain-language list of what applying these settings would overwrite. */
+    fun overwriteSummary(): List<String> {
+        val out = mutableListOf<String>()
+        if (mainEngine != null) out.add("主内核（默认用哪个内核打开网页）")
+        if (incognitoEngine != null) out.add("无痕内核")
+        if (searchEngine != null) out.add("搜索引擎（含自定义搜索引擎的名称和模板）")
+        if (adBlockEnabled != null) out.add("广告拦截开关")
+        if (downloadMode != null) out.add("下载方式")
+        if (historyRetention != null) out.add("历史保留期限")
+        if (textZoomPercent != null) out.add("网页文字大小")
+        if (startupRestore != null) out.add("启动时恢复标签页的开关")
+        return out
+    }
+}
+
+/** A parsed full-backup file: the four lists plus the settings slice. */
+data class BackupData(
+    val bookmarks: List<Bookmark>,
+    val history: List<HistoryItem>,
+    val readingList: List<ReadingItem>,
+    val speedDials: List<SpeedDial>,
+    val settings: BackupSettings
+)
+
+/** Serialize a full backup (lists + main settings) to one JSON text. */
+fun backupToJson(
+    bookmarks: List<Bookmark>,
+    history: List<HistoryItem>,
+    readingList: List<ReadingItem>,
+    speedDials: List<SpeedDial>,
+    settings: BackupSettings
+): String {
+    val bookmarkArr = JSONArray()
+    bookmarks.forEach {
+        bookmarkArr.put(
+            JSONObject().put("title", it.title).put("url", it.url)
+                .put("pinned", it.pinned)
+        )
+    }
+    val historyArr = JSONArray()
+    history.forEach {
+        historyArr.put(
+            JSONObject().put("title", it.title).put("url", it.url)
+                .put("time", it.time)
+        )
+    }
+    val readingArr = JSONArray()
+    readingList.forEach {
+        readingArr.put(
+            JSONObject().put("title", it.title).put("url", it.url)
+                .put("time", it.time).put("read", it.read)
+        )
+    }
+    val dialArr = JSONArray()
+    speedDials.forEach {
+        dialArr.put(JSONObject().put("title", it.title).put("url", it.url))
+    }
+    val settingsObj = JSONObject()
+    settings.mainEngine?.let { settingsObj.put("mainEngine", it.id) }
+    settings.incognitoEngine?.let { settingsObj.put("incognitoEngine", it.id) }
+    settings.searchEngine?.let { settingsObj.put("searchEngine", it.id) }
+    settings.customSearchName?.let { settingsObj.put("customSearchName", it) }
+    settings.customSearchTemplate?.let {
+        settingsObj.put("customSearchTemplate", it)
+    }
+    settings.adBlockEnabled?.let { settingsObj.put("adBlockEnabled", it) }
+    settings.downloadMode?.let { settingsObj.put("downloadMode", it.id) }
+    settings.historyRetention?.let { settingsObj.put("historyRetention", it.id) }
+    settings.textZoomPercent?.let { settingsObj.put("textZoomPercent", it) }
+    settings.startupRestore?.let { settingsObj.put("startupRestore", it) }
+    return JSONObject()
+        .put("format", BACKUP_FORMAT)
+        .put("version", BACKUP_FORMAT_VERSION)
+        .put("bookmarks", bookmarkArr)
+        .put("history", historyArr)
+        .put("readingList", readingArr)
+        .put("speedDials", dialArr)
+        .put("settings", settingsObj)
+        .toString(2)
+}
+
+/**
+ * Parse a full-backup file. Returns null when the text is not JSON or
+ * does not carry this app's backup format marker — the caller must
+ * then refuse to touch any data. Unknown/missing pieces inside a
+ * valid backup simply come back empty/absent.
+ */
+fun parseBackup(raw: String): BackupData? {
+    val obj = try {
+        JSONObject(raw.trim())
+    } catch (e: Exception) {
+        return null
+    }
+    if (obj.optString("format") != BACKUP_FORMAT) return null
+    fun <T> readArr(name: String, parse: (JSONObject) -> T?): List<T> {
+        val arr = obj.optJSONArray(name) ?: return emptyList()
+        return (0 until arr.length()).mapNotNull {
+            arr.optJSONObject(it)?.let(parse)
+        }
+    }
+    val bookmarks = readArr("bookmarks") { o ->
+        val url = o.optString("url")
+        if (url.isBlank()) null else Bookmark(
+            o.optString("title").ifBlank { url }, url, o.optBoolean("pinned")
+        )
+    }
+    val history = readArr("history") { o ->
+        val url = o.optString("url")
+        if (url.isBlank()) null else HistoryItem(
+            o.optString("title").ifBlank { url }, url, o.optLong("time")
+        )
+    }
+    val reading = readArr("readingList") { o ->
+        val url = o.optString("url")
+        if (url.isBlank()) null else ReadingItem(
+            o.optString("title").ifBlank { url }, url,
+            o.optLong("time"), o.optBoolean("read")
+        )
+    }
+    val dials = readArr("speedDials") { o ->
+        val url = o.optString("url")
+        if (url.isBlank()) null else SpeedDial(
+            o.optString("title").ifBlank { url }, url
+        )
+    }
+    val s = obj.optJSONObject("settings")
+    fun engineOf(key: String): Engine? =
+        s?.optString(key)?.takeIf { it.isNotBlank() }?.let { Engine.fromId(it) }
+    val settings = if (s == null) {
+        BackupSettings()
+    } else {
+        BackupSettings(
+            mainEngine = engineOf("mainEngine"),
+            incognitoEngine = engineOf("incognitoEngine"),
+            searchEngine = s.optString("searchEngine")
+                .takeIf { it.isNotBlank() }?.let { SearchEngine.fromId(it) },
+            customSearchName = if (s.has("customSearchName")) {
+                s.optString("customSearchName")
+            } else {
+                null
+            },
+            customSearchTemplate = if (s.has("customSearchTemplate")) {
+                s.optString("customSearchTemplate")
+            } else {
+                null
+            },
+            adBlockEnabled = if (s.has("adBlockEnabled")) {
+                s.optBoolean("adBlockEnabled")
+            } else {
+                null
+            },
+            downloadMode = s.optString("downloadMode")
+                .takeIf { it.isNotBlank() }?.let { DownloadMode.fromId(it) },
+            historyRetention = s.optString("historyRetention")
+                .takeIf { it.isNotBlank() }?.let { HistoryRetention.fromId(it) },
+            textZoomPercent = if (s.has("textZoomPercent")) {
+                s.optInt("textZoomPercent")
+            } else {
+                null
+            },
+            startupRestore = if (s.has("startupRestore")) {
+                s.optBoolean("startupRestore")
+            } else {
+                null
+            }
+        )
+    }
+    return BackupData(bookmarks, history, reading, dials, settings)
 }
 
 /** Serialize bookmarks for export; the format is a plain JSON object. */
