@@ -181,41 +181,70 @@ class Store(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("tuxunbrowse", Context.MODE_PRIVATE)
 
+    // SharedPreferences throws ClassCastException when a stored value
+    // has the wrong type (damaged or half-migrated data). Every read
+    // in this class goes through these guards so corrupted data falls
+    // back to the default instead of crashing — several of these
+    // getters run during startup, where a crash would be fatal.
+    private fun safeString(key: String, def: String?): String? = try {
+        prefs.getString(key, def)
+    } catch (e: Exception) {
+        def
+    }
+
+    private fun safeBoolean(key: String, def: Boolean): Boolean = try {
+        prefs.getBoolean(key, def)
+    } catch (e: Exception) {
+        def
+    }
+
+    private fun safeInt(key: String, def: Int): Int = try {
+        prefs.getInt(key, def)
+    } catch (e: Exception) {
+        def
+    }
+
+    private fun safeLong(key: String, def: Long): Long = try {
+        prefs.getLong(key, def)
+    } catch (e: Exception) {
+        def
+    }
+
     val mainEngineChosen: Boolean
         get() = prefs.contains(KEY_MAIN_ENGINE)
 
     var mainEngine: Engine
-        get() = Engine.fromId(prefs.getString(KEY_MAIN_ENGINE, null))
+        get() = Engine.fromId(safeString(KEY_MAIN_ENGINE, null))
         set(value) = prefs.edit().putString(KEY_MAIN_ENGINE, value.id).apply()
 
     var incognitoEngine: Engine
-        get() = Engine.fromId(prefs.getString(KEY_INCOGNITO_ENGINE, Engine.GECKO.id))
+        get() = Engine.fromId(safeString(KEY_INCOGNITO_ENGINE, Engine.GECKO.id))
         set(value) = prefs.edit().putString(KEY_INCOGNITO_ENGINE, value.id).apply()
 
     val incognitoEngineChosen: Boolean
         get() = prefs.contains(KEY_INCOGNITO_ENGINE)
 
     var searchEngine: SearchEngine
-        get() = SearchEngine.fromId(prefs.getString(KEY_SEARCH_ENGINE, null))
+        get() = SearchEngine.fromId(safeString(KEY_SEARCH_ENGINE, null))
         set(value) = prefs.edit().putString(KEY_SEARCH_ENGINE, value.id).apply()
 
     /** App UI theme mode (app chrome only; web content is separate). */
     var themeMode: ThemeMode
-        get() = ThemeMode.fromId(prefs.getString(KEY_THEME_MODE, null))
+        get() = ThemeMode.fromId(safeString(KEY_THEME_MODE, null))
         set(value) = prefs.edit().putString(KEY_THEME_MODE, value.id).apply()
 
     /** Display name of the user's custom search engine (CUSTOM only). */
     var customSearchName: String
-        get() = prefs.getString(KEY_CUSTOM_SEARCH_NAME, "") ?: ""
+        get() = safeString(KEY_CUSTOM_SEARCH_NAME, "") ?: ""
         set(value) = prefs.edit().putString(KEY_CUSTOM_SEARCH_NAME, value).apply()
 
     /** URL template of the custom search engine; must contain %s. */
     var customSearchTemplate: String
-        get() = prefs.getString(KEY_CUSTOM_SEARCH_TEMPLATE, "") ?: ""
+        get() = safeString(KEY_CUSTOM_SEARCH_TEMPLATE, "") ?: ""
         set(value) = prefs.edit().putString(KEY_CUSTOM_SEARCH_TEMPLATE, value).apply()
 
     var adBlockEnabled: Boolean
-        get() = prefs.getBoolean(KEY_AD_BLOCK, true)
+        get() = safeBoolean(KEY_AD_BLOCK, true)
         set(value) = prefs.edit().putBoolean(KEY_AD_BLOCK, value).apply()
 
     /**
@@ -227,32 +256,32 @@ class Store(context: Context) {
      * tracking side.
      */
     var adHideSlots: Boolean
-        get() = prefs.getBoolean(KEY_AD_HIDE_SLOTS, true)
+        get() = safeBoolean(KEY_AD_HIDE_SLOTS, true)
         set(value) = prefs.edit().putBoolean(KEY_AD_HIDE_SLOTS, value).apply()
 
     /** Web page text size in percent: 85 / 100 / 115 / 130. */
     var textZoomPercent: Int
-        get() = prefs.getInt(KEY_TEXT_ZOOM, 100)
+        get() = safeInt(KEY_TEXT_ZOOM, 100)
         set(value) = prefs.edit().putInt(KEY_TEXT_ZOOM, value).apply()
 
     /** Ask web pages to render dark (WebView algorithmic darkening). */
     var webDarkMode: Boolean
-        get() = prefs.getBoolean(KEY_WEB_DARK, false)
+        get() = safeBoolean(KEY_WEB_DARK, false)
         set(value) = prefs.edit().putBoolean(KEY_WEB_DARK, value).apply()
 
     /** Restore the previous session's tabs on launch (vs always home). */
     var startupRestore: Boolean
-        get() = prefs.getBoolean(KEY_STARTUP_RESTORE, true)
+        get() = safeBoolean(KEY_STARTUP_RESTORE, true)
         set(value) = prefs.edit().putBoolean(KEY_STARTUP_RESTORE, value).apply()
 
     /** Where URL-type downloads go. Gecko tab downloads never use this. */
     var downloadMode: DownloadMode
-        get() = DownloadMode.fromId(prefs.getString(KEY_DOWNLOAD_MODE, null))
+        get() = DownloadMode.fromId(safeString(KEY_DOWNLOAD_MODE, null))
         set(value) = prefs.edit().putString(KEY_DOWNLOAD_MODE, value.id).apply()
 
     /** How long normal history entries are kept before cleanup on launch. */
     var historyRetention: HistoryRetention
-        get() = HistoryRetention.fromId(prefs.getString(KEY_HISTORY_RETENTION, null))
+        get() = HistoryRetention.fromId(safeString(KEY_HISTORY_RETENTION, null))
         set(value) = prefs.edit().putString(KEY_HISTORY_RETENTION, value.id).apply()
 
     // ---- Lifetime blocked-request counter (WebView tabs only) ----
@@ -268,7 +297,7 @@ class Store(context: Context) {
     val totalBlocked: Long
         get() {
             if (totalBlockedMemory < 0) {
-                totalBlockedMemory = prefs.getLong(KEY_TOTAL_BLOCKED, 0L)
+                totalBlockedMemory = safeLong(KEY_TOTAL_BLOCKED, 0L)
             }
             return totalBlockedMemory
         }
@@ -297,7 +326,7 @@ class Store(context: Context) {
     }
 
     fun loadCompatSites(): MutableSet<String> {
-        val raw = prefs.getString(KEY_COMPAT_SITES, null) ?: return mutableSetOf()
+        val raw = safeString(KEY_COMPAT_SITES, null) ?: return mutableSetOf()
         return try {
             val arr = JSONArray(raw)
             (0 until arr.length()).map { arr.getString(it) }.toMutableSet()
@@ -380,7 +409,7 @@ class Store(context: Context) {
     }
 
     fun loadTabs(): Pair<List<SavedTab>, Int> {
-        val raw = prefs.getString(KEY_TABS, null) ?: return emptyList<SavedTab>() to 0
+        val raw = safeString(KEY_TABS, null) ?: return emptyList<SavedTab>() to 0
         return try {
             val obj = JSONObject(raw)
             val arr = obj.optJSONArray("tabs") ?: JSONArray()
@@ -399,7 +428,7 @@ class Store(context: Context) {
     }
 
     private fun <T> readList(key: String, parse: (JSONObject) -> T): List<T> {
-        val raw = prefs.getString(key, null) ?: return emptyList()
+        val raw = safeString(key, null) ?: return emptyList()
         return try {
             val arr = JSONArray(raw)
             (0 until arr.length()).map { parse(arr.getJSONObject(it)) }
@@ -439,6 +468,25 @@ class Store(context: Context) {
         private const val BLOCKED_FLUSH_MS = 5_000L
     }
 }
+
+/**
+ * Hard cap on how many entries one imported file may contribute per
+ * list. A bookmark/backup file is untrusted input: without a cap a
+ * crafted or corrupted file with hundreds of thousands of entries
+ * could exhaust memory while parsing and merging. 5,000 per list is
+ * far above any real user's data (the app itself caps history at
+ * 500, the reading list at 200 and speed dials at 12).
+ */
+const val MAX_IMPORT_ENTRIES = 5000
+
+/**
+ * Hard cap, in characters, on an imported file's text. The import
+ * code reads the whole file into memory before parsing, so the read
+ * itself must stop somewhere: 8M characters (~16 MB as UTF-16) is
+ * far above a real export (5,000 short entries are well under 1 MB)
+ * and small enough to never endanger the heap.
+ */
+const val MAX_IMPORT_FILE_CHARS = 8_000_000
 
 /** Format marker written into every full-backup file. */
 const val BACKUP_FORMAT = "tuxunbrowse-backup"
@@ -555,7 +603,8 @@ fun parseBackup(raw: String): BackupData? {
     if (obj.optString("format") != BACKUP_FORMAT) return null
     fun <T> readArr(name: String, parse: (JSONObject) -> T?): List<T> {
         val arr = obj.optJSONArray(name) ?: return emptyList()
-        return (0 until arr.length()).mapNotNull {
+        val count = minOf(arr.length(), MAX_IMPORT_ENTRIES)
+        return (0 until count).mapNotNull {
             arr.optJSONObject(it)?.let(parse)
         }
     }
@@ -657,7 +706,8 @@ fun bookmarksFromJson(raw: String): List<Bookmark> {
     } catch (e: Exception) {
         return emptyList()
     }
-    return (0 until arr.length()).mapNotNull {
+    val count = minOf(arr.length(), MAX_IMPORT_ENTRIES)
+    return (0 until count).mapNotNull {
         val o = arr.optJSONObject(it) ?: return@mapNotNull null
         val url = o.optString("url")
         if (url.isBlank()) {
@@ -711,6 +761,7 @@ fun bookmarksFromHtml(raw: String): Pair<List<Bookmark>, Int> {
     val out = mutableListOf<Bookmark>()
     var skipped = 0
     for (match in HTML_BOOKMARK_REGEX.findAll(raw)) {
+        if (out.size >= MAX_IMPORT_ENTRIES) break
         val href = decodeHtmlEntities(match.groupValues[1].trim())
         val scheme = href.substringBefore("://", "").lowercase()
         val isFile = href.startsWith("file:", ignoreCase = true)

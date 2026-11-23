@@ -165,6 +165,7 @@ import com.tuxunbrowse.android.data.parseBackup
 import com.tuxunbrowse.android.data.bookmarksFromHtml
 import com.tuxunbrowse.android.data.bookmarksFromJson
 import com.tuxunbrowse.android.data.bookmarksToJson
+import com.tuxunbrowse.android.data.MAX_IMPORT_FILE_CHARS
 import com.tuxunbrowse.android.data.isValidCustomSearchTemplate
 import com.tuxunbrowse.android.data.hostOf
 import com.tuxunbrowse.android.data.isCompatHost
@@ -231,6 +232,54 @@ private data class AuthPromptState(
     val info: HttpAuthRequestInfo,
     val respond: (String?, String?) -> Unit
 )
+
+/**
+ * Read an imported file's full text, stopping at
+ * [MAX_IMPORT_FILE_CHARS]. Import files are untrusted input: reading
+ * one unbounded with readText() lets an oversized file exhaust
+ * memory before any parser gets a chance to reject it. Throws on
+ * oversize or I/O failure — callers catch and report in plain
+ * language without touching existing data.
+ */
+private fun readImportFileText(
+    context: android.content.Context,
+    uri: android.net.Uri
+): String {
+    val reader = context.contentResolver.openInputStream(uri)?.bufferedReader()
+        ?: throw java.io.IOException("cannot open import file")
+    val sb = StringBuilder()
+    reader.use { r ->
+        val buf = CharArray(8192)
+        while (true) {
+            val n = r.read(buf)
+            if (n < 0) break
+            if (sb.length + n > MAX_IMPORT_FILE_CHARS) {
+                throw java.io.IOException("import file too large")
+            }
+            sb.append(buf, 0, n)
+        }
+    }
+    return sb.toString()
+}
+
+/**
+ * Copy plain text to the system clipboard. Returns false when the
+ * clipboard service is unavailable or refuses — callers must not
+ * claim "copied" in that case.
+ */
+private fun copyTextToClipboard(
+    context: android.content.Context,
+    label: String,
+    text: String
+): Boolean = try {
+    val clipboard = context.getSystemService(
+        android.content.Context.CLIPBOARD_SERVICE
+    ) as android.content.ClipboardManager
+    clipboard.setPrimaryClip(android.content.ClipData.newPlainText(label, text))
+    true
+} catch (t: Throwable) {
+    false
+}
 
 /** A WebView SSL certificate error waiting for the user's decision. */
 private data class SslPromptState(
@@ -841,8 +890,7 @@ fun BrowserApp(
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         try {
-            val raw = context.contentResolver.openInputStream(uri)
-                ?.bufferedReader()?.readText() ?: ""
+            val raw = readImportFileText(context, uri)
             val head = raw.trimStart()
             val isHtml = head.startsWith("<!DOCTYPE NETSCAPE", ignoreCase = true) ||
                 head.startsWith("<DL", ignoreCase = true)
@@ -878,7 +926,7 @@ fun BrowserApp(
             ).show()
         } catch (t: Throwable) {
             android.widget.Toast.makeText(
-                context, "导入失败，请换一个书签文件重试",
+                context, "文件有问题，没导入任何书签，请换一个文件重试",
                 android.widget.Toast.LENGTH_LONG
             ).show()
         }
@@ -1016,8 +1064,7 @@ fun BrowserApp(
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         try {
-            val raw = context.contentResolver.openInputStream(uri)
-                ?.bufferedReader()?.readText() ?: ""
+            val raw = readImportFileText(context, uri)
             val parsed = parseBackup(raw)
             if (parsed == null) {
                 android.widget.Toast.makeText(
@@ -1030,7 +1077,7 @@ fun BrowserApp(
             }
         } catch (t: Throwable) {
             android.widget.Toast.makeText(
-                context, "这个文件读不出来，请换一个备份文件重试",
+                context, "文件有问题，没导入，请换一个备份文件重试",
                 android.widget.Toast.LENGTH_LONG
             ).show()
         }
@@ -1887,16 +1934,12 @@ fun BrowserApp(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    val clipboard = context.getSystemService(
-                                        android.content.Context.CLIPBOARD_SERVICE
-                                    ) as android.content.ClipboardManager
-                                    clipboard.setPrimaryClip(
-                                        android.content.ClipData.newPlainText(
-                                            "link", linkTarget
-                                        )
+                                    val ok = copyTextToClipboard(
+                                        context, "link", linkTarget
                                     )
                                     android.widget.Toast.makeText(
-                                        context, "链接已复制",
+                                        context,
+                                        if (ok) "链接已复制" else "复制失败，请重试",
                                         android.widget.Toast.LENGTH_SHORT
                                     ).show()
                                     linkMenuTarget = null
@@ -1909,17 +1952,27 @@ fun BrowserApp(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    val intent = android.content.Intent(
-                                        android.content.Intent.ACTION_SEND
-                                    )
-                                        .setType("text/plain")
-                                        .putExtra(
-                                            android.content.Intent.EXTRA_TEXT, linkTarget
-                                        )
-                                    context.startActivity(
-                                        android.content.Intent.createChooser(intent, "分享链接")
-                                    )
                                     linkMenuTarget = null
+                                    try {
+                                        val intent = android.content.Intent(
+                                            android.content.Intent.ACTION_SEND
+                                        )
+                                            .setType("text/plain")
+                                            .putExtra(
+                                                android.content.Intent.EXTRA_TEXT,
+                                                linkTarget
+                                            )
+                                        context.startActivity(
+                                            android.content.Intent.createChooser(
+                                                intent, "分享链接"
+                                            )
+                                        )
+                                    } catch (t: Throwable) {
+                                        android.widget.Toast.makeText(
+                                            context, "没有能分享链接的应用",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
                                 }
                         )
                     }
@@ -1977,16 +2030,12 @@ fun BrowserApp(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    val clipboard = context.getSystemService(
-                                        android.content.Context.CLIPBOARD_SERVICE
-                                    ) as android.content.ClipboardManager
-                                    clipboard.setPrimaryClip(
-                                        android.content.ClipData.newPlainText(
-                                            "image", imageTarget
-                                        )
+                                    val ok = copyTextToClipboard(
+                                        context, "image", imageTarget
                                     )
                                     android.widget.Toast.makeText(
-                                        context, "图片地址已复制",
+                                        context,
+                                        if (ok) "图片地址已复制" else "复制失败，请重试",
                                         android.widget.Toast.LENGTH_SHORT
                                     ).show()
                                     imageMenuTarget = null
@@ -3222,7 +3271,8 @@ private fun BrowserScreen(
                     IconButton(onClick = onToggleBookmark) {
                         Icon(
                             if (isBookmarked) Icons.Filled.Star else Icons.Filled.StarBorder,
-                            contentDescription = "收藏"
+                            contentDescription =
+                                if (isBookmarked) "已收藏，点按取消收藏" else "收藏"
                         )
                     }
                     IconButton(onClick = { showMenu = true }) {
@@ -3260,22 +3310,29 @@ private fun BrowserScreen(
                                         android.widget.Toast.LENGTH_SHORT
                                     ).show()
                                 } else {
-                                    val intent = android.content.Intent(
-                                        android.content.Intent.ACTION_SEND
-                                    )
-                                        .setType("text/plain")
-                                        .putExtra(
-                                            android.content.Intent.EXTRA_SUBJECT,
-                                            tab.title.ifBlank { tab.url }
+                                    try {
+                                        val intent = android.content.Intent(
+                                            android.content.Intent.ACTION_SEND
                                         )
-                                        .putExtra(
-                                            android.content.Intent.EXTRA_TEXT, tab.url
+                                            .setType("text/plain")
+                                            .putExtra(
+                                                android.content.Intent.EXTRA_SUBJECT,
+                                                tab.title.ifBlank { tab.url }
+                                            )
+                                            .putExtra(
+                                                android.content.Intent.EXTRA_TEXT, tab.url
+                                            )
+                                        context.startActivity(
+                                            android.content.Intent.createChooser(
+                                                intent, "分享当前页"
+                                            )
                                         )
-                                    context.startActivity(
-                                        android.content.Intent.createChooser(
-                                            intent, "分享当前页"
-                                        )
-                                    )
+                                    } catch (t: Throwable) {
+                                        android.widget.Toast.makeText(
+                                            context, "没有能分享的应用",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
                                 }
                             }
                         )
@@ -3293,16 +3350,12 @@ private fun BrowserScreen(
                                         android.widget.Toast.LENGTH_SHORT
                                     ).show()
                                 } else {
-                                    val clipboard = context.getSystemService(
-                                        android.content.Context.CLIPBOARD_SERVICE
-                                    ) as android.content.ClipboardManager
-                                    clipboard.setPrimaryClip(
-                                        android.content.ClipData.newPlainText(
-                                            "url", tab.url
-                                        )
+                                    val ok = copyTextToClipboard(
+                                        context, "url", tab.url
                                     )
                                     android.widget.Toast.makeText(
-                                        context, "网址已复制",
+                                        context,
+                                        if (ok) "网址已复制" else "复制失败，请重试",
                                         android.widget.Toast.LENGTH_SHORT
                                     ).show()
                                 }
@@ -4171,10 +4224,18 @@ private fun BrowserScreen(
                     item {
                         TextButton(
                             onClick = {
-                                clipboardManager.setText(AnnotatedString(siteTab.url))
+                                val ok = try {
+                                    clipboardManager.setText(
+                                        AnnotatedString(siteTab.url)
+                                    )
+                                    true
+                                } catch (t: Throwable) {
+                                    false
+                                }
                                 showSiteInfo = false
                                 android.widget.Toast.makeText(
-                                    context, "网址已复制",
+                                    context,
+                                    if (ok) "网址已复制" else "复制失败，请重试",
                                     android.widget.Toast.LENGTH_SHORT
                                 ).show()
                             },
