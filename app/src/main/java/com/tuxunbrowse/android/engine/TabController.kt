@@ -1498,6 +1498,8 @@ fun saveGeckoDownload(context: Context, response: WebResponse) {
     Toast.makeText(context, "开始下载：$fileName", Toast.LENGTH_LONG).show()
     geckoDownloadExecutor.execute {
         var ok = false
+        var destUri: android.net.Uri? = null
+        var destFile: java.io.File? = null
         try {
             if (android.os.Build.VERSION.SDK_INT >= 29) {
                 val resolver = context.contentResolver
@@ -1515,19 +1517,31 @@ fun saveGeckoDownload(context: Context, response: WebResponse) {
                 val dest = resolver.insert(
                     android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
                 )
+                destUri = dest
                 if (dest != null) {
-                    resolver.openOutputStream(dest)?.use { out -> body.copyTo(out) }
-                    val done = android.content.ContentValues().apply {
-                        put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
+                    // A copy that produced zero bytes is a failure,
+                    // not a downloaded file (redirect/error bodies
+                    // can be empty); the pending entry is deleted
+                    // below instead of staying behind as a 0 KB fake.
+                    var copied = -1L
+                    resolver.openOutputStream(dest)?.use { out ->
+                        copied = body.copyTo(out)
                     }
-                    resolver.update(dest, done, null, null)
-                    ok = true
+                    if (copied > 0) {
+                        val done = android.content.ContentValues().apply {
+                            put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
+                        }
+                        resolver.update(dest, done, null, null)
+                        ok = true
+                    }
                 }
             } else {
                 val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
                     ?: context.filesDir
-                java.io.File(dir, fileName).outputStream().use { out -> body.copyTo(out) }
-                ok = true
+                val file = java.io.File(dir, fileName)
+                destFile = file
+                val copied = file.outputStream().use { out -> body.copyTo(out) }
+                ok = copied > 0
             }
         } catch (t: Throwable) {
             ok = false
@@ -1536,6 +1550,20 @@ fun saveGeckoDownload(context: Context, response: WebResponse) {
                 body.close()
             } catch (t: Throwable) {
                 // Nothing useful to do about a failed close.
+            }
+            if (!ok) {
+                // Never leave a half-written or 0 KB file behind and
+                // call it a download: remove the partial artefact.
+                try {
+                    destUri?.let { context.contentResolver.delete(it, null, null) }
+                } catch (t: Throwable) {
+                    // Best-effort cleanup.
+                }
+                try {
+                    destFile?.delete()
+                } catch (t: Throwable) {
+                    // Best-effort cleanup.
+                }
             }
         }
         android.os.Handler(android.os.Looper.getMainLooper()).post {
@@ -1548,26 +1576,53 @@ fun saveGeckoDownload(context: Context, response: WebResponse) {
     }
 }
 
+/**
+ * Hand a URL to the system DownloadManager with the full set of
+ * request headers a browser download needs:
+ * - User-Agent: the one the DownloadListener reported; when the
+ *   caller has none (sniffer, image save, retry), the WebView
+ *   default UA for this device, fetched fresh here.
+ * - Cookie: the current WebView session's cookie for this URL,
+ *   fetched fresh at enqueue time (never stored, never logged).
+ * - Referer: the page the download was started from, when the
+ *   caller knows it. Many direct-file sites (and CDN links) refuse
+ *   requests without a Referer — the missing header was the root
+ *   cause of 0-byte failures fixed in v0.20.0.
+ * Headers are only ever put on the request itself; they are not
+ * written to disk or logs anywhere.
+ */
 fun startSystemDownload(
     context: Context,
     url: String?,
     userAgent: String?,
     contentDisposition: String?,
-    mimetype: String?
+    mimetype: String?,
+    referer: String? = null
 ) {
     if (url.isNullOrBlank()) return
     try {
         val uri = Uri.parse(url)
         val fileName = android.webkit.URLUtil.guessFileName(url, contentDisposition, mimetype)
+            .ifBlank { "download" }
         val request = DownloadManager.Request(uri)
             .setTitle(fileName)
             .setDescription(url)
             .setMimeType(mimetype)
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
             .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
-        if (!userAgent.isNullOrBlank()) request.addRequestHeader("User-Agent", userAgent)
+        val ua = userAgent?.takeIf { it.isNotBlank() } ?: try {
+            android.webkit.WebSettings.getDefaultUserAgent(context)
+        } catch (t: Throwable) {
+            null
+        }
+        if (!ua.isNullOrBlank()) request.addRequestHeader("User-Agent", ua)
         val cookie = CookieManager.getInstance().getCookie(url)
         if (!cookie.isNullOrBlank()) request.addRequestHeader("Cookie", cookie)
+        if (!referer.isNullOrBlank() &&
+            (referer.startsWith("http://") || referer.startsWith("https://"))
+        ) {
+            request.addRequestHeader("Referer", referer)
+        }
         val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         manager.enqueue(request)
         Toast.makeText(context, "已交给系统下载：$fileName", Toast.LENGTH_LONG).show()

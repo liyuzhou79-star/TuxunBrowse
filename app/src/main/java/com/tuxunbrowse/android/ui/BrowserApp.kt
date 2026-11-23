@@ -502,7 +502,10 @@ fun BrowserApp(
             },
             onUrlDownload = { dlUrl, ua, cd, mt ->
                 downloadWithMode(dlUrl, null) {
-                    startSystemDownload(context, dlUrl, ua, cd, mt)
+                    startSystemDownload(
+                        context, dlUrl, ua, cd, mt,
+                        referer = created?.url
+                    )
                 }
             },
             onBlockedRequest = { store.noteBlocked() }
@@ -1720,7 +1723,8 @@ fun BrowserApp(
         )
 
         Screen.DOWNLOADS -> DownloadsScreen(
-            onBack = { screen = Screen.BROWSER }
+            onBack = { screen = Screen.BROWSER },
+            retryReferer = activeTab()?.url
         )
 
         Screen.SNIFF -> SniffScreen(
@@ -1728,13 +1732,19 @@ fun BrowserApp(
             onBack = { screen = Screen.BROWSER },
             onDownload = { res ->
                 downloadWithMode(res.url, res.name) {
-                    startSystemDownload(context, res.url, null, null, null)
+                    startSystemDownload(
+                        context, res.url, null, null, null,
+                        referer = tabs.firstOrNull { t -> t.id == sniffTabId }?.url
+                    )
                 }
             },
             onDownloadAll = { list ->
                 downloadBatchWithMode(list.map { it.url }) {
                     list.forEach {
-                        startSystemDownload(context, it.url, null, null, null)
+                        startSystemDownload(
+                            context, it.url, null, null, null,
+                            referer = tabs.firstOrNull { t -> t.id == sniffTabId }?.url
+                        )
                     }
                 }
             }
@@ -1903,7 +1913,8 @@ fun BrowserApp(
                                 .clickable {
                                     imageMenuTarget = null
                                     startSystemDownload(
-                                        context, imageTarget, null, null, null
+                                        context, imageTarget, null, null, null,
+                                        referer = activeTab()?.url
                                     )
                                 }
                         )
@@ -5137,9 +5148,39 @@ private data class DownloadEntry(
     val sourceUrl: String?
 )
 
+/** Plain-language text for a pending/paused download's reason code. */
+private fun downloadPausedReasonText(reason: Int): String = when (reason) {
+    android.app.DownloadManager.PAUSED_WAITING_TO_RETRY -> "等待重试"
+    android.app.DownloadManager.PAUSED_WAITING_FOR_NETWORK -> "在等网络"
+    android.app.DownloadManager.PAUSED_QUEUED_FOR_WIFI -> "在等 WiFi"
+    android.app.DownloadManager.PAUSED_UNKNOWN -> "原因未知"
+    else -> "原因码 $reason"
+}
+
+/** Plain-language text for a failed download's reason code. */
+private fun downloadFailedReasonText(reason: Int): String = when (reason) {
+    android.app.DownloadManager.ERROR_UNKNOWN -> "未知错误"
+    android.app.DownloadManager.ERROR_FILE_ERROR ->
+        "写文件失败（存储空间或文件出问题）"
+    android.app.DownloadManager.ERROR_UNHANDLED_HTTP_CODE ->
+        "服务器返回了一个没法处理的状态码"
+    android.app.DownloadManager.ERROR_HTTP_DATA_ERROR ->
+        "传输中断（网络数据出错）"
+    android.app.DownloadManager.ERROR_TOO_MANY_REDIRECTS -> "跳转次数太多"
+    android.app.DownloadManager.ERROR_INSUFFICIENT_SPACE -> "存储空间不足"
+    android.app.DownloadManager.ERROR_DEVICE_NOT_FOUND -> "找不到存储设备"
+    android.app.DownloadManager.ERROR_CANNOT_RESUME -> "这个下载没法接着之前继续下"
+    android.app.DownloadManager.ERROR_FILE_ALREADY_EXISTS -> "同名文件已经存在"
+    in 300..599 -> "服务器返回 HTTP $reason"
+    else -> "原因码 $reason"
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DownloadsScreen(onBack: () -> Unit) {
+private fun DownloadsScreen(
+    onBack: () -> Unit,
+    retryReferer: String? = null
+) {
     val context = LocalContext.current
     var entries by remember { mutableStateOf<List<DownloadEntry>>(emptyList()) }
     var refreshTick by remember { mutableStateOf(0) }
@@ -5162,14 +5203,22 @@ private fun DownloadsScreen(onBack: () -> Unit) {
                 val typeIdx =
                     c.getColumnIndex(android.app.DownloadManager.COLUMN_MEDIA_TYPE)
                 val uriIdx = c.getColumnIndex(android.app.DownloadManager.COLUMN_URI)
+                val reasonIdx =
+                    c.getColumnIndex(android.app.DownloadManager.COLUMN_REASON)
                 while (c.moveToNext()) {
                     val status = c.getInt(statusIdx)
+                    val reason = if (reasonIdx >= 0) c.getInt(reasonIdx) else 0
+                    // Never leave the user staring at a bare "排队中"
+                    // or "失败": the system's reason code is mapped
+                    // to plain language and appended.
                     val statusText = when (status) {
                         android.app.DownloadManager.STATUS_SUCCESSFUL -> "已完成"
-                        android.app.DownloadManager.STATUS_FAILED -> "失败"
+                        android.app.DownloadManager.STATUS_FAILED ->
+                            "失败 · ${downloadFailedReasonText(reason)}"
                         android.app.DownloadManager.STATUS_RUNNING -> "下载中"
-                        android.app.DownloadManager.STATUS_PAUSED -> "已暂停"
-                        else -> "排队中"
+                        android.app.DownloadManager.STATUS_PAUSED ->
+                            "已暂停 · ${downloadPausedReasonText(reason)}"
+                        else -> "排队中 · ${downloadPausedReasonText(reason)}"
                     }
                     val total = c.getLong(totalIdx)
                     val done = c.getLong(doneIdx)
@@ -5235,37 +5284,20 @@ private fun DownloadsScreen(onBack: () -> Unit) {
             ).show()
             return
         }
-        try {
-            val manager = context.getSystemService(
-                android.content.Context.DOWNLOAD_SERVICE
-            ) as android.app.DownloadManager
-            val request = android.app.DownloadManager.Request(
-                android.net.Uri.parse(source)
-            )
-                .setTitle(entry.title)
-                .setDescription(source)
-                .setNotificationVisibility(
-                    android.app.DownloadManager.Request
-                        .VISIBILITY_VISIBLE_NOTIFY_COMPLETED
-                )
-                .setDestinationInExternalPublicDir(
-                    android.os.Environment.DIRECTORY_DOWNLOADS, entry.title
-                )
-            if (!entry.mediaType.isNullOrBlank()) {
-                request.setMimeType(entry.mediaType)
-            }
-            manager.enqueue(request)
-            android.widget.Toast.makeText(
-                context, "已重新开始下载：${entry.title}（需要登录才能下的文件可能还是会失败）",
-                android.widget.Toast.LENGTH_LONG
-            ).show()
-            refreshTick++
-        } catch (t: Throwable) {
-            android.widget.Toast.makeText(
-                context, "重试失败，请回到原网页再点一次下载",
-                android.widget.Toast.LENGTH_LONG
-            ).show()
-        }
+        // Retry goes through the exact same path as a fresh download:
+        // startSystemDownload fetches the current session's Cookie
+        // and a fresh User-Agent at enqueue time and adds the
+        // Referer it is given (the page currently open, passed in
+        // from the app). The old bare re-enqueue sent no headers at
+        // all, which is why retries failed the same way. The old
+        // failed record is kept (existing behaviour): the retry is
+        // a new record next to it, and the user can delete the old
+        // one with the delete button.
+        startSystemDownload(
+            context, source, null, null, entry.mediaType,
+            referer = retryReferer
+        )
+        refreshTick++
     }
     Scaffold(
         topBar = {
