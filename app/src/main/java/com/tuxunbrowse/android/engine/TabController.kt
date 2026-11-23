@@ -307,6 +307,56 @@ private const val DESKTOP_USER_AGENT =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) " +
         "Chrome/120.0.0.0 Safari/537.36"
 
+/**
+ * App-wide cap on tab thumbnails (v0.23.0). One thumbnail is
+ * 360 px wide and roughly 640 px tall at ARGB_8888 — about
+ * 360 × 640 × 4 B ≈ 0.9 MB of pixel memory per tab. Without a cap,
+ * twenty open tabs would quietly hold ~18 MB of previews nobody is
+ * looking at. The cache keeps at most [MAX_THUMBNAILS] tabs'
+ * thumbnails: when a fresh capture pushes the count past the cap,
+ * the least recently used tab's bitmap reference is dropped (the
+ * tab grid then shows its placeholder, exactly like a tab that was
+ * never captured). "Used" is tracked in access order: capturing a
+ * thumbnail and selecting the tab both count as use. Plain
+ * LinkedHashSet bookkeeping — no new dependency. All entry points
+ * run on the main thread in practice; synchronized anyway so a
+ * stray caller can never corrupt the ordering.
+ */
+object ThumbnailCache {
+    const val MAX_THUMBNAILS = 12
+
+    /** Tabs currently holding a thumbnail, least recently used first. */
+    private val holders = LinkedHashSet<BrowserTab>()
+
+    /** A tab just captured (or re-captured) its thumbnail. */
+    @Synchronized
+    fun onThumbnailSet(tab: BrowserTab) {
+        holders.remove(tab)
+        holders.add(tab)
+        while (holders.size > MAX_THUMBNAILS) {
+            val oldest = holders.first()
+            holders.remove(oldest)
+            // Drop only the reference, never recycle: the tab grid
+            // may still be drawing this bitmap in the current frame.
+            oldest.thumbnail = null
+        }
+    }
+
+    /** A tab was selected: its thumbnail counts as recently used. */
+    @Synchronized
+    fun onThumbnailUsed(tab: BrowserTab) {
+        if (tab.thumbnail == null) return
+        holders.remove(tab)
+        holders.add(tab)
+    }
+
+    /** A tab is going away; stop tracking it. */
+    @Synchronized
+    fun onTabDestroyed(tab: BrowserTab) {
+        holders.remove(tab)
+    }
+}
+
 /** One browser tab. Holds its own WebView or GeckoSession so tabs keep state. */
 class BrowserTab(
     val engine: Engine,
@@ -426,7 +476,10 @@ class BrowserTab(
      * the tab grid may still be drawing it this frame). Closing the
      * tab drops the reference in destroy(). GeckoView has no
      * screenshot API, so Gecko tabs keep this null forever and the
-     * grid says so instead of faking a preview.
+     * grid says so instead of faking a preview. App-wide, at most
+     * [ThumbnailCache.MAX_THUMBNAILS] tabs hold a thumbnail at once
+     * (see ThumbnailCache); the least recently used ones lose theirs
+     * and fall back to the same placeholder.
      */
     var thumbnail by mutableStateOf<Bitmap?>(null)
 
@@ -454,6 +507,25 @@ class BrowserTab(
     var webView: WebView? = null
     var geckoSession: GeckoSession? = null
     var geckoView: GeckoView? = null
+
+    /**
+     * Lazy engine creation (v0.23.0): a tab starts out as data only
+     * — url, title, engine choice and desktop-mode flag. Its engine
+     * view (WebView or GeckoSession+GeckoView) is created the first
+     * time the tab is actually shown as the active tab, because
+     * [TabContent] is the only caller of obtainWebView/obtainGecko
+     * and it is only composed for the active tab. Restored tabs
+     * therefore cost no engine at startup: only the active one is
+     * built and loaded; every other tab is built and loaded on its
+     * first switch-to, and afterwards the engine is kept alive
+     * exactly as before. [load] on a not-yet-created tab only
+     * updates the data — obtain*() loads the then-current [url]
+     * when the engine is eventually created, so nothing is lost.
+     * Incognito tabs are never restored, so they are always created
+     * on open, as before.
+     */
+    val engineCreated: Boolean
+        get() = webView != null || geckoView != null || geckoSession != null
 
     val isHome: Boolean
         get() = url == HOME_URL
@@ -614,6 +686,9 @@ class BrowserTab(
             canvas.scale(scale, scale)
             view.draw(canvas)
             thumbnail = bmp
+            // Register with the app-wide cap: past 12 thumbnails the
+            // least recently used tab's preview is dropped.
+            ThumbnailCache.onThumbnailSet(this)
         } catch (t: Throwable) {
             // A thumbnail is best-effort decoration; a failed capture
             // must never disturb browsing.
@@ -705,10 +780,16 @@ class BrowserTab(
         }
     }
 
+    /** Mark this tab's thumbnail as recently used (tab selected). */
+    fun noteThumbnailUsed() {
+        ThumbnailCache.onThumbnailUsed(this)
+    }
+
     fun destroy() {
         // Release the thumbnail with the tab; the reference is simply
         // dropped (not recycled — the grid may still hold a frame of
         // it) and the GC reclaims the pixels.
+        ThumbnailCache.onTabDestroyed(this)
         thumbnail = null
         exitFullscreen()
         popupChild?.let {

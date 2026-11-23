@@ -790,6 +790,15 @@ fun BrowserApp(
                 emptyList()
             }
             if (usable.isNotEmpty()) {
+                // Lazy restore (v0.23.0): makeTab only builds the
+                // tab's data (url / engine / desktop mode). No engine
+                // view is created here — TabContent is composed only
+                // for the active tab, so only that one obtains its
+                // WebView/GeckoSession and loads; every other
+                // restored tab is built and loaded on its first
+                // switch-to (see BrowserTab.engineCreated). Startup
+                // cost is therefore one page load, however many tabs
+                // were open last time.
                 usable.forEach { st ->
                     tabs.add(
                         makeTab(
@@ -1466,6 +1475,9 @@ fun BrowserApp(
                     if (outgoing != null && outgoing.id != target.id) {
                         outgoing.captureThumbnail()
                     }
+                    // Selecting a tab counts as using its thumbnail
+                    // for the app-wide LRU cap (v0.23.0).
+                    target.noteThumbnailUsed()
                     activeTabId = target.id
                 },
                 onTabsOpened = { activeTab()?.captureThumbnail() },
@@ -4857,9 +4869,18 @@ private fun HistoryScreen(
             else -> "更早"
         }
     }
-    val groups = listOf("今天", "昨天", "更早")
-        .map { bucket -> bucket to filtered.filter { bucketOf(it) == bucket } }
-        .filter { it.second.isNotEmpty() }
+    // Grouping is precomputed once per (filtered list, day) instead
+    // of on every recomposition (v0.23.0): bucketOf converts each
+    // item's timestamp to a LocalDate, and the old inline code ran
+    // that conversion up to three times per item (once per bucket
+    // filter) whenever this screen recomposed. remember keeps the
+    // result stable while the user scrolls; it is recomputed only
+    // when the filtered list or the calendar day changes.
+    val groups = remember(filtered, today) {
+        listOf("今天", "昨天", "更早")
+            .map { bucket -> bucket to filtered.filter { bucketOf(it) == bucket } }
+            .filter { it.second.isNotEmpty() }
+    }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -5331,14 +5352,21 @@ private fun DownloadsScreen(
     LaunchedEffect(statusFilter) {
         listState.scrollToItem(0)
     }
-    val visibleEntries = entries.filter { entry ->
-        when (statusFilter) {
-            1 -> entry.status == android.app.DownloadManager.STATUS_PENDING ||
-                entry.status == android.app.DownloadManager.STATUS_RUNNING ||
-                entry.status == android.app.DownloadManager.STATUS_PAUSED
-            2 -> entry.status == android.app.DownloadManager.STATUS_SUCCESSFUL
-            3 -> entry.status == android.app.DownloadManager.STATUS_FAILED
-            else -> true
+    // Presentation filter, memoised on the inputs (v0.23.0): there
+    // is no polling timer on this screen — entries only change when
+    // refreshTick bumps (screen entry, delete, retry) — and with
+    // remember the filter no longer re-runs on unrelated
+    // recompositions while the list is being scrolled.
+    val visibleEntries = remember(entries, statusFilter) {
+        entries.filter { entry ->
+            when (statusFilter) {
+                1 -> entry.status == android.app.DownloadManager.STATUS_PENDING ||
+                    entry.status == android.app.DownloadManager.STATUS_RUNNING ||
+                    entry.status == android.app.DownloadManager.STATUS_PAUSED
+                2 -> entry.status == android.app.DownloadManager.STATUS_SUCCESSFUL
+                3 -> entry.status == android.app.DownloadManager.STATUS_FAILED
+                else -> true
+            }
         }
     }
 
