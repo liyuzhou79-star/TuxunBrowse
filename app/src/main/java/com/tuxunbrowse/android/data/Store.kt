@@ -757,7 +757,15 @@ const val MAX_IMPORT_FILE_CHARS = 8_000_000
 /** Format marker written into every full-backup file. */
 const val BACKUP_FORMAT = "tuxunbrowse-backup"
 
-/** Backup format version (bump when the layout changes). */
+/**
+ * Backup format version. Stays 1 in v0.51.0 even though the backup
+ * gained fields: every addition is an optional field the parser
+ * reads tolerantly (absent = keep the current value), so a backup
+ * written by v0.19.0 still parses exactly as before, and an older
+ * app version reading a newer backup simply ignores the fields it
+ * does not know. Bump this only when a change would make an old
+ * file parse differently, not for additive fields.
+ */
 const val BACKUP_FORMAT_VERSION = 1
 
 /** The settings slice of a full backup. All fields optional on read. */
@@ -771,7 +779,18 @@ data class BackupSettings(
     val downloadMode: DownloadMode? = null,
     val historyRetention: HistoryRetention? = null,
     val textZoomPercent: Int? = null,
-    val startupRestore: Boolean? = null
+    val startupRestore: Boolean? = null,
+    // Added in v0.51.0: the settings that were introduced after the
+    // v0.19.0 backup slice was frozen and never made it in. All
+    // optional on read, exactly like the original fields — a backup
+    // from before v0.51.0 simply leaves the current values alone.
+    val themeMode: ThemeMode? = null,
+    val adHideSlots: Boolean? = null,
+    val webDarkMode: Boolean? = null,
+    val allowThirdPartyCookies: Boolean? = null,
+    val blockImages: Boolean? = null,
+    val disableJavaScript: Boolean? = null,
+    val searchSuggestionsEnabled: Boolean? = null
 ) {
     /** Plain-language list of what applying these settings would overwrite. */
     fun overwriteSummary(): List<String> {
@@ -780,10 +799,17 @@ data class BackupSettings(
         if (incognitoEngine != null) out.add("无痕内核")
         if (searchEngine != null) out.add("搜索引擎（含自定义搜索引擎的名称和模板）")
         if (adBlockEnabled != null) out.add("广告拦截开关")
+        if (adHideSlots != null) out.add("隐藏广告位开关")
         if (downloadMode != null) out.add("下载方式")
         if (historyRetention != null) out.add("历史保留期限")
         if (textZoomPercent != null) out.add("网页文字大小")
         if (startupRestore != null) out.add("启动时恢复标签页的开关")
+        if (themeMode != null) out.add("界面主题（跟随系统 / 浅色 / 深色）")
+        if (webDarkMode != null) out.add("网页深色模式")
+        if (allowThirdPartyCookies != null) out.add("允许第三方 Cookie")
+        if (blockImages != null) out.add("无图模式")
+        if (disableJavaScript != null) out.add("禁用 JavaScript")
+        if (searchSuggestionsEnabled != null) out.add("联网搜索建议开关")
         return out
     }
 }
@@ -794,7 +820,15 @@ data class BackupData(
     val history: List<HistoryItem>,
     val readingList: List<ReadingItem>,
     val speedDials: List<SpeedDial>,
-    val settings: BackupSettings
+    val settings: BackupSettings,
+    /**
+     * Per-site compat list (v0.51.0). Kept beside the four lists,
+     * not inside the settings slice, because it behaves like them:
+     * on import it merges (union) instead of overwriting, so sites
+     * the user marked on this device are never deleted by a restore.
+     * Empty when the backup predates v0.51.0.
+     */
+    val compatSites: List<String> = emptyList()
 )
 
 /** Serialize a full backup (lists + main settings) to one JSON text. */
@@ -803,7 +837,8 @@ fun backupToJson(
     history: List<HistoryItem>,
     readingList: List<ReadingItem>,
     speedDials: List<SpeedDial>,
-    settings: BackupSettings
+    settings: BackupSettings,
+    compatSites: List<String> = emptyList()
 ): String {
     val bookmarkArr = JSONArray()
     bookmarks.forEach {
@@ -843,6 +878,19 @@ fun backupToJson(
     settings.historyRetention?.let { settingsObj.put("historyRetention", it.id) }
     settings.textZoomPercent?.let { settingsObj.put("textZoomPercent", it) }
     settings.startupRestore?.let { settingsObj.put("startupRestore", it) }
+    settings.themeMode?.let { settingsObj.put("themeMode", it.id) }
+    settings.adHideSlots?.let { settingsObj.put("adHideSlots", it) }
+    settings.webDarkMode?.let { settingsObj.put("webDarkMode", it) }
+    settings.allowThirdPartyCookies?.let {
+        settingsObj.put("allowThirdPartyCookies", it)
+    }
+    settings.blockImages?.let { settingsObj.put("blockImages", it) }
+    settings.disableJavaScript?.let { settingsObj.put("disableJavaScript", it) }
+    settings.searchSuggestionsEnabled?.let {
+        settingsObj.put("searchSuggestionsEnabled", it)
+    }
+    val compatArr = JSONArray()
+    compatSites.forEach { compatArr.put(it) }
     return JSONObject()
         .put("format", BACKUP_FORMAT)
         .put("version", BACKUP_FORMAT_VERSION)
@@ -850,6 +898,7 @@ fun backupToJson(
         .put("history", historyArr)
         .put("readingList", readingArr)
         .put("speedDials", dialArr)
+        .put("compatSites", compatArr)
         .put("settings", settingsObj)
         .toString(2)
 }
@@ -945,10 +994,59 @@ fun parseBackup(raw: String): BackupData? {
                 s.optBoolean("startupRestore")
             } else {
                 null
+            },
+            themeMode = s.optString("themeMode")
+                .takeIf { it.isNotBlank() }?.let { ThemeMode.fromId(it) },
+            adHideSlots = if (s.has("adHideSlots")) {
+                s.optBoolean("adHideSlots")
+            } else {
+                null
+            },
+            webDarkMode = if (s.has("webDarkMode")) {
+                s.optBoolean("webDarkMode")
+            } else {
+                null
+            },
+            allowThirdPartyCookies = if (s.has("allowThirdPartyCookies")) {
+                s.optBoolean("allowThirdPartyCookies")
+            } else {
+                null
+            },
+            blockImages = if (s.has("blockImages")) {
+                s.optBoolean("blockImages")
+            } else {
+                null
+            },
+            disableJavaScript = if (s.has("disableJavaScript")) {
+                s.optBoolean("disableJavaScript")
+            } else {
+                null
+            },
+            searchSuggestionsEnabled = if (s.has("searchSuggestionsEnabled")) {
+                s.optBoolean("searchSuggestionsEnabled")
+            } else {
+                null
             }
         )
     }
-    return BackupData(bookmarks, history, reading, dials, settings)
+    // Compat sites (v0.51.0): plain host names only — anything with
+    // a scheme, a path, whitespace or an implausible length is
+    // dropped, never stored. Absent in older backups: empty list.
+    val compatArr = obj.optJSONArray("compatSites")
+    val compatSites = if (compatArr == null) {
+        emptyList()
+    } else {
+        val count = minOf(compatArr.length(), MAX_IMPORT_ENTRIES)
+        (0 until count).mapNotNull { i ->
+            val host = compatArr.optString(i).trim().lowercase()
+            host.takeIf {
+                it.isNotEmpty() && it.length <= 253 &&
+                    !it.contains("://") && !it.contains("/") &&
+                    !it.contains(":") && it.none { c -> c.isWhitespace() }
+            }
+        }.distinct()
+    }
+    return BackupData(bookmarks, history, reading, dials, settings, compatSites)
 }
 
 /** Serialize bookmarks for export; the format is a plain JSON object. */

@@ -1366,8 +1366,16 @@ fun BrowserApp(
                 downloadMode = store.downloadMode,
                 historyRetention = store.historyRetention,
                 textZoomPercent = store.textZoomPercent,
-                startupRestore = store.startupRestore
-            )
+                startupRestore = store.startupRestore,
+                themeMode = store.themeMode,
+                adHideSlots = store.adHideSlots,
+                webDarkMode = store.webDarkMode,
+                allowThirdPartyCookies = store.allowThirdPartyCookies,
+                blockImages = store.blockImages,
+                disableJavaScript = store.disableJavaScript,
+                searchSuggestionsEnabled = store.searchSuggestionsEnabled
+            ),
+            compatSites = store.loadCompatSites().sorted()
         )
         val fileName = "tuxunbrowse-backup.json"
         try {
@@ -1468,7 +1476,45 @@ fun BrowserApp(
             tabs.forEach { it.applyTextZoom(percent) }
             GeckoHolder.applyFontSizeFactor(percent / 100f)
         }
-        if (data.settings.overwriteSummary().isNotEmpty()) {
+        // Settings added to the backup slice in v0.51.0. Each one
+        // takes effect through the same path its settings-page
+        // switch uses, so an import behaves exactly like flipping
+        // the switches by hand.
+        s.themeMode?.let { mode ->
+            store.themeMode = mode
+            // The theme's single state source lives in MainActivity
+            // (v0.20.0); this callback is how the settings page
+            // reaches it, and the import goes through it too.
+            onThemeModeChanged(mode)
+        }
+        s.adHideSlots?.let { store.adHideSlots = it }
+        s.webDarkMode?.let { enabled ->
+            store.webDarkMode = enabled
+            tabs.forEach { it.applyWebDark(enabled) }
+        }
+        s.allowThirdPartyCookies?.let { enabled ->
+            store.allowThirdPartyCookies = enabled
+            tabs.forEach { it.applyThirdPartyCookies(enabled) }
+        }
+        s.blockImages?.let { enabled ->
+            store.blockImages = enabled
+            tabs.forEach { it.applyBlockImages(enabled) }
+        }
+        s.disableJavaScript?.let { disabled ->
+            store.disableJavaScript = disabled
+            tabs.forEach { it.applyDisableJavaScript(disabled) }
+        }
+        s.searchSuggestionsEnabled?.let { store.searchSuggestionsEnabled = it }
+        // Compat sites merge like the lists above (union): restoring
+        // a backup must never delete a site the user marked here.
+        var addedCompat = 0
+        data.compatSites.forEach { domain ->
+            if (domain !in compatSites) {
+                addCompatSite(domain)
+                addedCompat++
+            }
+        }
+        if (data.settings.overwriteSummary().isNotEmpty() || addedCompat > 0) {
             // The store was just rewritten behind the settings
             // page's back: sync this level's search-engine mirror at
             // the source (same two-way sync the settings/home
@@ -1476,10 +1522,12 @@ fun BrowserApp(
             // its own mirrors on, so every page shows the imported
             // values at once instead of after a re-entry.
             searchEngineState = store.searchEngine
+            searchSuggestionsState = store.searchSuggestionsEnabled
             settingsRefreshTick++
         }
         return "书签 +$addedBookmarks 条、历史 +$addedHistory 条、" +
-            "阅读列表 +$addedReading 条、快捷方式 +$addedDials 条"
+            "阅读列表 +$addedReading 条、快捷方式 +$addedDials 条" +
+            if (addedCompat > 0) "、兼容名单 +$addedCompat 个" else ""
     }
 
     // Backup import: system file picker. The file is validated by
@@ -1534,6 +1582,12 @@ fun BrowserApp(
                             "阅读列表 ${backupToConfirm.readingList.size} 条、" +
                             "快捷方式 ${backupToConfirm.speedDials.size} 条会合并进来，" +
                             "和现有的重复的会跳过，不会删掉现有的任何东西。" +
+                            if (backupToConfirm.compatSites.isNotEmpty()) {
+                                "\n\n备份里的兼容名单 ${backupToConfirm.compatSites.size} 个网站" +
+                                    "也会合并进来，现有的兼容名单不会被删掉。"
+                            } else {
+                                ""
+                            } +
                             if (overwrite.isNotEmpty()) {
                                 "\n\n下面这些设置会被备份里的值覆盖：\n" +
                                     overwrite.joinToString("\n") { "· $it" }
