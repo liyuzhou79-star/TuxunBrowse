@@ -12,6 +12,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -47,6 +49,11 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.FindInPage
+import androidx.compose.material.icons.filled.Image as ImageFileIcon
+import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Language
@@ -69,6 +76,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
@@ -107,7 +115,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
@@ -128,14 +138,18 @@ import com.tuxunbrowse.android.data.matchSuggestions
 import com.tuxunbrowse.android.data.resolveInput
 import com.tuxunbrowse.android.engine.BrowserTab
 import com.tuxunbrowse.android.engine.GeckoHolder
+import com.tuxunbrowse.android.engine.SniffKind
+import com.tuxunbrowse.android.engine.SniffedResource
 import com.tuxunbrowse.android.engine.TabLoadError
 import com.tuxunbrowse.android.engine.GeckoJsPromptKind
 import com.tuxunbrowse.android.engine.TabContent
+import com.tuxunbrowse.android.engine.savePageScreenshot
+import com.tuxunbrowse.android.engine.sharePageScreenshot
 import com.tuxunbrowse.android.engine.startSystemDownload
 import kotlinx.coroutines.flow.collect
 import org.mozilla.geckoview.GeckoSession
 
-private enum class Screen { PICKER, BROWSER, BOOKMARKS, HISTORY, SETTINGS, DOWNLOADS, CLEAR_DATA }
+private enum class Screen { PICKER, BROWSER, BOOKMARKS, HISTORY, SETTINGS, DOWNLOADS, CLEAR_DATA, SNIFF }
 
 private data class ClosedTabInfo(
     val engine: Engine,
@@ -176,6 +190,10 @@ fun BrowserApp(
     var fullscreenView by remember { mutableStateOf<android.view.View?>(null) }
     var geckoFullscreen by remember { mutableStateOf(false) }
     var jsPromptRequest by remember { mutableStateOf<JsPromptState?>(null) }
+    // The tab whose page resources the sniffer screen is showing.
+    var sniffTabId by remember { mutableStateOf(-1) }
+    // The tab waiting on the screenshot save/share dialog.
+    var screenshotTab by remember { mutableStateOf<BrowserTab?>(null) }
 
     fun recordVisit(title: String, url: String) {
         if (history.firstOrNull()?.url == url) return
@@ -322,6 +340,9 @@ fun BrowserApp(
         url: String = HOME_URL,
         desktopMode: Boolean = false
     ): BrowserTab {
+        // The tab being switched away from gets its one switch-away
+        // thumbnail capture (the other capture point is page finish).
+        activeTab()?.captureThumbnail()
         val tab = makeTab(effectiveEngine(engine, url), incognito, url, desktopMode)
         tabs.add(tab)
         activeTabId = tab.id
@@ -856,7 +877,14 @@ fun BrowserApp(
                 currentHostIsCompat = current?.let {
                     isCompatHost(hostOf(it.url), compatSites.toSet())
                 } ?: false,
-                onSelectTab = { activeTabId = it.id },
+                onSelectTab = { target ->
+                    val outgoing = activeTab()
+                    if (outgoing != null && outgoing.id != target.id) {
+                        outgoing.captureThumbnail()
+                    }
+                    activeTabId = target.id
+                },
+                onTabsOpened = { activeTab()?.captureThumbnail() },
                 onCloseTab = { closeTab(it) },
                 onCloseAllTabs = { closeAllTabs() },
                 canReopenClosed = lastClosedTab != null,
@@ -928,6 +956,39 @@ fun BrowserApp(
                             context, "打印没能打开，请重试",
                             android.widget.Toast.LENGTH_SHORT
                         ).show()
+                    }
+                },
+                onOpenSniffer = {
+                    val tab = activeTab()
+                    when {
+                        tab == null || tab.isHome -> android.widget.Toast.makeText(
+                            context, "先打开一个网页再嗅探",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                        tab.engine == Engine.GECKO -> android.widget.Toast.makeText(
+                            context,
+                            "火狐标签暂不支持嗅探，请切换到 WebView 打开本页再试",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                        else -> {
+                            sniffTabId = tab.id
+                            screen = Screen.SNIFF
+                        }
+                    }
+                },
+                onScreenshot = {
+                    val tab = activeTab()
+                    when {
+                        tab == null || tab.isHome -> android.widget.Toast.makeText(
+                            context, "先打开一个网页再截图",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                        tab.engine == Engine.GECKO -> android.widget.Toast.makeText(
+                            context,
+                            "火狐标签暂不支持网页截图，请切换到 WebView 打开本页再试",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                        else -> screenshotTab = tab
                     }
                 },
                 onOpenDownloads = { screen = Screen.DOWNLOADS },
@@ -1040,6 +1101,14 @@ fun BrowserApp(
 
         Screen.DOWNLOADS -> DownloadsScreen(
             onBack = { screen = Screen.BROWSER }
+        )
+
+        Screen.SNIFF -> SniffScreen(
+            tab = tabs.firstOrNull { it.id == sniffTabId },
+            onBack = { screen = Screen.BROWSER },
+            onDownload = { res ->
+                startSystemDownload(context, res.url, null, null, null)
+            }
         )
         }
     }
@@ -1238,6 +1307,62 @@ fun BrowserApp(
                     TextButton(onClick = { answerJsPrompt(false, null) }) {
                         Text("取消")
                     }
+                }
+            }
+        )
+    }
+
+    // Page screenshot (WebView tabs only — Gecko tabs are told
+    // honestly at the menu entry that it is not supported there).
+    // Visible area only, and the dialog says so: this is a shot of
+    // the current screen, not a full-page capture.
+    val shotTab = screenshotTab
+    if (shotTab != null) {
+        AlertDialog(
+            onDismissRequest = { screenshotTab = null },
+            title = { Text("网页截图") },
+            text = {
+                Text("截的是当前屏幕截图：只截现在屏幕里能看到的这一屏，不是整页长截图。截图可以存到相册，也可以直接分享。")
+            },
+            confirmButton = {
+                Button(onClick = {
+                    screenshotTab = null
+                    val bmp = shotTab.captureVisibleBitmap()
+                    if (bmp == null) {
+                        android.widget.Toast.makeText(
+                            context, "截图失败，请重试",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    } else {
+                        savePageScreenshot(context, bmp) { where ->
+                            android.widget.Toast.makeText(
+                                context,
+                                if (where != null) {
+                                    "截图已保存到$where"
+                                } else {
+                                    "保存失败，请重试"
+                                },
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                }) { Text("保存到相册") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        screenshotTab = null
+                        val bmp = shotTab.captureVisibleBitmap()
+                        if (bmp == null) {
+                            android.widget.Toast.makeText(
+                                context, "截图失败，请重试",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        } else {
+                            sharePageScreenshot(context, bmp)
+                        }
+                    }) { Text("分享截图") }
+                    TextButton(onClick = { screenshotTab = null }) { Text("取消") }
                 }
             }
         )
@@ -1576,6 +1701,7 @@ private fun BrowserScreen(
     isBookmarked: Boolean,
     currentHostIsCompat: Boolean,
     onSelectTab: (BrowserTab) -> Unit,
+    onTabsOpened: () -> Unit,
     onCloseTab: (BrowserTab) -> Unit,
     onCloseAllTabs: () -> Unit,
     canReopenClosed: Boolean,
@@ -1601,6 +1727,8 @@ private fun BrowserScreen(
     onExitFullscreen: () -> Unit,
     onToggleReaderMode: () -> Unit,
     onPrintPage: () -> Unit,
+    onOpenSniffer: () -> Unit,
+    onScreenshot: () -> Unit,
     onOpenDownloads: () -> Unit,
     onOpenBookmarks: () -> Unit,
     onOpenHistory: () -> Unit,
@@ -1822,6 +1950,20 @@ private fun BrowserScreen(
                             onClick = { showMenu = false; onPrintPage() }
                         )
                         DropdownMenuItem(
+                            text = { Text("资源嗅探") },
+                            leadingIcon = {
+                                Icon(Icons.Filled.FindInPage, contentDescription = null)
+                            },
+                            onClick = { showMenu = false; onOpenSniffer() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("网页截图") },
+                            leadingIcon = {
+                                Icon(Icons.Filled.PhotoCamera, contentDescription = null)
+                            },
+                            onClick = { showMenu = false; onScreenshot() }
+                        )
+                        DropdownMenuItem(
                             text = { Text("下载") },
                             leadingIcon = {
                                 Icon(Icons.Filled.Download, contentDescription = null)
@@ -1853,7 +1995,7 @@ private fun BrowserScreen(
             NavigationBar {
                 NavigationBarItem(
                     selected = false,
-                    onClick = { showTabs = true },
+                    onClick = { onTabsOpened(); showTabs = true },
                     icon = { Icon(Icons.Filled.Tab, contentDescription = null) },
                     label = { Text("标签页 ${tabs.size}") }
                 )
@@ -2229,6 +2371,57 @@ private fun BrowserScreen(
                                     Icon(
                                         Icons.Filled.Close,
                                         contentDescription = "关闭标签"
+                                    )
+                                }
+                            }
+                            // Preview area, same height on every card.
+                            // WebView tabs show their real captured
+                            // thumbnail when one exists; GeckoView has
+                            // no screenshot API, so its cards say so in
+                            // words instead of faking a preview image.
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(96.dp)
+                                    .padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                val thumb = tab.thumbnail
+                                when {
+                                    thumb != null -> Image(
+                                        bitmap = thumb.asImageBitmap(),
+                                        contentDescription = "页面预览",
+                                        contentScale = ContentScale.Crop,
+                                        alignment = Alignment.TopCenter,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                    tab.engine == Engine.GECKO -> Column(
+                                        horizontalAlignment =
+                                            Alignment.CenterHorizontally
+                                    ) {
+                                        Icon(
+                                            Icons.Filled.Language,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme
+                                                .onSurfaceVariant,
+                                            modifier = Modifier
+                                                .size(28.dp)
+                                                .padding(bottom = 4.dp)
+                                        )
+                                        Text(
+                                            "火狐标签暂无预览",
+                                            style = MaterialTheme.typography
+                                                .bodySmall,
+                                            color = MaterialTheme.colorScheme
+                                                .onSurfaceVariant
+                                        )
+                                    }
+                                    else -> Icon(
+                                        Icons.Filled.Language,
+                                        contentDescription = "暂无预览",
+                                        tint = MaterialTheme.colorScheme
+                                            .onSurfaceVariant,
+                                        modifier = Modifier.size(32.dp)
                                     )
                                 }
                             }
@@ -2698,6 +2891,153 @@ private fun HistoryScreen(
                             .clickable { onOpen(item) }
                     )
                     HorizontalDivider()
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Page resource sniffer (WebView tabs only; Gecko tabs never reach
+ * this screen — the menu entry explains why). Runs the collection
+ * script once when the screen appears, then lists what was found
+ * grouped by kind, each row downloadable through the existing
+ * system-download path.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SniffScreen(
+    tab: BrowserTab?,
+    onBack: () -> Unit,
+    onDownload: (SniffedResource) -> Unit
+) {
+    var loading by remember(tab?.id) { mutableStateOf(true) }
+    var resources by remember(tab?.id) {
+        mutableStateOf<List<SniffedResource>>(emptyList())
+    }
+    LaunchedEffect(tab?.id) {
+        val target = tab
+        if (target == null) {
+            loading = false
+        } else {
+            target.collectPageResources { found ->
+                resources = found
+                loading = false
+            }
+        }
+    }
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("资源嗅探") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "返回"
+                        )
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            Text(
+                "当前页面：" + (tab?.let { it.title.ifBlank { it.url } } ?: ""),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+            )
+            when {
+                loading -> Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator()
+                }
+                resources.isEmpty() -> LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    item {
+                        EmptyState(
+                            Icons.Filled.FindInPage,
+                            "这个页面里没找到可下载的资源。"
+                        )
+                    }
+                }
+                else -> {
+                    Button(
+                        onClick = { resources.forEach(onDownload) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                    ) {
+                        Icon(Icons.Filled.Download, contentDescription = null)
+                        Text(
+                            "全部下载（${resources.size} 个）",
+                            modifier = Modifier.padding(start = 8.dp)
+                        )
+                    }
+                    val groups = listOf(
+                        SniffKind.FILE to "文件",
+                        SniffKind.IMAGE to "图片",
+                        SniffKind.MEDIA to "音视频"
+                    )
+                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        groups.forEach { (kind, label) ->
+                            val inGroup = resources.filter { it.kind == kind }
+                            if (inGroup.isNotEmpty()) {
+                                item(key = "sniff-head-$kind") {
+                                    Text(
+                                        "$label（${inGroup.size}）",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        modifier = Modifier.padding(
+                                            horizontal = 16.dp,
+                                            vertical = 8.dp
+                                        )
+                                    )
+                                }
+                                items(inGroup, key = { it.url }) { res ->
+                                    ListItem(
+                                        headlineContent = {
+                                            Text(res.name, maxLines = 1)
+                                        },
+                                        supportingContent = {
+                                            Text(
+                                                res.host.ifBlank { res.url },
+                                                maxLines = 1
+                                            )
+                                        },
+                                        leadingContent = {
+                                            Icon(
+                                                when (kind) {
+                                                    SniffKind.FILE ->
+                                                        Icons.Filled.InsertDriveFile
+                                                    SniffKind.IMAGE ->
+                                                        ImageFileIcon
+                                                    SniffKind.MEDIA ->
+                                                        Icons.Filled.Movie
+                                                },
+                                                contentDescription = label
+                                            )
+                                        },
+                                        trailingContent = {
+                                            IconButton(
+                                                onClick = { onDownload(res) }
+                                            ) {
+                                                Icon(
+                                                    Icons.Filled.Download,
+                                                    contentDescription = "下载"
+                                                )
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

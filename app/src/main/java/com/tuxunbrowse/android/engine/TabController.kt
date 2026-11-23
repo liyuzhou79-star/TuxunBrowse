@@ -3,6 +3,8 @@ package com.tuxunbrowse.android.engine
 import android.annotation.SuppressLint
 import android.app.DownloadManager
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.net.Uri
 import android.os.Environment
 import android.os.Message
@@ -29,6 +31,7 @@ import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
 import com.tuxunbrowse.android.data.Engine
 import com.tuxunbrowse.android.data.HOME_URL
+import com.tuxunbrowse.android.data.hostOf
 import org.mozilla.geckoview.AllowOrDeny
 import org.mozilla.geckoview.ContentBlocking
 import org.mozilla.geckoview.GeckoResult
@@ -140,6 +143,48 @@ data class TabLoadError(
     val reason: String,
     val detail: String
 )
+
+/** Resource groups the page sniffer reports, in display order. */
+enum class SniffKind { FILE, IMAGE, MEDIA }
+
+/** One downloadable resource link found on the current page. */
+data class SniffedResource(
+    val url: String,
+    val name: String,
+    val host: String,
+    val kind: SniffKind
+)
+
+/** Parse the sniffer script's JSON answer into typed resources. */
+private fun parseSniffResult(raw: String?): List<SniffedResource> {
+    if (raw.isNullOrBlank() || raw == "null") return emptyList()
+    return try {
+        // evaluateJavascript hands back the page's return value JSON
+        // encoded, so a JS string arrives as a quoted JSON string.
+        val text = org.json.JSONTokener(raw).nextValue() as? String
+            ?: return emptyList()
+        val arr = org.json.JSONArray(text)
+        val out = mutableListOf<SniffedResource>()
+        for (i in 0 until arr.length()) {
+            val obj = arr.optJSONObject(i) ?: continue
+            val u = obj.optString("url")
+            if (u.isBlank()) continue
+            val kind = when (obj.optString("kind")) {
+                "image" -> SniffKind.IMAGE
+                "media" -> SniffKind.MEDIA
+                else -> SniffKind.FILE
+            }
+            val name = obj.optString("name").ifBlank {
+                u.substringBefore("?").substringBefore("#")
+                    .substringAfterLast("/").ifBlank { u }
+            }
+            out.add(SniffedResource(u, name, hostOf(u) ?: "", kind))
+        }
+        out
+    } catch (t: Throwable) {
+        emptyList()
+    }
+}
 
 /** Plain-language reason for a WebView main-frame error code. */
 private fun webViewErrorReason(errorCode: Int): String = when (errorCode) {
@@ -262,6 +307,17 @@ class BrowserTab(
     /** Latest network-level load failure, or null when the page is fine. */
     var loadError by mutableStateOf<TabLoadError?>(null)
 
+    /**
+     * Latest tab thumbnail (WebView tabs only). At most one bitmap is
+     * ever referenced per tab — a fresh capture replaces the reference
+     * and the old bitmap is left to the GC (it is NOT recycled here:
+     * the tab grid may still be drawing it this frame). Closing the
+     * tab drops the reference in destroy(). GeckoView has no
+     * screenshot API, so Gecko tabs keep this null forever and the
+     * grid says so instead of faking a preview.
+     */
+    var thumbnail by mutableStateOf<Bitmap?>(null)
+
     /** Throwaway WebView holding a window.open popup until its URL is known. */
     private var popupChild: WebView? = null
 
@@ -357,6 +413,74 @@ class BrowserTab(
         }
     }
 
+    /**
+     * Capture the WebView's current visible content as a small
+     * thumbnail for the tab grid, scaled to 360 px wide. Called only
+     * when a page finishes loading and when the tab is switched away
+     * from — never during scrolling or animations, so it cannot
+     * become a per-frame cost. WebView only; Gecko tabs have no
+     * screenshot API and simply keep no thumbnail.
+     */
+    fun captureThumbnail() {
+        val view = webView ?: return
+        try {
+            val w = view.width
+            val h = view.height
+            if (w <= 0 || h <= 0) return
+            val targetW = 360
+            val scale = targetW.toFloat() / w
+            val targetH = (h * scale).toInt().coerceAtLeast(1)
+            val bmp = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bmp)
+            canvas.scale(scale, scale)
+            view.draw(canvas)
+            thumbnail = bmp
+        } catch (t: Throwable) {
+            // A thumbnail is best-effort decoration; a failed capture
+            // must never disturb browsing.
+        }
+    }
+
+    /**
+     * Draw the WebView's visible area into a full-size bitmap for
+     * the save/share screenshot feature. Visible area only — no
+     * full-page capture. Null when there is nothing to draw.
+     */
+    fun captureVisibleBitmap(): Bitmap? {
+        val view = webView ?: return null
+        return try {
+            val w = view.width
+            val h = view.height
+            if (w <= 0 || h <= 0) return null
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            view.draw(Canvas(bmp))
+            bmp
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    /**
+     * Run the resource sniffer over the current page (WebView only):
+     * injects a script that collects downloadable file links, image
+     * sources and media sources, resolves them to absolute URLs and
+     * de-duplicates them, then reports the typed list back.
+     */
+    fun collectPageResources(onResult: (List<SniffedResource>) -> Unit) {
+        val view = webView
+        if (view == null) {
+            onResult(emptyList())
+            return
+        }
+        try {
+            view.evaluateJavascript(SNIFF_JS) { raw ->
+                onResult(parseSniffResult(raw))
+            }
+        } catch (t: Throwable) {
+            onResult(emptyList())
+        }
+    }
+
     fun applyTextZoom(percent: Int) {
         webView?.settings?.textZoom = percent
     }
@@ -376,6 +500,10 @@ class BrowserTab(
     }
 
     fun destroy() {
+        // Release the thumbnail with the tab; the reference is simply
+        // dropped (not recycled — the grid may still hold a frame of
+        // it) and the GC reclaims the pixels.
+        thumbnail = null
         exitFullscreen()
         popupChild?.let {
             try {
@@ -514,6 +642,9 @@ class BrowserTab(
                 canGoBack = wv.canGoBack()
                 canGoForward = wv.canGoForward()
                 if (!incognito && u.startsWith("http")) onVisit(title, u)
+                // One thumbnail capture per finished load; the other
+                // capture point is the tab being switched away from.
+                captureThumbnail()
             }
         }
         view.webChromeClient = object : WebChromeClient() {
@@ -1086,6 +1217,240 @@ fun startSystemDownload(
         Toast.makeText(context, "下载启动失败，请换一个链接重试", Toast.LENGTH_LONG).show()
     }
 }
+
+private val screenshotExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+private fun screenshotFileName(): String =
+    "tuxunbrowse-" + java.text.SimpleDateFormat(
+        "yyyyMMdd-HHmmss", java.util.Locale.US
+    ).format(java.util.Date()) + ".png"
+
+/**
+ * Insert a PNG into the system gallery under Pictures/TuxunBrowse
+ * through MediaStore (Android 10+, no permission needed) and return
+ * its content Uri. On older systems the file is written into the
+ * app's own pictures folder and registered in MediaStore by path,
+ * which is what makes its Uri shareable without a FileProvider.
+ */
+private fun insertScreenshotPng(
+    context: Context,
+    bitmap: Bitmap,
+    fileName: String
+): Uri? {
+    val resolver = context.contentResolver
+    return try {
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/png")
+                put(
+                    android.provider.MediaStore.Images.Media.RELATIVE_PATH,
+                    Environment.DIRECTORY_PICTURES + "/TuxunBrowse"
+                )
+                put(android.provider.MediaStore.Images.Media.IS_PENDING, 1)
+            }
+            val uri = resolver.insert(
+                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values
+            ) ?: return null
+            val written = resolver.openOutputStream(uri)?.use { out ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            } ?: false
+            if (!written) {
+                resolver.delete(uri, null, null)
+                return null
+            }
+            val done = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.Images.Media.IS_PENDING, 0)
+            }
+            resolver.update(uri, done, null, null)
+            uri
+        } else {
+            val dir = java.io.File(
+                context.getExternalFilesDir(Environment.DIRECTORY_PICTURES)
+                    ?: context.filesDir,
+                "TuxunBrowse"
+            )
+            dir.mkdirs()
+            val file = java.io.File(dir, fileName)
+            java.io.FileOutputStream(file).use { out ->
+                if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) return null
+            }
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/png")
+                @Suppress("DEPRECATION")
+                put(android.provider.MediaStore.Images.Media.DATA, file.absolutePath)
+            }
+            resolver.insert(
+                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values
+            )
+        }
+    } catch (t: Throwable) {
+        null
+    }
+}
+
+/**
+ * Save a page screenshot. Android 10+ lands in the system gallery
+ * (Pictures/TuxunBrowse) with no permission; older systems write to
+ * the app's own pictures folder. onDone receives a plain-language
+ * description of where the file went, or null on failure. Takes
+ * ownership of [bitmap] and recycles it when done.
+ */
+fun savePageScreenshot(
+    context: Context,
+    bitmap: Bitmap,
+    onDone: (String?) -> Unit
+) {
+    val appContext = context.applicationContext
+    screenshotExecutor.execute {
+        var where: String? = null
+        try {
+            val name = screenshotFileName()
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                if (insertScreenshotPng(appContext, bitmap, name) != null) {
+                    where = "相册的「图片 / TuxunBrowse」文件夹"
+                }
+            } else {
+                val dir = java.io.File(
+                    appContext.getExternalFilesDir(Environment.DIRECTORY_PICTURES)
+                        ?: appContext.filesDir,
+                    "TuxunBrowse"
+                )
+                dir.mkdirs()
+                val file = java.io.File(dir, name)
+                val ok = java.io.FileOutputStream(file).use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                }
+                if (ok) where = "应用目录：${file.absolutePath}"
+            }
+        } catch (t: Throwable) {
+            where = null
+        } finally {
+            try {
+                bitmap.recycle()
+            } catch (t: Throwable) {
+                // Already recycled; nothing to do.
+            }
+        }
+        android.os.Handler(android.os.Looper.getMainLooper()).post { onDone(where) }
+    }
+}
+
+/**
+ * Share a page screenshot through the system share sheet: the PNG
+ * is inserted into MediaStore and its content Uri is shared with a
+ * read grant (no FileProvider needed). Takes ownership of [bitmap]
+ * and recycles it when done. Failures are reported with a toast.
+ */
+fun sharePageScreenshot(context: Context, bitmap: Bitmap) {
+    val appContext = context.applicationContext
+    screenshotExecutor.execute {
+        var uri: Uri? = null
+        try {
+            uri = insertScreenshotPng(appContext, bitmap, screenshotFileName())
+        } catch (t: Throwable) {
+            uri = null
+        } finally {
+            try {
+                bitmap.recycle()
+            } catch (t: Throwable) {
+                // Already recycled; nothing to do.
+            }
+        }
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            if (uri == null) {
+                Toast.makeText(
+                    appContext, "截图保存失败，没法分享，请重试",
+                    Toast.LENGTH_LONG
+                ).show()
+            } else {
+                try {
+                    val intent = android.content.Intent(
+                        android.content.Intent.ACTION_SEND
+                    )
+                        .setType("image/png")
+                        .putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                        .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    appContext.startActivity(
+                        android.content.Intent.createChooser(intent, "分享截图")
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                } catch (t: Throwable) {
+                    Toast.makeText(
+                        appContext, "没有能分享截图的应用",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Page resource sniffer (WebView only): collects direct links to
+ * downloadable files from anchors, image sources, media elements
+ * and their <source> children, and media/file links in <link> tags.
+ * Relative URLs are resolved against the page's base URI and the
+ * result is de-duplicated before it leaves the page. The list is
+ * capped so a pathological page cannot flood the UI.
+ */
+private const val SNIFF_JS = """
+(function() {
+  function abs(u) {
+    if (!u) return '';
+    try { return new URL(u, document.baseURI).href; } catch (e) { return ''; }
+  }
+  function nameOf(u) {
+    try {
+      var p = new URL(u).pathname;
+      var n = p.substring(p.lastIndexOf('/') + 1);
+      try { n = decodeURIComponent(n); } catch (e) {}
+      return n || '';
+    } catch (e) { return ''; }
+  }
+  function extOf(u) {
+    var clean = (u || '').split('#')[0].split('?')[0];
+    var dot = clean.lastIndexOf('.');
+    if (dot < 0) return '';
+    return clean.substring(dot + 1).toLowerCase();
+  }
+  var fileExts = ['zip','rar','7z','apk','pdf','doc','docx','xls','xlsx',
+    'ppt','pptx','txt','mp4','mp3','mov','mkv','avi'];
+  var mediaExts = ['mp4','mp3','mov','mkv','avi','webm','m4a','wav','ogg','flac'];
+  var seen = {};
+  var out = [];
+  function push(raw, kind) {
+    var u = abs(raw);
+    if (!u || (u.indexOf('http://') !== 0 && u.indexOf('https://') !== 0)) return;
+    if (seen[u]) return;
+    seen[u] = true;
+    out.push({ url: u, kind: kind, name: nameOf(u) });
+  }
+  document.querySelectorAll('a[href]').forEach(function(a) {
+    var href = a.getAttribute('href') || '';
+    var ext = extOf(href);
+    if (fileExts.indexOf(ext) >= 0) {
+      push(href, mediaExts.indexOf(ext) >= 0 ? 'media' : 'file');
+    }
+  });
+  document.querySelectorAll('img[src]').forEach(function(img) {
+    push(img.getAttribute('src'), 'image');
+  });
+  document.querySelectorAll(
+    'video[src], audio[src], video source[src], audio source[src]'
+  ).forEach(function(el) {
+    push(el.getAttribute('src'), 'media');
+  });
+  document.querySelectorAll('link[href]').forEach(function(l) {
+    var href = l.getAttribute('href') || '';
+    var ext = extOf(href);
+    if (mediaExts.indexOf(ext) >= 0) push(href, 'media');
+    else if (fileExts.indexOf(ext) >= 0) push(href, 'file');
+  });
+  return JSON.stringify(out.slice(0, 300));
+})()
+"""
 
 /**
  * Reader mode script (WebView only): pick the element with the most
