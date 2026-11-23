@@ -28,6 +28,8 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Language
@@ -76,6 +78,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
@@ -88,14 +92,17 @@ import com.tuxunbrowse.android.data.HistoryItem
 import com.tuxunbrowse.android.data.SavedTab
 import com.tuxunbrowse.android.data.SearchEngine
 import com.tuxunbrowse.android.data.Store
+import com.tuxunbrowse.android.data.bookmarksFromJson
+import com.tuxunbrowse.android.data.bookmarksToJson
 import com.tuxunbrowse.android.data.hostOf
 import com.tuxunbrowse.android.data.isCompatHost
 import com.tuxunbrowse.android.data.resolveInput
 import com.tuxunbrowse.android.engine.BrowserTab
+import com.tuxunbrowse.android.engine.GeckoHolder
 import com.tuxunbrowse.android.engine.TabContent
 import kotlinx.coroutines.flow.collect
 
-private enum class Screen { PICKER, BROWSER, BOOKMARKS, HISTORY, SETTINGS, DOWNLOADS }
+private enum class Screen { PICKER, BROWSER, BOOKMARKS, HISTORY, SETTINGS, DOWNLOADS, CLEAR_DATA }
 
 private data class ClosedTabInfo(
     val engine: Engine,
@@ -156,7 +163,9 @@ fun BrowserApp() {
             },
             onCompatRedirect = { target -> compatRedirectHandler(target) },
             isAdBlockEnabled = { store.adBlockEnabled },
-            onLinkContext = { link -> linkMenuTarget = link }
+            onLinkContext = { link -> linkMenuTarget = link },
+            textZoomProvider = { store.textZoomPercent },
+            webDarkProvider = { store.webDarkMode }
         )
 
     fun effectiveEngine(engine: Engine, url: String): Engine =
@@ -291,6 +300,81 @@ fun BrowserApp() {
         }
     }
 
+    // Bookmark import: system file picker, JSON files only, merged in
+    // with duplicates (same URL) skipped.
+    val importBookmarksLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        try {
+            val raw = context.contentResolver.openInputStream(uri)
+                ?.bufferedReader()?.readText() ?: ""
+            val imported = bookmarksFromJson(raw)
+            var added = 0
+            imported.forEach { bm ->
+                if (bookmarks.none { it.url == bm.url }) {
+                    bookmarks.add(bm)
+                    added++
+                }
+            }
+            if (added > 0) store.saveBookmarks(bookmarks)
+            android.widget.Toast.makeText(
+                context,
+                if (imported.isEmpty()) "这个文件里没有可导入的书签"
+                else "已导入 $added 条书签（重复的自动跳过）",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        } catch (t: Throwable) {
+            android.widget.Toast.makeText(
+                context, "导入失败，请换一个书签文件重试",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    fun exportBookmarks() {
+        if (bookmarks.isEmpty()) {
+            android.widget.Toast.makeText(
+                context, "还没有书签可以导出", android.widget.Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        val json = bookmarksToJson(bookmarks)
+        val fileName = "tuxunbrowse-bookmarks.json"
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                val resolver = context.contentResolver
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName)
+                    put(android.provider.MediaStore.Downloads.MIME_TYPE, "application/json")
+                    put(
+                        android.provider.MediaStore.Downloads.RELATIVE_PATH,
+                        android.os.Environment.DIRECTORY_DOWNLOADS
+                    )
+                }
+                val dest = resolver.insert(
+                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+                ) ?: throw IllegalStateException("insert failed")
+                resolver.openOutputStream(dest)?.use {
+                    it.write(json.toByteArray(Charsets.UTF_8))
+                }
+            } else {
+                val dir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
+                    ?: context.filesDir
+                java.io.File(dir, fileName)
+                    .writeText(json, Charsets.UTF_8)
+            }
+            android.widget.Toast.makeText(
+                context, "书签已导出到下载文件夹：$fileName",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        } catch (t: Throwable) {
+            android.widget.Toast.makeText(
+                context, "导出失败，请重试", android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
     fun openUrl(url: String) {
         var tab = activeTab() ?: newTab(store.mainEngine, false, url)
         if (tab.engine == Engine.GECKO &&
@@ -394,6 +478,10 @@ fun BrowserApp() {
                     bookmarks[idx] = Bookmark(newTitle, newUrl)
                     store.saveBookmarks(bookmarks)
                 }
+            },
+            onExport = { exportBookmarks() },
+            onImport = {
+                importBookmarksLauncher.launch(arrayOf("application/json", "text/plain"))
             }
         )
 
@@ -414,7 +502,34 @@ fun BrowserApp() {
                 history.clear()
                 store.clearHistory()
             },
-            onRemoveCompatSite = { removeCompatSite(it) }
+            onRemoveCompatSite = { removeCompatSite(it) },
+            onOpenClearData = { screen = Screen.CLEAR_DATA },
+            onTextZoomChange = { percent ->
+                tabs.forEach { it.applyTextZoom(percent) }
+                GeckoHolder.applyFontSizeFactor(percent / 100f)
+            },
+            onWebDarkChange = { enabled ->
+                tabs.forEach { it.applyWebDark(enabled) }
+            }
+        )
+
+        Screen.CLEAR_DATA -> ClearDataScreen(
+            geckoStarted = GeckoHolder.hasRuntime,
+            onBack = { screen = Screen.SETTINGS },
+            onClear = { clearHistorySel, clearWebView, clearGecko ->
+                if (clearHistorySel) {
+                    history.clear()
+                    store.clearHistory()
+                }
+                if (clearWebView) {
+                    android.webkit.CookieManager.getInstance().removeAllCookies(null)
+                    android.webkit.CookieManager.getInstance().flush()
+                    android.webkit.WebStorage.getInstance().deleteAllData()
+                }
+                if (clearGecko) {
+                    GeckoHolder.clearSiteData()
+                }
+            }
         )
 
         Screen.DOWNLOADS -> DownloadsScreen(
@@ -1246,7 +1361,9 @@ private fun BookmarksScreen(
     onBack: () -> Unit,
     onOpen: (Bookmark) -> Unit,
     onDelete: (Bookmark) -> Unit,
-    onEdit: (Bookmark, String, String) -> Unit
+    onEdit: (Bookmark, String, String) -> Unit,
+    onExport: () -> Unit,
+    onImport: () -> Unit
 ) {
     var editing by remember { mutableStateOf<Bookmark?>(null) }
     val editingBookmark = editing
@@ -1305,6 +1422,14 @@ private fun BookmarksScreen(
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                     }
+                },
+                actions = {
+                    IconButton(onClick = onImport) {
+                        Icon(Icons.Filled.FileDownload, contentDescription = "导入书签")
+                    }
+                    IconButton(onClick = onExport) {
+                        Icon(Icons.Filled.FileUpload, contentDescription = "导出书签")
+                    }
                 }
             )
         }
@@ -1356,6 +1481,30 @@ private fun HistoryScreen(
     onOpen: (HistoryItem) -> Unit,
     onClear: () -> Unit
 ) {
+    var query by remember { mutableStateOf("") }
+    val filtered = if (query.isBlank()) {
+        history
+    } else {
+        history.filter {
+            it.title.contains(query, ignoreCase = true) ||
+                it.url.contains(query, ignoreCase = true)
+        }
+    }
+    val zone = java.time.ZoneId.systemDefault()
+    val today = java.time.LocalDate.now(zone)
+    val yesterday = today.minusDays(1)
+    fun bucketOf(item: HistoryItem): String {
+        val date = java.time.Instant.ofEpochMilli(item.time)
+            .atZone(zone).toLocalDate()
+        return when {
+            date == today -> "今天"
+            date == yesterday -> "昨天"
+            else -> "更早"
+        }
+    }
+    val groups = listOf("今天", "昨天", "更早")
+        .map { bucket -> bucket to filtered.filter { bucketOf(it) == bucket } }
+        .filter { it.second.isNotEmpty() }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -1375,11 +1524,25 @@ private fun HistoryScreen(
         ) {
             if (history.isNotEmpty()) {
                 item {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        singleLine = true,
+                        placeholder = { Text("搜索历史（标题或网址）") },
+                        leadingIcon = {
+                            Icon(Icons.Filled.Search, contentDescription = null)
+                        }
+                    )
+                }
+                item {
                     OutlinedButton(
                         onClick = onClear,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(16.dp)
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
                     ) {
                         Text("清除全部历史")
                     }
@@ -1393,17 +1556,36 @@ private fun HistoryScreen(
                         modifier = Modifier.padding(16.dp)
                     )
                 }
+            } else if (filtered.isEmpty()) {
+                item {
+                    Text(
+                        "没有找到和「$query」相关的历史记录。",
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.padding(16.dp)
+                    )
+                }
             }
-            items(history, key = { it.time.toString() + it.url }) { item ->
-                ListItem(
-                    headlineContent = { Text(item.title) },
-                    supportingContent = { Text(item.url) },
-                    leadingContent = { Icon(Icons.Filled.History, contentDescription = null) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onOpen(item) }
-                )
-                HorizontalDivider()
+            groups.forEach { (bucket, bucketItems) ->
+                item(key = "bucket-$bucket") {
+                    Text(
+                        "$bucket · ${bucketItems.size} 条",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                    )
+                }
+                items(bucketItems, key = { it.time.toString() + it.url }) { item ->
+                    ListItem(
+                        headlineContent = { Text(item.title) },
+                        supportingContent = { Text(item.url) },
+                        leadingContent = {
+                            Icon(Icons.Filled.History, contentDescription = null)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onOpen(item) }
+                    )
+                    HorizontalDivider()
+                }
             }
         }
     }
@@ -1538,16 +1720,140 @@ private fun DownloadsScreen(onBack: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+private fun ClearDataScreen(
+    geckoStarted: Boolean,
+    onBack: () -> Unit,
+    onClear: (Boolean, Boolean, Boolean) -> Unit
+) {
+    var clearHistorySel by remember { mutableStateOf(true) }
+    var clearWebView by remember { mutableStateOf(true) }
+    var clearGecko by remember { mutableStateOf(true) }
+    var showConfirm by remember { mutableStateOf(false) }
+    var doneText by remember { mutableStateOf<String?>(null) }
+    if (showConfirm) {
+        AlertDialog(
+            onDismissRequest = { showConfirm = false },
+            title = { Text("确认清除？") },
+            text = {
+                Text("勾选的数据会被直接删掉，没法恢复。网站登录状态清掉后要重新登录。")
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showConfirm = false
+                    onClear(clearHistorySel, clearWebView, clearGecko)
+                    doneText = "已清除勾选的数据。"
+                }) { Text("清除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConfirm = false }) { Text("取消") }
+            }
+        )
+    }
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("清除浏览数据") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            item {
+                Text(
+                    "想清哪样就勾哪样，最后点下面的按钮一次清掉。书签不在这里清，在书签页单独删。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            }
+            item {
+                ListItem(
+                    headlineContent = { Text("历史记录") },
+                    supportingContent = { Text("应用里记下的浏览历史，首页的最近历史也会一起没。") },
+                    trailingContent = {
+                        Switch(
+                            checked = clearHistorySel,
+                            onCheckedChange = { clearHistorySel = it }
+                        )
+                    }
+                )
+            }
+            item {
+                ListItem(
+                    headlineContent = { Text("WebView 的 Cookie 和网站数据") },
+                    supportingContent = { Text("清完后用 WebView 打开的网站都要重新登录。") },
+                    trailingContent = {
+                        Switch(
+                            checked = clearWebView,
+                            onCheckedChange = { clearWebView = it }
+                        )
+                    }
+                )
+            }
+            item {
+                ListItem(
+                    headlineContent = { Text("火狐的 Cookie、网站数据和缓存") },
+                    supportingContent = {
+                        Text(
+                            if (geckoStarted) {
+                                "清完后用火狐打开的网站都要重新登录。"
+                            } else {
+                                "火狐内核这次还没启动过，没有数据需要清。"
+                            }
+                        )
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = clearGecko && geckoStarted,
+                            onCheckedChange = { clearGecko = it },
+                            enabled = geckoStarted
+                        )
+                    }
+                )
+            }
+            item {
+                Button(
+                    onClick = { showConfirm = true },
+                    enabled = clearHistorySel || clearWebView || (clearGecko && geckoStarted),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("清除所选数据")
+                }
+            }
+            if (doneText != null) {
+                item { Text(doneText!!) }
+            }
+            item { Spacer(modifier = Modifier.padding(bottom = 24.dp)) }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
 private fun SettingsScreen(
     store: Store,
     onBack: () -> Unit,
     onClearHistory: () -> Unit,
-    onRemoveCompatSite: (String) -> Unit
+    onRemoveCompatSite: (String) -> Unit,
+    onOpenClearData: () -> Unit,
+    onTextZoomChange: (Int) -> Unit,
+    onWebDarkChange: (Boolean) -> Unit
 ) {
     var mainEngine by remember { mutableStateOf(store.mainEngine) }
     var incognitoEngine by remember { mutableStateOf(store.incognitoEngine) }
     var searchEngine by remember { mutableStateOf(store.searchEngine) }
     var adBlock by remember { mutableStateOf(store.adBlockEnabled) }
+    var textZoom by remember { mutableStateOf(store.textZoomPercent) }
+    var webDark by remember { mutableStateOf(store.webDarkMode) }
     var compatList by remember { mutableStateOf(store.loadCompatSites().sorted()) }
     var showCleared by remember { mutableStateOf(false) }
     val settingsContext = LocalContext.current
@@ -1716,7 +2022,66 @@ private fun SettingsScreen(
                 )
             }
             item {
+                Text("显示", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "网页文字大小对两个内核都生效，改完已经打开的网页立刻跟着变。",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            items(
+                listOf(85 to "小", 100 to "标准", 115 to "大", 130 to "特大")
+            ) { (percent, label) ->
+                ElevatedCard(
+                    onClick = {
+                        textZoom = percent
+                        store.textZoomPercent = percent
+                        onTextZoomChange(percent)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    ListItem(
+                        headlineContent = { Text("文字大小 · $label（$percent%）") },
+                        trailingContent = {
+                            RadioButton(
+                                selected = textZoom == percent,
+                                onClick = {
+                                    textZoom = percent
+                                    store.textZoomPercent = percent
+                                    onTextZoomChange(percent)
+                                }
+                            )
+                        }
+                    )
+                }
+            }
+            item {
+                ListItem(
+                    headlineContent = { Text("网页深色模式") },
+                    supportingContent = {
+                        Text("让网页按深色显示。WebView 标签在 Android 13 以上生效；火狐内核的网页深浅跟随系统深色模式，系统开了深色它就是深色。")
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = webDark,
+                            onCheckedChange = {
+                                webDark = it
+                                store.webDarkMode = it
+                                onWebDarkChange(it)
+                            }
+                        )
+                    }
+                )
+            }
+            item {
                 Text("数据", style = MaterialTheme.typography.titleMedium)
+            }
+            item {
+                OutlinedButton(
+                    onClick = onOpenClearData,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("清除浏览数据（可选细项）")
+                }
             }
             item {
                 OutlinedButton(

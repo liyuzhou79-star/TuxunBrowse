@@ -28,6 +28,7 @@ import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.GeckoView
+import org.mozilla.geckoview.StorageController
 import org.mozilla.geckoview.WebResponse
 
 /** Shared Gecko runtime; created lazily, null when Gecko fails to start. */
@@ -50,10 +51,45 @@ object GeckoHolder {
             } catch (t: Throwable) {
                 // Content blocking is best-effort only.
             }
+            // Apply the user's saved text size (Store key "text_zoom").
+            try {
+                val zoom = context.getSharedPreferences(
+                    "tuxunbrowse", Context.MODE_PRIVATE
+                ).getInt("text_zoom", 100)
+                if (zoom != 100) applyFontSizeFactor(zoom / 100f)
+            } catch (t: Throwable) {
+                // Text size is best-effort only.
+            }
             runtime
         } catch (t: Throwable) {
             available = false
             null
+        }
+    }
+
+    val hasRuntime: Boolean
+        get() = runtime != null
+
+    /** GeckoRuntimeSettings.setFontSizeFactor, verified in the 132 AAR. */
+    fun applyFontSizeFactor(factor: Float) {
+        try {
+            runtime?.settings?.setAutomaticFontSizeAdjustment(false)
+            runtime?.settings?.setFontSizeFactor(factor)
+        } catch (t: Throwable) {
+            // Best-effort only.
+        }
+    }
+
+    /** StorageController.clearData, verified in the 132 AAR. */
+    fun clearSiteData() {
+        try {
+            runtime?.storageController?.clearData(
+                StorageController.ClearFlags.COOKIES or
+                    StorageController.ClearFlags.DOM_STORAGES or
+                    StorageController.ClearFlags.ALL_CACHES
+            )
+        } catch (t: Throwable) {
+            // Best-effort only.
         }
     }
 }
@@ -74,7 +110,9 @@ class BrowserTab(
     private val shouldUseWebView: (String) -> Boolean = { false },
     private val onCompatRedirect: (String) -> Unit = {},
     private val isAdBlockEnabled: () -> Boolean = { true },
-    private val onLinkContext: (String) -> Unit = {}
+    private val onLinkContext: (String) -> Unit = {},
+    private val textZoomProvider: () -> Int = { 100 },
+    private val webDarkProvider: () -> Boolean = { false }
 ) {
     val id: Int = nextTabId++
     var url by mutableStateOf(startUrl)
@@ -141,6 +179,16 @@ class BrowserTab(
         }
     }
 
+    fun applyTextZoom(percent: Int) {
+        webView?.settings?.textZoom = percent
+    }
+
+    fun applyWebDark(enabled: Boolean) {
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            webView?.settings?.setAlgorithmicDarkeningAllowed(enabled)
+        }
+    }
+
     fun clearFind() {
         when (engine) {
             Engine.WEBVIEW -> webView?.clearMatches()
@@ -170,6 +218,10 @@ class BrowserTab(
         view.settings.javaScriptEnabled = true
         view.settings.domStorageEnabled = true
         view.settings.loadsImagesAutomatically = true
+        view.settings.textZoom = textZoomProvider()
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            view.settings.setAlgorithmicDarkeningAllowed(webDarkProvider())
+        }
         if (desktopMode) {
             view.settings.userAgentString = DESKTOP_USER_AGENT
             view.settings.useWideViewPort = true

@@ -77,6 +77,16 @@ class Store(context: Context) {
         get() = prefs.getBoolean(KEY_AD_BLOCK, true)
         set(value) = prefs.edit().putBoolean(KEY_AD_BLOCK, value).apply()
 
+    /** Web page text size in percent: 85 / 100 / 115 / 130. */
+    var textZoomPercent: Int
+        get() = prefs.getInt(KEY_TEXT_ZOOM, 100)
+        set(value) = prefs.edit().putInt(KEY_TEXT_ZOOM, value).apply()
+
+    /** Ask web pages to render dark (WebView algorithmic darkening). */
+    var webDarkMode: Boolean
+        get() = prefs.getBoolean(KEY_WEB_DARK, false)
+        set(value) = prefs.edit().putBoolean(KEY_WEB_DARK, value).apply()
+
     fun loadCompatSites(): MutableSet<String> {
         val raw = prefs.getString(KEY_COMPAT_SITES, null) ?: return mutableSetOf()
         return try {
@@ -179,6 +189,41 @@ class Store(context: Context) {
         private const val KEY_BOOKMARKS = "bookmarks"
         private const val KEY_HISTORY = "history"
         private const val KEY_TABS = "saved_tabs"
+        private const val KEY_TEXT_ZOOM = "text_zoom"
+        private const val KEY_WEB_DARK = "web_dark"
+    }
+}
+
+/** Serialize bookmarks for export; the format is a plain JSON object. */
+fun bookmarksToJson(list: List<Bookmark>): String {
+    val arr = JSONArray()
+    list.forEach {
+        arr.put(JSONObject().put("title", it.title).put("url", it.url))
+    }
+    return JSONObject()
+        .put("app", "TuxunBrowse")
+        .put("type", "bookmarks")
+        .put("items", arr)
+        .toString(2)
+}
+
+/** Parse an exported bookmarks file (our object format or a bare array). */
+fun bookmarksFromJson(raw: String): List<Bookmark> {
+    val trimmed = raw.trim()
+    if (trimmed.isEmpty()) return emptyList()
+    val arr = try {
+        if (trimmed.startsWith("[")) {
+            JSONArray(trimmed)
+        } else {
+            JSONObject(trimmed).optJSONArray("items") ?: JSONArray()
+        }
+    } catch (e: Exception) {
+        return emptyList()
+    }
+    return (0 until arr.length()).mapNotNull {
+        val o = arr.optJSONObject(it) ?: return@mapNotNull null
+        val url = o.optString("url")
+        if (url.isBlank()) null else Bookmark(o.optString("title").ifBlank { url }, url)
     }
 }
 
