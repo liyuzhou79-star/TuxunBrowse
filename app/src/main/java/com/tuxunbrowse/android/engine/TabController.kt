@@ -32,7 +32,9 @@ import androidx.compose.runtime.Composable
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
 import com.tuxunbrowse.android.data.Engine
+import com.tuxunbrowse.android.data.GeckoDownloadRecord
 import com.tuxunbrowse.android.data.HOME_URL
+import com.tuxunbrowse.android.data.Store
 import com.tuxunbrowse.android.data.hostOf
 import org.mozilla.geckoview.AllowOrDeny
 import org.mozilla.geckoview.ContentBlocking
@@ -2027,9 +2029,37 @@ class BrowserTab(
                 // cuts the download off. Cleared on every exit path
                 // of saveGeckoDownload via its completion callback.
                 geckoDownloadActive = true
-                saveGeckoDownload(appContext, response) {
-                    geckoDownloadActive = false
-                }
+                saveGeckoDownload(
+                    appContext, response,
+                    onFinished = { geckoDownloadActive = false },
+                    onSaved = { fileName, contentUri, filePath, sizeBytes, mimeType, sourceUrl ->
+                        // In-app record of the finished download
+                        // (v0.57.0), so the downloads screen can list,
+                        // open and delete Gecko downloads too.
+                        // Incognito is hard-blocked here: the file
+                        // itself is saved as usual (the user asked
+                        // for it), but an incognito download leaves
+                        // no stored record behind.
+                        if (!incognito) {
+                            try {
+                                Store(appContext).addGeckoDownload(
+                                    GeckoDownloadRecord(
+                                        fileName = fileName,
+                                        sourceUrl = sourceUrl,
+                                        sizeBytes = sizeBytes,
+                                        mimeType = mimeType,
+                                        contentUri = contentUri,
+                                        filePath = filePath,
+                                        time = System.currentTimeMillis()
+                                    )
+                                )
+                            } catch (t: Throwable) {
+                                // Recording is best-effort; the file
+                                // itself is already saved.
+                            }
+                        }
+                    }
+                )
             }
         }
         // SelectionActionDelegate (v0.43.0), verified against the
@@ -2464,7 +2494,15 @@ private val geckoDownloadExecutor = java.util.concurrent.Executors.newSingleThre
 fun saveGeckoDownload(
     context: Context,
     response: WebResponse,
-    onFinished: () -> Unit = {}
+    onFinished: () -> Unit = {},
+    onSaved: ((
+        fileName: String,
+        contentUri: String?,
+        filePath: String?,
+        sizeBytes: Long,
+        mimeType: String?,
+        sourceUrl: String
+    ) -> Unit)? = null
 ) {
     val uri = response.uri
     val headers = response.headers
@@ -2492,6 +2530,9 @@ fun saveGeckoDownload(
         var savedName = fileName
         var destUri: android.net.Uri? = null
         var destFile: java.io.File? = null
+        // Bytes actually copied; reported to the record callback
+        // below on success (v0.57.0).
+        var copiedBytes = 0L
         try {
             if (android.os.Build.VERSION.SDK_INT >= 29) {
                 val resolver = context.contentResolver
@@ -2520,6 +2561,7 @@ fun saveGeckoDownload(
                         copied = body.copyTo(out)
                     }
                     if (copied > 0) {
+                        copiedBytes = copied.toLong()
                         val done = android.content.ContentValues().apply {
                             put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
                         }
@@ -2550,6 +2592,7 @@ fun saveGeckoDownload(
                 destFile = file
                 val copied = file.outputStream().use { out -> body.copyTo(out) }
                 ok = copied > 0
+                if (ok) copiedBytes = copied
             }
         } catch (t: Throwable) {
             ok = false
@@ -2580,6 +2623,27 @@ fun saveGeckoDownload(
                 onFinished()
             } catch (t: Throwable) {
                 // The callback only clears a flag; never crash here.
+            }
+        }
+        if (ok) {
+            // Success point (v0.57.0): everything the in-app record
+            // needs is in hand here — the actual on-disk name, the
+            // MediaStore entry URI (or the file path below
+            // Android 10), the copied byte count, the MIME type and
+            // the response URL. Failures never reach this call: a
+            // failed copy has already deleted its partial artefact,
+            // so there is no file a record could point at.
+            try {
+                onSaved?.invoke(
+                    savedName,
+                    destUri?.toString(),
+                    destFile?.absolutePath,
+                    copiedBytes,
+                    contentType,
+                    uri
+                )
+            } catch (t: Throwable) {
+                // Recording must never break the download itself.
             }
         }
         android.os.Handler(android.os.Looper.getMainLooper()).post {

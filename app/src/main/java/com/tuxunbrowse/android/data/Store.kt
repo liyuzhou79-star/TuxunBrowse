@@ -93,6 +93,44 @@ data class ReadingItem(
  */
 data class SpeedDial(val title: String, val url: String)
 
+/**
+ * One in-app record of a completed Gecko (Firefox) tab download
+ * (v0.57.0). Gecko downloads are saved by the app itself straight
+ * into the system Downloads folder and never pass through the
+ * system DownloadManager, so without this record the downloads
+ * screen could not list, open or delete them. Every field is a
+ * value the save path provably has at the moment the copy finishes
+ * (audited in the v0.57.0 checkpoint): the actual on-disk name
+ * (queried back from MediaStore, so a clash-renamed file is
+ * recorded under its real name), the response URL, the copied byte
+ * count, the response MIME type, and exactly one locator —
+ * [contentUri] on Android 10+ (the MediaStore entry the app itself
+ * inserted) or [filePath] below that (the app download folder).
+ * Only successful saves are recorded: a failed copy deletes its
+ * partial artefact, so there is no file a record could point at.
+ * Incognito Gecko downloads are never recorded (the save itself
+ * still happens; the record is a stored trace, and incognito
+ * leaves none). Records are deliberately NOT part of backups: they
+ * reference files on this device only.
+ */
+data class GeckoDownloadRecord(
+    val fileName: String,
+    val sourceUrl: String,
+    val sizeBytes: Long,
+    val mimeType: String?,
+    val contentUri: String?,
+    val filePath: String?,
+    val time: Long
+)
+
+/**
+ * Cap on stored Gecko download records. In line with the other
+ * list caps (history 500, reading list 200): 200 completed
+ * downloads is far beyond what the downloads screen can usefully
+ * present, and the oldest records are dropped past it.
+ */
+const val MAX_GECKO_DOWNLOAD_RECORDS = 200
+
 /** One address-bar suggestion row, from a bookmark or a history entry. */
 data class Suggestion(val title: String, val url: String, val bookmarked: Boolean)
 
@@ -704,6 +742,43 @@ class Store(context: Context) {
         JSONObject().put("title", it.title).put("url", it.url)
     }
 
+    fun loadGeckoDownloads(): MutableList<GeckoDownloadRecord> =
+        readList(KEY_GECKO_DOWNLOADS) {
+            GeckoDownloadRecord(
+                it.optString("name"),
+                it.optString("url"),
+                it.optLong("size"),
+                it.optString("mime").ifBlank { null },
+                it.optString("uri").ifBlank { null },
+                it.optString("path").ifBlank { null },
+                it.optLong("time")
+            )
+        }.toMutableList()
+
+    fun saveGeckoDownloads(list: List<GeckoDownloadRecord>) =
+        writeList(KEY_GECKO_DOWNLOADS, list) {
+            JSONObject()
+                .put("name", it.fileName)
+                .put("url", it.sourceUrl)
+                .put("size", it.sizeBytes)
+                .put("mime", it.mimeType ?: "")
+                .put("uri", it.contentUri ?: "")
+                .put("path", it.filePath ?: "")
+                .put("time", it.time)
+        }
+
+    /** Newest first; past the cap the oldest records fall off. */
+    fun addGeckoDownload(record: GeckoDownloadRecord) {
+        val list = loadGeckoDownloads()
+        list.add(0, record)
+        saveGeckoDownloads(list.take(MAX_GECKO_DOWNLOAD_RECORDS))
+    }
+
+    fun removeGeckoDownload(record: GeckoDownloadRecord) {
+        val list = loadGeckoDownloads()
+        if (list.remove(record)) saveGeckoDownloads(list)
+    }
+
     fun saveTabs(list: List<SavedTab>, activeIndex: Int) {
         val arr = JSONArray()
         list.forEach {
@@ -771,6 +846,7 @@ class Store(context: Context) {
         private const val KEY_BOOKMARKS = "bookmarks"
         private const val KEY_HISTORY = "history"
         private const val KEY_READING_LIST = "reading_list"
+        private const val KEY_GECKO_DOWNLOADS = "gecko_downloads"
         private const val KEY_TABS = "saved_tabs"
         private const val KEY_TEXT_ZOOM = "text_zoom"
         private const val KEY_WEB_DARK = "web_dark"

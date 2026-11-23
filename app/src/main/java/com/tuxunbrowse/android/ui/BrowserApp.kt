@@ -157,6 +157,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.tuxunbrowse.android.data.Bookmark
 import com.tuxunbrowse.android.data.DownloadMode
+import com.tuxunbrowse.android.data.GeckoDownloadRecord
 import com.tuxunbrowse.android.data.Engine
 import com.tuxunbrowse.android.data.HOME_URL
 import com.tuxunbrowse.android.data.HistoryItem
@@ -7591,6 +7592,25 @@ private fun DownloadsScreen(
         }
     }
 
+    // In-app records of Gecko (Firefox) tab downloads (v0.57.0).
+    // Those downloads are saved by the app itself and never pass
+    // through DownloadManager, so they live in their own section
+    // below the DownloadManager list — the two state models are
+    // different (no status/progress/retry here, just a saved file),
+    // and mixing the rows would mislead. The status filter chips
+    // above apply to the DownloadManager list only.
+    val geckoStore = remember { Store(context) }
+    var geckoRecords by remember {
+        mutableStateOf(geckoStore.loadGeckoDownloads())
+    }
+    val geckoTimeFormat = remember {
+        java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+    }
+    var pendingGeckoDelete by remember {
+        mutableStateOf<GeckoDownloadRecord?>(null)
+    }
+    var showClearGeckoConfirm by remember { mutableStateOf(false) }
+
     var pendingDeleteEntry by remember { mutableStateOf<DownloadEntry?>(null) }
     val toDeleteEntry = pendingDeleteEntry
     if (toDeleteEntry != null) {
@@ -7825,6 +7845,211 @@ private fun DownloadsScreen(
         )
     }
 
+    // Whether the file a Gecko record points at is still there.
+    fun geckoRecordFileExists(record: GeckoDownloadRecord): Boolean {
+        return try {
+            val uriText = record.contentUri
+            if (uriText != null) {
+                val uri = android.net.Uri.parse(uriText)
+                context.contentResolver.query(
+                    uri,
+                    arrayOf(android.provider.MediaStore.Downloads._ID),
+                    null, null, null
+                )?.use { it.moveToFirst() } ?: false
+            } else {
+                val path = record.filePath
+                path != null && java.io.File(path).exists()
+            }
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
+    // Delete the file behind a Gecko record. Returns true when the
+    // file is gone afterwards (deleted here, or already missing).
+    // MediaStore deletes are allowed for entries this app inserted
+    // itself, which is exactly what these URIs are.
+    fun deleteGeckoRecordFile(record: GeckoDownloadRecord): Boolean {
+        if (!geckoRecordFileExists(record)) return true
+        return try {
+            val uriText = record.contentUri
+            if (uriText != null) {
+                context.contentResolver.delete(
+                    android.net.Uri.parse(uriText), null, null
+                ) > 0 && !geckoRecordFileExists(record)
+            } else {
+                val path = record.filePath
+                path != null && java.io.File(path).delete() &&
+                    !geckoRecordFileExists(record)
+            }
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
+    // Delete semantics for this section (v0.57.0, fixed): a delete
+    // removes the record AND its file together. The file goes
+    // first; if the file cannot be deleted the record is KEPT and
+    // the failure is reported in plain language, so a record never
+    // silently outlives a file the user believes is gone, and a
+    // file is never deleted while its record claims otherwise.
+    // Returns true when record + file are both gone.
+    fun deleteGeckoRecord(record: GeckoDownloadRecord): Boolean {
+        val fileGone = deleteGeckoRecordFile(record)
+        if (!fileGone) return false
+        geckoStore.removeGeckoDownload(record)
+        geckoRecords = geckoStore.loadGeckoDownloads()
+        return true
+    }
+
+    // Open a Gecko-downloaded file through the MediaStore URI the
+    // record carries (v0.57.0), with the same plain-language
+    // failure wording as the DownloadManager side (v0.44.0).
+    fun openGeckoDownload(record: GeckoDownloadRecord) {
+        try {
+            val uriText = record.contentUri
+            if (uriText == null) {
+                // Pre-Android-10 records carry a plain file path in
+                // the app download folder instead of a MediaStore
+                // URI; there is no grantable content URI for it.
+                val path = record.filePath
+                if (path == null || !java.io.File(path).exists()) {
+                    android.widget.Toast.makeText(
+                        context, "文件已不存在，可能已被删除或移动",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                    return
+                }
+                val intent = android.content.Intent(
+                    android.content.Intent.ACTION_VIEW
+                )
+                    .setDataAndType(
+                        android.net.Uri.fromFile(java.io.File(path)),
+                        record.mimeType ?: "*/*"
+                    )
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(intent)
+                return
+            }
+            val uri = android.net.Uri.parse(uriText)
+            if (!geckoRecordFileExists(record)) {
+                android.widget.Toast.makeText(
+                    context, "文件已不存在，可能已被删除或移动",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+                return
+            }
+            val mime = record.mimeType?.takeIf { it.isNotBlank() }
+                ?: try {
+                    context.contentResolver.getType(uri)
+                } catch (t: Throwable) {
+                    null
+                } ?: "*/*"
+            val intent = android.content.Intent(
+                android.content.Intent.ACTION_VIEW
+            )
+                .setDataAndType(uri, mime)
+                .addFlags(
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+                .addFlags(
+                    android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                )
+            context.startActivity(intent)
+        } catch (e: android.content.ActivityNotFoundException) {
+            android.widget.Toast.makeText(
+                context, "没有能打开这种文件的应用",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        } catch (t: Throwable) {
+            android.widget.Toast.makeText(
+                context, "打开失败，文件可能已被删除或移动",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    val toDeleteGecko = pendingGeckoDelete
+    if (toDeleteGecko != null) {
+        AlertDialog(
+            onDismissRequest = { pendingGeckoDelete = null },
+            title = { Text("删除这条火狐下载？") },
+            text = {
+                Text(
+                    "「${toDeleteGecko.fileName}」的记录会被删掉，" +
+                        "下载文件夹里的文件也会一起删掉，没法恢复。" +
+                        "如果文件删不掉，记录会保留下来并告诉你。"
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    pendingGeckoDelete = null
+                    if (deleteGeckoRecord(toDeleteGecko)) {
+                        android.widget.Toast.makeText(
+                            context, "已删除记录和文件",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    } else {
+                        android.widget.Toast.makeText(
+                            context, "文件没删掉，记录先保留着",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingGeckoDelete = null }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
+    if (showClearGeckoConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearGeckoConfirm = false },
+            title = { Text("清空火狐下载记录？") },
+            text = {
+                Text(
+                    "将清除本节全部 ${geckoRecords.size} 条记录，" +
+                        "对应的文件也会一起从下载文件夹里删掉，没法恢复。" +
+                        "哪个文件删不掉，哪条记录就会保留下来。"
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showClearGeckoConfirm = false
+                    // Same semantics as a single delete, per record:
+                    // file first, record only once the file is gone.
+                    var removedCount = 0
+                    var keptCount = 0
+                    geckoRecords.toList().forEach { record ->
+                        if (deleteGeckoRecord(record)) {
+                            removedCount++
+                        } else {
+                            keptCount++
+                        }
+                    }
+                    android.widget.Toast.makeText(
+                        context,
+                        if (keptCount == 0) {
+                            "已清除 $removedCount 条记录"
+                        } else {
+                            "已清除 $removedCount 条；" +
+                                "$keptCount 条的文件没删掉，记录保留着"
+                        },
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }) { Text("清空") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearGeckoConfirm = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
     fun retryDownload(entry: DownloadEntry) {
         val source = entry.sourceUrl
         if (source.isNullOrBlank()) {
@@ -7961,11 +8186,11 @@ private fun DownloadsScreen(
                         }
                 }
             }
-            if (entries.isEmpty()) {
+            if (entries.isEmpty() && geckoRecords.isEmpty()) {
                 item {
                     EmptyState(Icons.Filled.Download, "还没有下载记录。")
                 }
-            } else if (visibleEntries.isEmpty()) {
+            } else if (entries.isNotEmpty() && visibleEntries.isEmpty()) {
                 item {
                     EmptyState(
                         Icons.Filled.Download,
@@ -8053,20 +8278,97 @@ private fun DownloadsScreen(
                 )
                 HorizontalDivider()
             }
+            if (geckoRecords.isNotEmpty()) {
+                item {
+                    // Section header for the Gecko records
+                    // (v0.57.0). Kept apart from the DownloadManager
+                    // list above on purpose: these rows have no
+                    // download status, progress or retry — the file
+                    // is simply saved already.
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 16.dp, end = 8.dp, top = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "火狐下载",
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            Text(
+                                "火狐标签下载的文件由浏览器直接保存，" +
+                                    "不走系统下载管理，所以单独列在这里。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        TextButton(onClick = { showClearGeckoConfirm = true }) {
+                            Text("清空本节记录")
+                        }
+                    }
+                }
+                items(
+                    geckoRecords,
+                    key = { "gecko-${it.time}-${it.contentUri ?: it.filePath ?: it.fileName}" }
+                ) { record ->
+                    ListItem(
+                        headlineContent = { Text(record.fileName, maxLines = 2) },
+                        supportingContent = {
+                            val parts = mutableListOf(
+                                formatStorageSize(record.sizeBytes),
+                                geckoTimeFormat.format(java.util.Date(record.time))
+                            )
+                            if (!record.mimeType.isNullOrBlank()) {
+                                parts.add(record.mimeType)
+                            }
+                            val host = hostOf(record.sourceUrl)
+                            if (host.isNotBlank()) {
+                                parts.add(host)
+                            }
+                            parts.add("点按打开")
+                            Text(parts.joinToString(" · "))
+                        },
+                        leadingContent = {
+                            Icon(Icons.Filled.Download, contentDescription = null)
+                        },
+                        trailingContent = {
+                            Row {
+                                IconButton(onClick = { openGeckoDownload(record) }) {
+                                    Icon(
+                                        Icons.Filled.OpenInNew,
+                                        contentDescription = "打开文件"
+                                    )
+                                }
+                                IconButton(onClick = { pendingGeckoDelete = record }) {
+                                    Icon(
+                                        Icons.Filled.Delete,
+                                        contentDescription = "删除这条记录"
+                                    )
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { openGeckoDownload(record) }
+                    )
+                    HorizontalDivider()
+                }
+            }
             item {
                 // Duplicate-name and list-scope notes, so a renamed
-                // or Gecko-side download is never mistaken for a
-                // lost file: DownloadManager never overwrites an
-                // existing file (a repeated download is either
-                // saved under an adjusted name or reported as
-                // "同名文件已经存在"), and Gecko-tab downloads are
-                // saved straight into the system Downloads folder
-                // by the app itself, so they do not appear in this
-                // DownloadManager-backed list.
+                // download is never mistaken for a lost file:
+                // DownloadManager never overwrites an existing file
+                // (a repeated download is either saved under an
+                // adjusted name or reported as "同名文件已经存在").
+                // Gecko-tab downloads are recorded in the section
+                // above (v0.57.0); incognito Gecko downloads are
+                // saved as usual but deliberately leave no record.
                 Text(
                     text = "说明：同一个文件重复下载时，原来的文件不会被覆盖——" +
                         "系统可能给新文件自动改名保存，也可能提示「同名文件已经存在」。" +
-                        "火狐标签下载的文件由浏览器直接存进系统下载文件夹，不出现在这个列表里。",
+                        "火狐标签下载的文件会列在上面的「火狐下载」一节里；" +
+                        "无痕标签里的火狐下载只保存文件、不留记录，所以不会出现在这里。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
