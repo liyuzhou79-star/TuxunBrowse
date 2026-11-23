@@ -12,8 +12,8 @@ android {
         applicationId = "com.tuxunbrowse.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 12
-        versionName = "0.12.0"
+        versionCode = 13
+        versionName = "0.13.0"
         // GeckoView pushes the method count past 64k in debug builds.
         multiDexEnabled = true
     }
@@ -77,6 +77,10 @@ dependencies {
     implementation("androidx.compose.ui:ui-text")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended:1.7.2")
+    // Only for explicitly enabling WebView Safe Browsing
+    // (WebSettingsCompat.setSafeBrowsingEnabled); 1.11.0 is compatible
+    // with compileSdk 35 and adds only a small library to the APK.
+    implementation("androidx.webkit:webkit:1.11.0")
     // Firefox engine. Version verified on maven.mozilla.org.
     implementation("org.mozilla.geckoview:geckoview:132.0.20241110192737")
     debugImplementation("androidx.compose.ui:ui-tooling")

@@ -18,7 +18,9 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -30,6 +32,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.History
@@ -112,6 +115,7 @@ import com.tuxunbrowse.android.data.matchSuggestions
 import com.tuxunbrowse.android.data.resolveInput
 import com.tuxunbrowse.android.engine.BrowserTab
 import com.tuxunbrowse.android.engine.GeckoHolder
+import com.tuxunbrowse.android.engine.TabLoadError
 import com.tuxunbrowse.android.engine.GeckoJsPromptKind
 import com.tuxunbrowse.android.engine.TabContent
 import com.tuxunbrowse.android.engine.startSystemDownload
@@ -226,6 +230,15 @@ fun BrowserApp(
         GeckoSession.PermissionDelegate.MediaCallback
     ) -> Unit = { _, _, _, callback -> callback.reject() }
 
+    // Pages asking for a new window (target=_blank / window.open) land
+    // here: WebView tabs report just the target URL; Gecko tabs hand
+    // over the new session GeckoView asked us to create. Wired up below
+    // next to compatRedirectHandler. Defaults do nothing.
+    var newWindowHandler: (BrowserTab, String) -> Unit = { _, _ -> }
+    var geckoNewSessionHandler: (
+        BrowserTab, GeckoSession, String
+    ) -> Unit = { _, _, _ -> }
+
     fun makeTab(
         engine: Engine,
         incognito: Boolean,
@@ -273,6 +286,12 @@ fun BrowserApp(
             onGeckoContentPermission = { perm -> geckoContentPermHandler(perm) },
             onGeckoMediaPermission = { uri, video, audio, callback ->
                 geckoMediaPermHandler(uri, video, audio, callback)
+            },
+            onNewWindowRequest = { target ->
+                created?.let { newWindowHandler(it, target) }
+            },
+            onGeckoNewSession = { session, uri ->
+                created?.let { geckoNewSessionHandler(it, session, uri) }
             }
         )
         created = tab
@@ -321,6 +340,26 @@ fun BrowserApp(
             val replacement = replaceTabEngine(tab, Engine.WEBVIEW)
             if (replacement.url != target) replacement.load(target)
         }
+    }
+
+    // A page asked for a new window: open the target in a real new tab
+    // (same engine, same incognito flag as the page's tab) through the
+    // usual tab-creation path and switch to it.
+    newWindowHandler = { source, target ->
+        newTab(source.engine, source.incognito, target, source.desktopMode)
+        screen = Screen.BROWSER
+    }
+
+    // Same for Gecko tabs: the source tab's onNewSession already
+    // created and opened the new session; build the new tab around it.
+    // attachAdoptedGeckoSession wires the new tab's delegates into the
+    // session synchronously, before Gecko starts loading the page.
+    geckoNewSessionHandler = { source, session, uri ->
+        val tab = makeTab(source.engine, source.incognito, uri, source.desktopMode)
+        tab.attachAdoptedGeckoSession(session, context)
+        tabs.add(tab)
+        activeTabId = tab.id
+        screen = Screen.BROWSER
     }
 
     // A WebView tab's rendering process was killed by the system: rebuild
@@ -809,6 +848,7 @@ fun BrowserApp(
                 searchEngine = store.searchEngine,
                 onOpenSuggestion = { url -> openUrl(url) },
                 onGoHome = { activeTab()?.load(HOME_URL) },
+                onReloadPage = { activeTab()?.reload() },
                 onSwitchEngine = { engine, rememberSite ->
                     val tab = activeTab() ?: return@BrowserScreen
                     switchTabEngine(tab, engine, rememberSite)
@@ -1467,6 +1507,68 @@ private fun EngineCard(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+/**
+ * The app's own load-failure page, shown when a tab's page could not
+ * be loaded at the network level (offline, unknown host, refused
+ * connection, ...). Real Material 3 components only; the column
+ * scrolls so nothing is ever cut off on a small screen.
+ */
+@Composable
+private fun LoadErrorContent(
+    error: TabLoadError,
+    onReload: () -> Unit,
+    onGoHome: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            Icons.Filled.Error,
+            contentDescription = "加载失败",
+            tint = MaterialTheme.colorScheme.error,
+            modifier = Modifier.padding(bottom = 16.dp)
+        )
+        Text(
+            "网页打不开",
+            style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+        Text(
+            error.reason,
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.padding(bottom = 16.dp)
+        )
+        Text(
+            "打不开的网址：${error.failedUrl}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 4.dp)
+        )
+        Text(
+            error.detail,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 24.dp)
+        )
+        Button(onClick = onReload) {
+            Icon(Icons.Filled.Refresh, contentDescription = null)
+            Text("重新加载", modifier = Modifier.padding(start = 8.dp))
+        }
+        OutlinedButton(
+            onClick = onGoHome,
+            modifier = Modifier.padding(top = 12.dp)
+        ) {
+            Icon(Icons.Filled.Home, contentDescription = null)
+            Text("回首页", modifier = Modifier.padding(start = 8.dp))
+        }
+    }
+}
+
 private fun BrowserScreen(
     tabs: List<BrowserTab>,
     activeTab: BrowserTab?,
@@ -1488,6 +1590,7 @@ private fun BrowserScreen(
     searchEngine: SearchEngine,
     onOpenSuggestion: (String) -> Unit,
     onGoHome: () -> Unit,
+    onReloadPage: () -> Unit,
     onSwitchEngine: (Engine, Boolean) -> Unit,
     activeDesktopMode: Boolean,
     onToggleDesktopMode: (Boolean) -> Unit,
@@ -1988,6 +2091,17 @@ private fun BrowserScreen(
             if (activeTab != null) {
                 if (activeTab.isHome) {
                     homeContent()
+                } else if (activeTab.loadError != null) {
+                    // The page failed to load at the network level:
+                    // show the app's own error page instead of the
+                    // engine's blank/default one. It disappears on its
+                    // own once a load succeeds (both engines clear the
+                    // state when a new load starts).
+                    LoadErrorContent(
+                        error = activeTab.loadError!!,
+                        onReload = onReloadPage,
+                        onGoHome = onGoHome
+                    )
                 } else {
                     TabContent(tab = activeTab, modifier = Modifier.fillMaxSize())
                 }

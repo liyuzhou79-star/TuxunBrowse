@@ -5,6 +5,7 @@ import android.app.DownloadManager
 import android.content.Context
 import android.net.Uri
 import android.os.Environment
+import android.os.Message
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
@@ -12,6 +13,8 @@ import android.webkit.PermissionRequest
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
@@ -22,6 +25,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.runtime.Composable
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 import com.tuxunbrowse.android.data.Engine
 import com.tuxunbrowse.android.data.HOME_URL
 import org.mozilla.geckoview.AllowOrDeny
@@ -34,6 +39,7 @@ import org.mozilla.geckoview.GeckoSession.PromptDelegate
 import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.GeckoView
 import org.mozilla.geckoview.StorageController
+import org.mozilla.geckoview.WebRequestError
 import org.mozilla.geckoview.WebResponse
 
 /** Shared Gecko runtime; created lazily, null when Gecko fails to start. */
@@ -122,6 +128,74 @@ object GeckoHolder {
 /** Kinds of JavaScript dialogs a Gecko page can raise. */
 enum class GeckoJsPromptKind { ALERT, CONFIRM, TEXT }
 
+/**
+ * A network-level load failure for one tab (offline, unknown host,
+ * refused connection, ...). HTTP errors such as 404/500 do not land
+ * here — the server's own page is shown for those. The app renders
+ * this in its own error UI instead of the engine's default blank or
+ * built-in error page.
+ */
+data class TabLoadError(
+    val failedUrl: String,
+    val reason: String,
+    val detail: String
+)
+
+/** Plain-language reason for a WebView main-frame error code. */
+private fun webViewErrorReason(errorCode: Int): String = when (errorCode) {
+    WebViewClient.ERROR_HOST_LOOKUP ->
+        "找不到这个网站，可能是网址写错了，或者现在的网络连不上它"
+    WebViewClient.ERROR_CONNECT ->
+        "连不上这个网站，请检查网络后再试"
+    WebViewClient.ERROR_TIMEOUT ->
+        "这个网站半天没回应，连接超时了"
+    WebViewClient.ERROR_REDIRECT_LOOP ->
+        "这个网站一直在来回跳转，没法打开"
+    WebViewClient.ERROR_FAILED_SSL_HANDSHAKE ->
+        "和这个网站的安全连接没建起来，没法打开"
+    WebViewClient.ERROR_BAD_URL ->
+        "这个网址写得不对，打不开"
+    WebViewClient.ERROR_UNSUPPORTED_SCHEME ->
+        "这种链接本应用打不开"
+    WebViewClient.ERROR_TOO_MANY_REQUESTS ->
+        "这个网站说请求太多了，请过一会儿再试"
+    else -> "网页没能打开，请检查网络后重试"
+}
+
+/**
+ * Plain-language reason for a Gecko load error. WebRequestError's
+ * code/category constants were verified against the GeckoView 132
+ * AAR with javap.
+ */
+private fun geckoErrorReason(error: WebRequestError): String = when (error.code) {
+    WebRequestError.ERROR_UNKNOWN_HOST ->
+        "找不到这个网站，可能是网址写错了，或者现在的网络连不上它"
+    WebRequestError.ERROR_OFFLINE ->
+        "现在没有网络连接，请连上网络后再试"
+    WebRequestError.ERROR_NET_TIMEOUT ->
+        "这个网站半天没回应，连接超时了"
+    WebRequestError.ERROR_CONNECTION_REFUSED ->
+        "这个网站拒绝了连接，没法打开"
+    WebRequestError.ERROR_NET_INTERRUPT, WebRequestError.ERROR_NET_RESET ->
+        "网络连接中途断了，请重试"
+    WebRequestError.ERROR_SECURITY_SSL, WebRequestError.ERROR_SECURITY_BAD_CERT,
+    WebRequestError.ERROR_BAD_HSTS_CERT ->
+        "这个网站的安全证书有问题，没法安全打开"
+    WebRequestError.ERROR_MALFORMED_URI ->
+        "这个网址写得不对，打不开"
+    WebRequestError.ERROR_REDIRECT_LOOP ->
+        "这个网站一直在来回跳转，没法打开"
+    else -> when (error.category) {
+        WebRequestError.ERROR_CATEGORY_NETWORK ->
+            "网络连接有问题，网页没能打开，请检查网络后重试"
+        WebRequestError.ERROR_CATEGORY_SECURITY ->
+            "这个网站的安全有问题，没法打开"
+        WebRequestError.ERROR_CATEGORY_PROXY ->
+            "代理连不上，网页没能打开"
+        else -> "网页没能打开，请检查网络后重试"
+    }
+}
+
 private var nextTabId = 1
 
 private const val DESKTOP_USER_AGENT =
@@ -170,7 +244,9 @@ class BrowserTab(
         Array<PermissionDelegate.MediaSource>?,
         Array<PermissionDelegate.MediaSource>?,
         PermissionDelegate.MediaCallback
-    ) -> Unit = { _, _, _, callback -> callback.reject() }
+    ) -> Unit = { _, _, _, callback -> callback.reject() },
+    private val onNewWindowRequest: (String) -> Unit = {},
+    private val onGeckoNewSession: (GeckoSession, String) -> Unit = { _, _ -> }
 ) {
     val id: Int = nextTabId++
     var url by mutableStateOf(startUrl)
@@ -182,6 +258,12 @@ class BrowserTab(
 
     /** Find-in-page match counter text ("2 / 9"); WebView only. */
     var findInfo by mutableStateOf("")
+
+    /** Latest network-level load failure, or null when the page is fine. */
+    var loadError by mutableStateOf<TabLoadError?>(null)
+
+    /** Throwaway WebView holding a window.open popup until its URL is known. */
+    private var popupChild: WebView? = null
 
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
 
@@ -209,6 +291,7 @@ class BrowserTab(
         get() = url == HOME_URL
 
     fun load(target: String) {
+        loadError = null
         url = target
         // The native home page is rendered by the app itself; the web
         // engines must never try to load its internal URL.
@@ -294,6 +377,14 @@ class BrowserTab(
 
     fun destroy() {
         exitFullscreen()
+        popupChild?.let {
+            try {
+                it.destroy()
+            } catch (t: Throwable) {
+                // Already gone; nothing to clean up.
+            }
+        }
+        popupChild = null
         webView?.let {
             it.stopLoading()
             it.destroy()
@@ -318,6 +409,15 @@ class BrowserTab(
         view.settings.builtInZoomControls = true
         view.settings.displayZoomControls = false
         view.settings.textZoom = textZoomProvider()
+        // Safe Browsing, turned on explicitly through AndroidX WebKit.
+        // Devices whose WebView does not support it are skipped quietly.
+        try {
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.SAFE_BROWSING_ENABLE)) {
+                WebSettingsCompat.setSafeBrowsingEnabled(view.settings, true)
+            }
+        } catch (t: Throwable) {
+            // Safe Browsing is best-effort only; browsing must still work.
+        }
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             view.settings.setAlgorithmicDarkeningAllowed(webDarkProvider())
         }
@@ -360,6 +460,37 @@ class BrowserTab(
                 }
             }
 
+            override fun onPageStarted(
+                wv: WebView,
+                startedUrl: String?,
+                favicon: android.graphics.Bitmap?
+            ) {
+                super.onPageStarted(wv, startedUrl, favicon)
+                // A fresh load is under way; any earlier failure is over.
+                loadError = null
+            }
+
+            override fun onReceivedError(
+                wv: WebView,
+                request: WebResourceRequest,
+                error: WebResourceError
+            ) {
+                super.onReceivedError(wv, request, error)
+                // Only main-frame failures replace the page with the
+                // app's own error UI; a broken image or script must not.
+                // HTTP errors (404/500) never arrive here — the server
+                // answers those itself and its page is shown as-is.
+                if (!request.isForMainFrame) return
+                val failed = request.url?.toString() ?: url
+                val description = error.description?.toString().orEmpty()
+                loadError = TabLoadError(
+                    failedUrl = failed,
+                    reason = webViewErrorReason(error.errorCode),
+                    detail = "错误码 ${error.errorCode}" +
+                        if (description.isNotBlank()) "：$description" else ""
+                )
+            }
+
             override fun onRenderProcessGone(
                 wv: WebView,
                 detail: RenderProcessGoneDetail
@@ -388,6 +519,63 @@ class BrowserTab(
         view.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(wv: WebView, newProgress: Int) {
                 progress = newProgress
+            }
+
+            override fun onCreateWindow(
+                wv: WebView,
+                isDialog: Boolean,
+                isUserGesture: Boolean,
+                resultMsg: Message
+            ): Boolean {
+                // The page asked for a new window (target=_blank or
+                // window.open). Standard Android transport: hand the
+                // system a throwaway child WebView; the first real URL
+                // it heads to is reported back through its client and
+                // the app opens it in a real new tab through the usual
+                // tab-creation path. The child itself never displays
+                // anything. Gesture and non-gesture (popup) opens both
+                // go through here; a new window opened from inside the
+                // new tab hits this same path again, so there is no
+                // separate nesting to handle.
+                val child = WebView(wv.context)
+                var forwarded = false
+                fun forward(target: String?) {
+                    if (forwarded) return
+                    if (target.isNullOrBlank() || !target.startsWith("http")) return
+                    forwarded = true
+                    if (popupChild === child) popupChild = null
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        try {
+                            child.destroy()
+                        } catch (t: Throwable) {
+                            // Already gone; nothing to clean up.
+                        }
+                    }
+                    onNewWindowRequest(target)
+                }
+                child.webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(
+                        cv: WebView,
+                        request: WebResourceRequest
+                    ): Boolean {
+                        forward(request.url?.toString())
+                        return true
+                    }
+
+                    override fun onPageStarted(
+                        cv: WebView,
+                        startedUrl: String?,
+                        favicon: android.graphics.Bitmap?
+                    ) {
+                        forward(startedUrl)
+                    }
+                }
+                popupChild = child
+                val transport = resultMsg.obj as? WebView.WebViewTransport
+                    ?: return false
+                transport.webView = child
+                resultMsg.sendToTarget()
+                return true
             }
 
             override fun onReceivedTitle(wv: WebView, receivedTitle: String?) {
@@ -454,10 +642,7 @@ class BrowserTab(
         return view
     }
 
-    fun obtainGecko(context: Context): GeckoView? {
-        geckoView?.let { return it }
-        val appContext = context.applicationContext
-        val runtime = GeckoHolder.ensure(context) ?: return null
+    private fun buildGeckoSettings(): GeckoSessionSettings {
         val settingsBuilder = GeckoSessionSettings.Builder()
             .usePrivateMode(incognito)
         if (desktopMode) {
@@ -465,8 +650,21 @@ class BrowserTab(
                 .userAgentMode(GeckoSessionSettings.USER_AGENT_MODE_DESKTOP)
                 .viewportMode(GeckoSessionSettings.VIEWPORT_MODE_DESKTOP)
         }
-        val settings = settingsBuilder.build()
-        val session = GeckoSession(settings)
+        return settingsBuilder.build()
+    }
+
+    /**
+     * Take over a GeckoSession created by another tab's onNewSession:
+     * this (new) tab adopts it and wires up all the delegates. The app
+     * calls this synchronously while onNewSession is still running, so
+     * the delegates are in place before Gecko starts loading the page.
+     */
+    fun attachAdoptedGeckoSession(session: GeckoSession, context: Context) {
+        geckoSession = session
+        configureGeckoSession(session, context.applicationContext)
+    }
+
+    private fun configureGeckoSession(session: GeckoSession, appContext: Context) {
         session.navigationDelegate = object : GeckoSession.NavigationDelegate {
             override fun onLocationChange(
                 s: GeckoSession,
@@ -509,8 +707,55 @@ class BrowserTab(
                 }
                 return null
             }
+
+            override fun onNewSession(
+                s: GeckoSession,
+                uri: String
+            ): GeckoResult<GeckoSession>? {
+                // The page asked for a new window (target=_blank or
+                // window.open). Verified against the GeckoView 132 AAR
+                // with javap: onNewSession(GeckoSession, String)
+                // returns GeckoResult<GeckoSession>, and answering
+                // with a new session opens the page in that session.
+                // The app creates a real new tab around this session —
+                // wiring its delegates synchronously through
+                // attachAdoptedGeckoSession — and switches to it.
+                val runtime = GeckoHolder.runtime ?: return null
+                val newSession = GeckoSession(buildGeckoSettings())
+                newSession.open(runtime)
+                onGeckoNewSession(newSession, uri)
+                return GeckoResult.fromValue(newSession)
+            }
+
+            override fun onLoadError(
+                s: GeckoSession,
+                // @Nullable in the 132 AAR (checked with javap -v): the
+                // Kotlin override must declare it nullable to match.
+                uri: String?,
+                error: WebRequestError
+            ): GeckoResult<String>? {
+                // Network-level failure (offline, unknown host, ...).
+                // Verified against the 132 AAR with javap: onLoadError
+                // takes a WebRequestError with public code/category
+                // fields and returns GeckoResult<String>; answering
+                // null means the app handles the failure itself — here
+                // the tab's own error state, which the app renders as
+                // its error page. HTTP errors (404/500) never arrive
+                // here; the server's own page is shown for those.
+                loadError = TabLoadError(
+                    failedUrl = uri ?: url,
+                    reason = geckoErrorReason(error),
+                    detail = "分类 ${error.category} · 错误码 ${error.code}"
+                )
+                return null
+            }
         }
         session.progressDelegate = object : GeckoSession.ProgressDelegate {
+            override fun onPageStart(s: GeckoSession, startUrl: String) {
+                // A fresh load is under way; any earlier failure is over.
+                loadError = null
+            }
+
             override fun onProgressChange(s: GeckoSession, p: Int) {
                 progress = p
             }
@@ -704,8 +949,26 @@ class BrowserTab(
                 onGeckoMediaPermission(uri, video, audio, callback)
             }
         }
-        session.open(runtime)
-        geckoSession = session
+    }
+
+    fun obtainGecko(context: Context): GeckoView? {
+        geckoView?.let { return it }
+        val appContext = context.applicationContext
+        val runtime = GeckoHolder.ensure(context) ?: return null
+        val adopted = geckoSession != null
+        val session: GeckoSession
+        if (adopted) {
+            // Session handed over from another tab's onNewSession:
+            // already open, delegates already wired by
+            // attachAdoptedGeckoSession, and Gecko itself is loading
+            // the requested page into it — do not load it again.
+            session = geckoSession!!
+        } else {
+            session = GeckoSession(buildGeckoSettings())
+            configureGeckoSession(session, appContext)
+            session.open(runtime)
+            geckoSession = session
+        }
         val view = GeckoView(context)
         view.layoutParams = ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -713,7 +976,7 @@ class BrowserTab(
         )
         view.setSession(session)
         geckoView = view
-        if (url.isNotBlank() && url != HOME_URL) session.loadUri(url)
+        if (!adopted && url.isNotBlank() && url != HOME_URL) session.loadUri(url)
         return view
     }
 }
