@@ -373,10 +373,22 @@ fun hostOf(url: String): String? = try {
     null
 }
 
+/**
+ * The project's one host-matching rule: [host] belongs to [site]
+ * when it is the site itself or a subdomain of it. Every per-site
+ * feature (compat memory, per-site data clearing, per-site history
+ * deletion) goes through this so "this site" means the same thing
+ * everywhere.
+ */
+fun hostMatchesSite(host: String?, site: String): Boolean {
+    if (host.isNullOrBlank() || site.isBlank()) return false
+    return host == site || host.endsWith(".$site")
+}
+
 /** True when [host] is a remembered compat site or a subdomain of one. */
 fun isCompatHost(host: String?, sites: Set<String>): Boolean {
     if (host.isNullOrBlank()) return false
-    return sites.any { site -> host == site || host.endsWith(".$site") }
+    return sites.any { site -> hostMatchesSite(host, site) }
 }
 
 /** Local persistence: engine choices, search engine, compat sites, bookmarks, history. */

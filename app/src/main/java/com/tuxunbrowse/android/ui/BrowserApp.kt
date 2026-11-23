@@ -184,6 +184,7 @@ import com.tuxunbrowse.android.data.bookmarksToJson
 import com.tuxunbrowse.android.data.MAX_IMPORT_FILE_CHARS
 import com.tuxunbrowse.android.data.isValidCustomSearchTemplate
 import com.tuxunbrowse.android.data.hostOf
+import com.tuxunbrowse.android.data.hostMatchesSite
 import com.tuxunbrowse.android.data.isCompatHost
 import com.tuxunbrowse.android.data.hasBlockedPageScheme
 import com.tuxunbrowse.android.data.isAllowedPageUrl
@@ -1675,11 +1676,23 @@ fun BrowserApp(
     fun clearSiteData(host: String) {
         GeckoHolder.clearDataFromHost(host)
         val before = history.size
-        history.removeAll {
-            val h = hostOf(it.url)
-            h == host || (h != null && h.endsWith(".$host"))
-        }
+        history.removeAll { hostMatchesSite(hostOf(it.url), host) }
         if (history.size != before) store.saveHistory(history)
+    }
+
+    /**
+     * Delete every history entry belonging to one site (the site
+     * itself plus its subdomains — the shared hostMatchesSite rule,
+     * the same one clearSiteData uses). History records only: this
+     * never touches the site's cookies or stored web data. Returns
+     * how many entries were removed.
+     */
+    fun deleteHistoryForSite(host: String): Int {
+        val before = history.size
+        history.removeAll { hostMatchesSite(hostOf(it.url), host) }
+        val removed = before - history.size
+        if (removed > 0) store.saveHistory(history)
+        return removed
     }
 
     /**
@@ -2509,9 +2522,33 @@ fun BrowserApp(
             history = history,
             onBack = { screen = Screen.BROWSER },
             onOpen = { openUrl(it.url) },
+            onOpenInNewTab = {
+                // Background open (v0.48.0 rule): a long-press "open
+                // in new tab" keeps the user where they are — here,
+                // on the history page — and confirms with a toast.
+                newTab(store.mainEngine, false, it.url, activate = false)
+                android.widget.Toast.makeText(
+                    context, "已在后台打开新标签",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            },
+            onCopyUrl = {
+                val ok = copyTextToClipboard(context, "url", it.url)
+                android.widget.Toast.makeText(
+                    context, if (ok) "网址已复制" else "复制失败，请重试",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            },
             onDelete = {
                 history.remove(it)
                 store.saveHistory(history)
+            },
+            onDeleteSite = { host ->
+                val removed = deleteHistoryForSite(host)
+                android.widget.Toast.makeText(
+                    context, "已删除 $host 的 $removed 条历史记录",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
             },
             onClear = {
                 history.clear()
@@ -6462,16 +6499,28 @@ private fun BookmarksScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun HistoryScreen(
     history: List<HistoryItem>,
     onBack: () -> Unit,
     onOpen: (HistoryItem) -> Unit,
+    onOpenInNewTab: (HistoryItem) -> Unit,
+    onCopyUrl: (HistoryItem) -> Unit,
     onDelete: (HistoryItem) -> Unit,
+    onDeleteSite: (String) -> Unit,
     onClear: () -> Unit
 ) {
     var query by remember { mutableStateOf("") }
+    // Long-press menu target (v0.53.0) and the pending "delete this
+    // site's history" confirmation (host + live count). Both live
+    // here in the screen: the list, the search query and the grouping
+    // all read the shared history list, so deleting through the
+    // callbacks refreshes in place without touching the query.
+    var menuItem by remember { mutableStateOf<HistoryItem?>(null) }
+    var siteDeleteTarget by remember {
+        mutableStateOf<Pair<String, Int>?>(null)
+    }
     val filtered = if (query.isBlank()) {
         history
     } else {
@@ -6587,12 +6636,149 @@ private fun HistoryScreen(
                         },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onOpen(item) }
+                            .combinedClickable(
+                                onClick = { onOpen(item) },
+                                onLongClick = { menuItem = item }
+                            )
                     )
                     HorizontalDivider()
                 }
             }
         }
+    }
+    // Long-press menu (v0.53.0): same AlertDialog + ListItem shape
+    // as the web-page context menus (v0.42.0/v0.43.0).
+    val menuTarget = menuItem
+    if (menuTarget != null) {
+        val siteHost = hostOf(menuTarget.url)
+        AlertDialog(
+            onDismissRequest = { menuItem = null },
+            title = {
+                Text(
+                    menuTarget.title.ifBlank { menuTarget.url },
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            },
+            text = {
+                LazyColumn {
+                    item {
+                        Text(
+                            menuTarget.url,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("打开") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    menuItem = null
+                                    onOpen(menuTarget)
+                                }
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("在新标签打开") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    menuItem = null
+                                    onOpenInNewTab(menuTarget)
+                                }
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("复制网址") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    menuItem = null
+                                    onCopyUrl(menuTarget)
+                                }
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("删除这条") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    menuItem = null
+                                    onDelete(menuTarget)
+                                }
+                        )
+                    }
+                    if (siteHost != null) {
+                        item {
+                            ListItem(
+                                headlineContent = {
+                                    Text("删除本站全部记录")
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        // Count against the full
+                                        // history list right now, so
+                                        // the confirmation states the
+                                        // real number even while a
+                                        // search filter is active.
+                                        val count = history.count {
+                                            hostMatchesSite(
+                                                hostOf(it.url), siteHost
+                                            )
+                                        }
+                                        menuItem = null
+                                        siteDeleteTarget =
+                                            siteHost to count
+                                    }
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { menuItem = null }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+    // "Delete this site's history" confirmation (v0.53.0): states
+    // the domain and the real entry count, and says plainly that
+    // only history records go — cookies and site data are the
+    // clear-data page's job and are not touched here.
+    val siteTarget = siteDeleteTarget
+    if (siteTarget != null) {
+        val (host, count) = siteTarget
+        AlertDialog(
+            onDismissRequest = { siteDeleteTarget = null },
+            title = { Text("删除本站全部记录？") },
+            text = {
+                Text(
+                    "将删除 $host 的全部 $count 条历史记录" +
+                        "（含它的子域名）。" +
+                        "只删历史记录，不会清除这个网站的 Cookie 和网站数据。"
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    siteDeleteTarget = null
+                    onDeleteSite(host)
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { siteDeleteTarget = null }) {
+                    Text("取消")
+                }
+            }
+        )
     }
 }
 
