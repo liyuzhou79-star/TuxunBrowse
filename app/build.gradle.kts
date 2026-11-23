@@ -31,6 +31,17 @@ android {
         }
     }
 
+    splits {
+        abi {
+            // GeckoView's fat AAR carries four ABIs; ship one APK per
+            // ABI we support so nobody downloads the other architectures.
+            isEnable = true
+            reset()
+            include("arm64-v8a", "x86_64")
+            isUniversalApk = false
+        }
+    }
+
     buildTypes {
         debug {
             signingConfig = signingConfigs.getByName("testPin")

@@ -167,10 +167,6 @@ class BrowserTab(
                 }
             }
 
-            override fun onTitleChange(s: GeckoSession, newTitle: String?) {
-                if (!newTitle.isNullOrBlank()) title = newTitle
-            }
-
             override fun onCanGoBack(s: GeckoSession, can: Boolean) {
                 canGoBack = can
             }
@@ -191,6 +187,13 @@ class BrowserTab(
 
             override fun onPageStop(s: GeckoSession, success: Boolean) {
                 progress = 100
+            }
+        }
+        // GeckoView 132 reports page titles on ContentDelegate, not on
+        // NavigationDelegate (where older versions had them).
+        session.contentDelegate = object : GeckoSession.ContentDelegate {
+            override fun onTitleChange(s: GeckoSession, newTitle: String?) {
+                if (!newTitle.isNullOrBlank()) title = newTitle
             }
         }
         session.open(runtime)

@@ -22,9 +22,8 @@ class Store(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("tuxunbrowse", Context.MODE_PRIVATE)
 
-    var mainEngineChosen: Boolean
+    val mainEngineChosen: Boolean
         get() = prefs.contains(KEY_MAIN_ENGINE)
-        private set
 
     var mainEngine: Engine
         get() = Engine.fromId(prefs.getString(KEY_MAIN_ENGINE, null))
@@ -34,9 +33,8 @@ class Store(context: Context) {
         get() = Engine.fromId(prefs.getString(KEY_INCOGNITO_ENGINE, Engine.GECKO.id))
         set(value) = prefs.edit().putString(KEY_INCOGNITO_ENGINE, value.id).apply()
 
-    var incognitoEngineChosen: Boolean
+    val incognitoEngineChosen: Boolean
         get() = prefs.contains(KEY_INCOGNITO_ENGINE)
-        private set
 
     fun loadBookmarks(): MutableList<Bookmark> = readList(KEY_BOOKMARKS) {
         Bookmark(it.optString("title"), it.optString("url"))
