@@ -1023,6 +1023,25 @@ class BrowserTab(
                 // possible and breaking a login/payment redirect
                 // would be far worse than missing a download.
                 val target = request.url?.toString() ?: return false
+                // Special links (tel:/mailto:/sms:/geo:/market:/
+                // intent:): neither engine can load these itself —
+                // WebView would land on an error page. A real tap is
+                // handed to the shared external dispatcher (dialer,
+                // mail app, maps, store, ...); without a user gesture
+                // the navigation is simply blocked, so a page cannot
+                // silently pop another app open on its own. An
+                // http(s) fallback URL the dispatcher returns (from
+                // an intent: link) is loaded right here as a normal
+                // page.
+                if (request.isForMainFrame && isSpecialLinkUrl(target)) {
+                    if (request.hasGesture()) {
+                        val fallback = dispatchSpecialLink(wv.context, target)
+                        if (fallback != null) {
+                            wv.post { wv.loadUrl(fallback) }
+                        }
+                    }
+                    return true
+                }
                 if (request.isForMainFrame && request.hasGesture() &&
                     (target.startsWith("http://") ||
                         target.startsWith("https://")) &&
@@ -1372,6 +1391,28 @@ class BrowserTab(
                 if (target.startsWith("http") && isAdBlockEnabled() &&
                     AdBlocker.isAdRequest(target)
                 ) {
+                    return GeckoResult.fromValue(AllowOrDeny.DENY)
+                }
+                // Special links (tel:/mailto:/sms:/geo:/market:/
+                // intent:): same shared dispatcher as the WebView
+                // side. DENY the navigation either way — Gecko must
+                // never try to load these schemes itself — and only
+                // hand the link out when a real user gesture (and
+                // not a redirect hop) triggered it, so a page cannot
+                // silently pop another app open. An http(s) fallback
+                // URL the dispatcher returns (from an intent: link)
+                // is loaded in this tab as a normal page, posted to
+                // the main thread so it does not re-enter the load
+                // that is being denied right now.
+                if (isSpecialLinkUrl(target)) {
+                    if (request.hasUserGesture && !request.isRedirect) {
+                        val fallback = dispatchSpecialLink(appContext, target)
+                        if (fallback != null) {
+                            android.os.Handler(
+                                android.os.Looper.getMainLooper()
+                            ).post { load(fallback) }
+                        }
+                    }
                     return GeckoResult.fromValue(AllowOrDeny.DENY)
                 }
                 // A tap on a direct file link: same determination
@@ -2256,6 +2297,189 @@ fun isDirectDownloadUrl(url: String): Boolean {
     val dot = name.lastIndexOf('.')
     if (dot < 0 || dot == name.length - 1) return false
     return name.substring(dot + 1).lowercase() in DOWNLOAD_EXTENSIONS
+}
+
+/**
+ * Schemes a web page can link to that neither engine can load as a
+ * page: tapping one must be handed to the system (dialer, messaging,
+ * mail, maps, app store, or whatever app an intent: link names)
+ * instead of landing on an error page. Deliberately NOT in this set:
+ * javascript:/data:/file: and friends — those stay refused outright
+ * (the v0.31.0 inbound-guard口径), they are never handed out.
+ */
+val SPECIAL_LINK_SCHEMES: Set<String> = setOf(
+    "tel", "telprompt", "sms", "smsto", "mailto", "geo", "market", "intent"
+)
+
+/** The lower-cased scheme of [url] when it is a special link, else null. */
+fun specialLinkScheme(url: String): String? {
+    val scheme = url.substringBefore(':', "").lowercase()
+    return scheme.takeIf { it in SPECIAL_LINK_SCHEMES }
+}
+
+fun isSpecialLinkUrl(url: String): Boolean = specialLinkScheme(url) != null
+
+/**
+ * One query parameter of a special link, URL-decoded. These links are
+ * usually opaque URIs (mailto:a@b?subject=x), where android.net.Uri
+ * reports no query at all, so the query string is split by hand.
+ */
+private fun specialLinkQueryParam(url: String, name: String): String? {
+    val query = url.substringAfter('?', "").substringBefore('#')
+    if (query.isEmpty()) return null
+    for (part in query.split('&')) {
+        val key = part.substringBefore('=')
+        if (key.equals(name, ignoreCase = true)) {
+            val raw = part.substringAfter('=', "")
+            if (raw.isEmpty()) return null
+            return try {
+                Uri.decode(raw)
+            } catch (t: Throwable) {
+                raw
+            }
+        }
+    }
+    return null
+}
+
+/**
+ * The one shared external dispatcher for special links, used by both
+ * engines' navigation interception. Callers only invoke this for a
+ * navigation a real user gesture triggered; gesture-less hits are
+ * blocked by the callers and never reach here.
+ *
+ * Returns an http(s) URL the caller should load in the current tab
+ * when the link carries one (an intent: link's browser_fallback_url,
+ * or an intent: link whose target is itself a web page); null in
+ * every other case — the link was handed to the system, or it could
+ * not be handled and the user was told so with a Toast. Every
+ * hand-out is try/catch guarded: no matching app means a plain-words
+ * Toast, never a crash and never the engine loading the scheme.
+ */
+fun dispatchSpecialLink(context: Context, url: String): String? {
+    fun toast(message: String) {
+        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+    }
+    fun startExternal(intent: android.content.Intent, failMessage: String) {
+        try {
+            intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+        } catch (t: Throwable) {
+            toast(failMessage)
+        }
+    }
+    val scheme = specialLinkScheme(url) ?: return null
+    when (scheme) {
+        "tel", "telprompt" -> {
+            // ACTION_DIAL only pre-fills the dialer — nothing is
+            // called until the user presses the call button there,
+            // so no CALL_PHONE permission is needed (or declared).
+            val number = url.substringAfter(':').substringBefore('?')
+                .substringBefore('#')
+            startExternal(
+                android.content.Intent(
+                    android.content.Intent.ACTION_DIAL,
+                    Uri.parse("tel:$number")
+                ),
+                "没有找到拨号应用"
+            )
+        }
+        "sms", "smsto" -> {
+            val number = url.substringAfter(':').substringBefore('?')
+                .substringBefore('#')
+            val intent = android.content.Intent(
+                android.content.Intent.ACTION_SENDTO,
+                Uri.parse("smsto:$number")
+            )
+            val body = specialLinkQueryParam(url, "body")
+            if (!body.isNullOrEmpty()) {
+                intent.putExtra("sms_body", body)
+            }
+            startExternal(intent, "没有找到短信应用")
+        }
+        "mailto" -> {
+            val to = url.substringAfter(':').substringBefore('?')
+                .substringBefore('#')
+            val intent = android.content.Intent(
+                android.content.Intent.ACTION_SENDTO,
+                Uri.parse("mailto:$to")
+            )
+            if (to.isNotEmpty()) {
+                intent.putExtra(
+                    android.content.Intent.EXTRA_EMAIL, arrayOf(to)
+                )
+            }
+            val cc = specialLinkQueryParam(url, "cc")
+            if (!cc.isNullOrEmpty()) {
+                intent.putExtra(
+                    android.content.Intent.EXTRA_CC, arrayOf(cc)
+                )
+            }
+            val subject = specialLinkQueryParam(url, "subject")
+            if (!subject.isNullOrEmpty()) {
+                intent.putExtra(
+                    android.content.Intent.EXTRA_SUBJECT, subject
+                )
+            }
+            val body = specialLinkQueryParam(url, "body")
+            if (!body.isNullOrEmpty()) {
+                intent.putExtra(android.content.Intent.EXTRA_TEXT, body)
+            }
+            startExternal(intent, "没有找到邮箱应用")
+        }
+        "geo" -> {
+            startExternal(
+                android.content.Intent(
+                    android.content.Intent.ACTION_VIEW, Uri.parse(url)
+                ),
+                "没有找到地图应用"
+            )
+        }
+        "market" -> {
+            startExternal(
+                android.content.Intent(
+                    android.content.Intent.ACTION_VIEW, Uri.parse(url)
+                ),
+                "没有找到应用商店"
+            )
+        }
+        "intent" -> {
+            // Parsed with the system's own Intent.parseUri — no
+            // hand-rolled intent parser. A browser_fallback_url
+            // that is a web page wins and opens right here; an
+            // http(s) target opens as a normal page too. Anything
+            // else is another app's deep link: say so in plain
+            // words and fire the parsed intent as-is.
+            val parsed = try {
+                android.content.Intent.parseUri(
+                    url, android.content.Intent.URI_INTENT_SCHEME
+                )
+            } catch (t: Throwable) {
+                toast("这个链接打不开")
+                return null
+            }
+            val fallback = try {
+                parsed.getStringExtra("browser_fallback_url")
+            } catch (t: Throwable) {
+                null
+            }
+            if (!fallback.isNullOrEmpty() &&
+                (fallback.startsWith("http://") ||
+                    fallback.startsWith("https://"))
+            ) {
+                return fallback
+            }
+            val data = parsed.data
+            if (data != null &&
+                (data.scheme == "http" || data.scheme == "https")
+            ) {
+                return data.toString()
+            }
+            toast("这个链接需要用其他应用打开，已为你尝试")
+            startExternal(parsed, "没有找到能打开这个链接的应用")
+        }
+    }
+    return null
 }
 
 /**
