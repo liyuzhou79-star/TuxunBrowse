@@ -502,6 +502,12 @@ class BrowserTab(
     fun exitFullscreen() {
         customViewCallback?.onCustomViewHidden()
         customViewCallback = null
+        // Gecko fullscreen is a session state, not a custom view:
+        // exitFullScreen() (verified present in GeckoView 132) makes
+        // the content delegate report onFullScreen(false), which is
+        // what clears the app's chrome-hidden state. Calling it when
+        // the session is not fullscreen is a no-op.
+        geckoSession?.exitFullScreen()
     }
 
     var webView: WebView? = null

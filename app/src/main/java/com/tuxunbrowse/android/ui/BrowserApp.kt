@@ -3702,6 +3702,47 @@ private fun BrowserScreen(
         return
     }
 
+    // System back, resolved in layers (v0.37.0 back-key audit).
+    // Compose hands a back press to the most recently composed
+    // *enabled* BackHandler, so the handlers below are declared from
+    // the outermost layer inwards — the one declared last wins when
+    // several are enabled at once: web-history back (weakest), then
+    // reader mode, then address-bar focus, then the find bar, and
+    // Gecko fullscreen last (strongest). Dialogs, the dropdown menu
+    // and the bottom sheets are composed after this block (or handle
+    // back inside their own window), so they still win over every
+    // layer here. WebView fullscreen never reaches this block: the
+    // screen returned early above and BrowserApp's own handler exits
+    // it. While Gecko fullscreen hides the chrome, only its handler
+    // stays enabled — the layers underneath are not even visible.
+    BackHandler(
+        enabled = !chromeHidden && activeTab != null &&
+            !activeTab.isHome && activeTab.canGoBack
+    ) {
+        activeTab?.goBack()
+    }
+    BackHandler(enabled = !chromeHidden && activeTab?.readerActive == true) {
+        onToggleReaderMode()
+    }
+    BackHandler(enabled = !chromeHidden && addressFocused) {
+        // Dropping focus also collapses the suggestion list, which
+        // is derived from the focus state, and hides the keyboard.
+        focusManager.clearFocus()
+    }
+    BackHandler(
+        enabled = !chromeHidden && showFindBar &&
+            activeTab != null && !activeTab.isHome
+    ) {
+        // Same steps as the find bar's own close button.
+        showFindBar = false
+        findQuery = ""
+        onClearFind()
+        focusManager.clearFocus()
+    }
+    BackHandler(enabled = chromeHidden) {
+        onExitFullscreen()
+    }
+
     Scaffold(
         topBar = {
             if (!chromeHidden) {
@@ -5245,6 +5286,11 @@ private fun BookmarksScreen(
         selectedUrls = emptySet()
     }
     BackHandler(enabled = batchMode) { exitBatchMode() }
+    // Outside batch mode the same back key leaves the page itself
+    // (v0.37.0): before this, no handler was enabled here and the
+    // system finished the activity instead of returning to the
+    // browser. The two handlers are mutually exclusive by enabled.
+    BackHandler(enabled = !batchMode) { onBack() }
     if (showBatchDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { showBatchDeleteConfirm = false },
@@ -5462,6 +5508,9 @@ private fun HistoryScreen(
             .map { bucket -> bucket to filtered.filter { bucketOf(it) == bucket } }
             .filter { it.second.isNotEmpty() }
     }
+    // System back returns to the browser (v0.37.0); before this the
+    // key finished the activity from every sub-page.
+    BackHandler { onBack() }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -5569,6 +5618,8 @@ private fun ReadingListScreen(
     val timeFormat = remember {
         java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
     }
+    // System back returns to the browser (v0.37.0).
+    BackHandler { onBack() }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -5698,6 +5749,8 @@ private fun SniffScreen(
             }
         }
     }
+    // System back returns to the browser (v0.37.0).
+    BackHandler { onBack() }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -6004,6 +6057,8 @@ private fun DownloadsScreen(
         )
         refreshTick++
     }
+    // System back returns to the browser (v0.37.0).
+    BackHandler { onBack() }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -6232,6 +6287,9 @@ private fun ClearDataScreen(
             }
         )
     }
+    // System back returns to the settings page this screen was
+    // opened from (v0.37.0) — onBack already points there.
+    BackHandler { onBack() }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -6465,6 +6523,11 @@ private fun SettingsScreen(
     // sub-page returns here; back from home leaves settings.
     var settingsPage by remember { mutableStateOf("home") }
     BackHandler(enabled = settingsPage != "home") { settingsPage = "home" }
+    // From the settings home the same back key leaves settings for
+    // the browser (v0.37.0): before this, no handler was enabled on
+    // the home page and the system finished the activity instead.
+    // The two handlers are mutually exclusive by enabled.
+    BackHandler(enabled = settingsPage == "home") { onBack() }
     var compatList by remember(refreshTick) { mutableStateOf(store.loadCompatSites().sorted()) }
     var showCleared by remember { mutableStateOf(false) }
     var defaultTick by remember { mutableStateOf(0) }
