@@ -522,6 +522,14 @@ class BrowserTab(
     // WebView only: GeckoView 132 has no image-blocking setting
     // (AAR-audited), so Gecko tabs ignore this entirely.
     private val blockImagesProvider: () -> Boolean = { false },
+    // Whether the user turned JavaScript off for this tab
+    // (v0.47.0). Read live from the Store by the app at obtain time
+    // for BOTH engines: WebView via javaScriptEnabled, Gecko via
+    // GeckoSessionSettings.allowJavascript (builder at creation,
+    // live setter afterwards — see applyDisableJavaScript). Later
+    // changes are pushed to created engines via
+    // applyDisableJavaScript.
+    private val disableJavaScriptProvider: () -> Boolean = { false },
     private val onFullscreenShow: (android.view.View) -> Unit = {},
     private val onFullscreenHide: () -> Unit = {},
     private val onGeckoFullscreen: (Boolean) -> Unit = {},
@@ -1030,6 +1038,40 @@ class BrowserTab(
         }
     }
 
+    /**
+     * Push the disable-JavaScript setting to this tab's already
+     * created engine (v0.47.0), mirroring [applyBlockImages].
+     * Both engines are covered, each through its own audited path:
+     * - WebView: settings.javaScriptEnabled. The platform applies
+     *   the new value to loads that start after the change; a page
+     *   already on screen keeps the scripts it already loaded
+     *   until it is refreshed or a new page loads — the settings
+     *   text says exactly that.
+     * - Gecko: GeckoSession.getSettings() returns the session's
+     *   own live settings object (javap-verified against the 132
+     *   AAR: getSettings returns the mSettings field directly, and
+     *   GeckoSessionSettings.setAllowJavascript goes through
+     *   setBoolean, which on a value change dispatches
+     *   "GeckoView:UpdateSettings" to the engine). So the setter
+     *   reaches the running session; as with WebView, pages
+     *   already loaded are only guaranteed to follow it from
+     *   their next load, and the settings text promises no more.
+     * Tabs whose engine is not created yet read the provider in
+     * obtainWebView / buildGeckoSettings instead.
+     */
+    fun applyDisableJavaScript(disabled: Boolean) {
+        try {
+            webView?.settings?.javaScriptEnabled = !disabled
+        } catch (t: Throwable) {
+            // Engine already gone; nothing to apply.
+        }
+        try {
+            geckoSession?.settings?.setAllowJavascript(!disabled)
+        } catch (t: Throwable) {
+            // Engine already gone; nothing to apply.
+        }
+    }
+
     fun clearFind() {
         findInfo = ""
         when (engine) {
@@ -1234,7 +1276,12 @@ class BrowserTab(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT
         )
-        view.settings.javaScriptEnabled = true
+        // JavaScript (v0.47.0): on unless the user turned it off
+        // in settings. Before v0.47.0 this was pinned true (the
+        // v0.31.0 audit kept it on as browser-essential); the pin
+        // is now the user's own switch, still defaulting to on.
+        // Later changes are pushed via applyDisableJavaScript.
+        view.settings.javaScriptEnabled = !disableJavaScriptProvider()
         view.settings.domStorageEnabled = true
         // Hardened WebView switches (v0.31.0 audit), all pinned
         // explicitly rather than left to platform defaults:
@@ -1730,6 +1777,12 @@ class BrowserTab(
     private fun buildGeckoSettings(): GeckoSessionSettings {
         val settingsBuilder = GeckoSessionSettings.Builder()
             .usePrivateMode(incognito)
+            // Disable-JavaScript switch (v0.47.0): Builder
+            // .allowJavascript exists in GeckoView 132 (javap
+            // verified against the AAR, alongside the live
+            // GeckoSessionSettings.setAllowJavascript used by
+            // applyDisableJavaScript). Default stays on.
+            .allowJavascript(!disableJavaScriptProvider())
         if (desktopMode) {
             settingsBuilder
                 .userAgentMode(GeckoSessionSettings.USER_AGENT_MODE_DESKTOP)

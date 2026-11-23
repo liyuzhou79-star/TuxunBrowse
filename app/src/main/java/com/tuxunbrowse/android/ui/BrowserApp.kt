@@ -805,6 +805,7 @@ fun BrowserApp(
             webDarkProvider = { store.webDarkMode },
             thirdPartyCookiesProvider = { store.allowThirdPartyCookies },
             blockImagesProvider = { store.blockImages },
+            disableJavaScriptProvider = { store.disableJavaScript },
             onFullscreenShow = { view -> fullscreenView = view },
             onFullscreenHide = { fullscreenView = null },
             onGeckoFullscreen = { geckoFullscreen = it },
@@ -2191,6 +2192,11 @@ fun BrowserApp(
                             android.widget.Toast.LENGTH_LONG
                         ).show()
                         tab.readerActive -> tab.exitReaderMode()
+                        store.disableJavaScript -> android.widget.Toast.makeText(
+                            context,
+                            "禁用 JavaScript 还开着，阅读模式需要运行脚本才能整理正文；先到设置里关掉它再试",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
                         else -> tab.enterReaderMode()
                     }
                 },
@@ -2222,6 +2228,11 @@ fun BrowserApp(
                         tab.engine == Engine.GECKO -> android.widget.Toast.makeText(
                             context,
                             "火狐标签暂不支持嗅探，请切换到系统 WebView 打开本页再试",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                        store.disableJavaScript -> android.widget.Toast.makeText(
+                            context,
+                            "禁用 JavaScript 还开着，嗅探需要运行脚本才能收集资源；先到设置里关掉它再试",
                             android.widget.Toast.LENGTH_LONG
                         ).show()
                         else -> {
@@ -2409,6 +2420,9 @@ fun BrowserApp(
             },
             onBlockImagesChange = { enabled ->
                 tabs.forEach { it.applyBlockImages(enabled) }
+            },
+            onDisableJavaScriptChange = { disabled ->
+                tabs.forEach { it.applyDisableJavaScript(disabled) }
             }
         )
 
@@ -7216,7 +7230,8 @@ private fun SettingsScreen(
     onTextZoomChange: (Int) -> Unit,
     onWebDarkChange: (Boolean) -> Unit,
     onThirdPartyCookiesChange: (Boolean) -> Unit = {},
-    onBlockImagesChange: (Boolean) -> Unit = {}
+    onBlockImagesChange: (Boolean) -> Unit = {},
+    onDisableJavaScriptChange: (Boolean) -> Unit = {}
 ) {
     // Every state below mirrors a stored setting. In-page edits
     // write the local state and the store together, so within this
@@ -7244,6 +7259,9 @@ private fun SettingsScreen(
     }
     var blockImages by remember(refreshTick) {
         mutableStateOf(store.blockImages)
+    }
+    var disableJavaScript by remember(refreshTick) {
+        mutableStateOf(store.disableJavaScript)
     }
     var downloadMode by remember(refreshTick) { mutableStateOf(store.downloadMode) }
     var historyRetention by remember(refreshTick) { mutableStateOf(store.historyRetention) }
@@ -7945,6 +7963,7 @@ private fun SettingsScreen(
                                 Text("文件上传、相机和麦克风、网站登录（基础认证）")
                             }
                         )
+                        ListItem(headlineContent = { Text("禁用 JavaScript 开关") })
                         ListItem(
                             headlineContent = { Text("下载") },
                             supportingContent = {
@@ -8023,7 +8042,7 @@ private fun SettingsScreen(
                 )
             }
             item {
-                Text("省流量", style = MaterialTheme.typography.titleMedium)
+                Text("省流量与脚本", style = MaterialTheme.typography.titleMedium)
             }
             item {
                 ListItem(
@@ -8049,6 +8068,37 @@ private fun SettingsScreen(
                                 blockImages = it
                                 store.blockImages = it
                                 onBlockImagesChange(it)
+                            }
+                        )
+                    }
+                )
+            }
+            item {
+                ListItem(
+                    headlineContent = {
+                        Text("禁用 JavaScript（两个内核）")
+                    },
+                    supportingContent = {
+                        Text(
+                            "打开后，网页里的脚本（JavaScript）不再运行：" +
+                                "有些网站会更干净、打开更快，弹窗和骚扰也更少。" +
+                                "这个开关默认关着，脚本照常运行。两个内核都管：" +
+                                "系统 WebView 和火狐标签都会按这个开关来。" +
+                                "改了之后会马上推给所有已经打开的标签，" +
+                                "但已经打开的页面要刷新一下、或者打开新页面才按新设置来。" +
+                                "要注意：很多网站离了脚本就没法正常用——" +
+                                "登录、按钮、评论、视频都可能失效，页面可能只剩文字甚至一片空白。" +
+                                "遇到网站打不开或不好用，先回到这里把开关关掉再刷新页面。" +
+                                "关掉开关后，一切恢复原样。"
+                        )
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = disableJavaScript,
+                            onCheckedChange = {
+                                disableJavaScript = it
+                                store.disableJavaScript = it
+                                onDisableJavaScriptChange(it)
                             }
                         )
                     }

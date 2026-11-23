@@ -378,6 +378,21 @@ class Store(context: Context) {
         get() = safeBoolean(KEY_BLOCK_IMAGES, false)
         set(value) = prefs.edit().putBoolean(KEY_BLOCK_IMAGES, value).apply()
 
+    /**
+     * Disable JavaScript (v0.47.0): when on, web pages' scripts do
+     * not run in either engine (WebView javaScriptEnabled=false;
+     * Gecko GeckoSessionSettings.allowJavascript(false), both
+     * AAR/platform audited). Default OFF — JavaScript stays on,
+     * exactly as before this switch existed (the v0.31.0 audit
+     * pinned javaScriptEnabled=true as browser-essential; this
+     * switch is the user's own opt-in, not a new default). Pages
+     * that lean on scripts for sign-in, buttons or video will
+     * break with it on, and the settings text says so plainly.
+     */
+    var disableJavaScript: Boolean
+        get() = safeBoolean(KEY_DISABLE_JAVASCRIPT, false)
+        set(value) = prefs.edit().putBoolean(KEY_DISABLE_JAVASCRIPT, value).apply()
+
     /** Restore the previous session's tabs on launch (vs always home). */
     var startupRestore: Boolean
         get() = safeBoolean(KEY_STARTUP_RESTORE, true)
@@ -563,6 +578,7 @@ class Store(context: Context) {
         private const val KEY_AD_HIDE_SLOTS = "ad_hide_slots"
         private const val KEY_ALLOW_THIRD_PARTY_COOKIES = "allow_third_party_cookies"
         private const val KEY_BLOCK_IMAGES = "block_images"
+        private const val KEY_DISABLE_JAVASCRIPT = "disable_javascript"
         private const val KEY_COMPAT_SITES = "compat_sites"
         private const val KEY_BOOKMARKS = "bookmarks"
         private const val KEY_HISTORY = "history"
