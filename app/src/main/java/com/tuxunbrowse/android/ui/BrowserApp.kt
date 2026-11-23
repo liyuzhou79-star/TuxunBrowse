@@ -92,6 +92,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -276,6 +277,20 @@ fun BrowserApp() {
         screen = Screen.BROWSER
     }
 
+    fun closeAllTabs() {
+        val hadIncognito = tabs.any { it.incognito }
+        tabs.forEach { it.destroy() }
+        tabs.clear()
+        if (hadIncognito) {
+            // Same rule as closing the last incognito tab one by one:
+            // wipe the shared WebView cookie jar and web storage.
+            android.webkit.CookieManager.getInstance().removeAllCookies(null)
+            android.webkit.CookieManager.getInstance().flush()
+            android.webkit.WebStorage.getInstance().deleteAllData()
+        }
+        newTab(store.mainEngine, false)
+    }
+
     // Session restore: reopen the tabs that were open when the app was
     // last closed (normal tabs only — incognito tabs are never saved).
     // Runs once, before the persistence effect below is allowed to save
@@ -435,6 +450,7 @@ fun BrowserApp() {
                 } ?: false,
                 onSelectTab = { activeTabId = it.id },
                 onCloseTab = { closeTab(it) },
+                onCloseAllTabs = { closeAllTabs() },
                 canReopenClosed = lastClosedTab != null,
                 onReopenClosed = { reopenLastClosed() },
                 onNewTab = { newTab(store.mainEngine, false) },
@@ -542,6 +558,10 @@ fun BrowserApp() {
             history = history,
             onBack = { screen = Screen.BROWSER },
             onOpen = { openUrl(it.url) },
+            onDelete = {
+                history.remove(it)
+                store.saveHistory(history)
+            },
             onClear = {
                 history.clear()
                 store.clearHistory()
@@ -978,6 +998,7 @@ private fun BrowserScreen(
     currentHostIsCompat: Boolean,
     onSelectTab: (BrowserTab) -> Unit,
     onCloseTab: (BrowserTab) -> Unit,
+    onCloseAllTabs: () -> Unit,
     canReopenClosed: Boolean,
     onReopenClosed: () -> Unit,
     onNewTab: () -> Unit,
@@ -1020,6 +1041,44 @@ private fun BrowserScreen(
         if (!addressFocused && activeTab != null) {
             addressText = if (activeTab.isHome) "" else activeTab.url
         }
+    }
+    // Clipboard link hint: read the clipboard once when this screen
+    // appears; if it holds a web link, offer (never force) opening it.
+    val clipboardManager = LocalClipboardManager.current
+    var clipUrl by remember { mutableStateOf<String?>(null) }
+    var clipDismissed by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        val text = try {
+            clipboardManager.getText()?.text?.trim()
+        } catch (t: Throwable) {
+            null
+        }
+        if (text != null &&
+            (text.startsWith("http://") || text.startsWith("https://")) &&
+            !text.contains(" ") && text.contains(".")
+        ) {
+            clipUrl = text
+        }
+    }
+    var showCloseAllConfirm by remember { mutableStateOf(false) }
+    if (showCloseAllConfirm) {
+        AlertDialog(
+            onDismissRequest = { showCloseAllConfirm = false },
+            title = { Text("关闭全部标签页？") },
+            text = {
+                Text("现在开着的 ${tabs.size} 个标签页会全部关掉，然后开一个新的首页标签。无痕标签关掉后，WebView 的登录状态会按无痕规则清掉。")
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showCloseAllConfirm = false
+                    showTabs = false
+                    onCloseAllTabs()
+                }) { Text("全部关闭") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCloseAllConfirm = false }) { Text("取消") }
+            }
+        )
     }
 
     if (fullscreenView != null) {
@@ -1300,6 +1359,31 @@ private fun BrowserScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
             }
+            val clip = clipUrl
+            if (clip != null && !clipDismissed && clip != activeTab?.url) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    AssistChip(
+                        onClick = {
+                            clipDismissed = true
+                            onOpenSuggestion(clip)
+                        },
+                        label = { Text("打开复制的链接：${hostOf(clip) ?: clip}", maxLines = 1) },
+                        leadingIcon = {
+                            Icon(Icons.Filled.ContentCopy, contentDescription = null)
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = { clipDismissed = true }) {
+                        Icon(Icons.Filled.Close, contentDescription = "不再提示")
+                    }
+                }
+            }
             val suggestions = if (addressFocused && addressText.isNotBlank()) {
                 matchSuggestions(addressText, bookmarks, history)
             } else {
@@ -1493,6 +1577,16 @@ private fun BrowserScreen(
                         }
                     }
                 }
+                if (tabs.size > 1) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        OutlinedButton(
+                            onClick = { showCloseAllConfirm = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("关闭全部标签页")
+                        }
+                    }
+                }
             }
         }
     }
@@ -1667,6 +1761,15 @@ private fun BookmarksScreen(
             }
         )
     }
+    var bookmarkQuery by remember { mutableStateOf("") }
+    val visibleBookmarks = if (bookmarkQuery.isBlank()) {
+        bookmarks
+    } else {
+        bookmarks.filter {
+            it.title.contains(bookmarkQuery, ignoreCase = true) ||
+                it.url.contains(bookmarkQuery, ignoreCase = true)
+        }
+    }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -1700,8 +1803,32 @@ private fun BookmarksScreen(
                         modifier = Modifier.padding(16.dp)
                     )
                 }
+            } else {
+                item {
+                    OutlinedTextField(
+                        value = bookmarkQuery,
+                        onValueChange = { bookmarkQuery = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        singleLine = true,
+                        placeholder = { Text("搜索书签（名称或网址）") },
+                        leadingIcon = {
+                            Icon(Icons.Filled.Search, contentDescription = null)
+                        }
+                    )
+                }
+                if (visibleBookmarks.isEmpty()) {
+                    item {
+                        Text(
+                            "没有找到和「$bookmarkQuery」相关的书签。",
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.padding(16.dp)
+                        )
+                    }
+                }
             }
-            items(bookmarks, key = { it.url }) { bookmark ->
+            items(visibleBookmarks, key = { it.url }) { bookmark ->
                 ListItem(
                     headlineContent = { Text(bookmark.title) },
                     supportingContent = {
@@ -1740,6 +1867,7 @@ private fun HistoryScreen(
     history: List<HistoryItem>,
     onBack: () -> Unit,
     onOpen: (HistoryItem) -> Unit,
+    onDelete: (HistoryItem) -> Unit,
     onClear: () -> Unit
 ) {
     var query by remember { mutableStateOf("") }
@@ -1840,6 +1968,14 @@ private fun HistoryScreen(
                         supportingContent = { Text(item.url) },
                         leadingContent = {
                             Icon(Icons.Filled.History, contentDescription = null)
+                        },
+                        trailingContent = {
+                            IconButton(onClick = { onDelete(item) }) {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    contentDescription = "删除这条历史"
+                                )
+                            }
                         },
                         modifier = Modifier
                             .fillMaxWidth()
