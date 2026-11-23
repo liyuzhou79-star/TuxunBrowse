@@ -20,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.runtime.Composable
 import com.tuxunbrowse.android.data.Engine
+import org.mozilla.geckoview.AllowOrDeny
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
@@ -181,7 +182,7 @@ class BrowserTab(
             override fun onLoadRequest(
                 s: GeckoSession,
                 request: GeckoSession.NavigationDelegate.LoadRequest
-            ): GeckoResult<GeckoSession.NavigationDelegate.AllowOrDeny>? = null
+            ): GeckoResult<AllowOrDeny>? = null
         }
         session.progressDelegate = object : GeckoSession.ProgressDelegate {
             override fun onProgressChange(s: GeckoSession, p: Int) {
