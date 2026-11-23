@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Night variant of the platform theme: the base theme pins the
+         window background and system bars to the light paper colour,
+         which flashed white behind the dark UI (and before the first
+         Compose frame) whenever the system was in dark mode. These
+         values mirror the dark colour scheme's background (#111417). -->
+    <style name="Theme.TuxunBrowse" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/browse_bg_dark</item>
+        <item name="android:statusBarColor">@color/browse_bg_dark</item>
+        <item name="android:navigationBarColor">@color/browse_bg_dark</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

@@ -674,6 +674,25 @@ class BrowserTab(
      */
     fun captureThumbnail() {
         val view = webView ?: return
+        doCaptureThumbnail(view)
+    }
+
+    /**
+     * Same capture as [captureThumbnail], but deferred until after
+     * the tab-switch crossfade (220 ms) has finished: the switch-away
+     * call sites used to draw the outgoing WebView into a bitmap
+     * synchronously in the very frame the fade starts, which could
+     * stall the first transition frame. The capture is dropped if the
+     * tab's view has been replaced or destroyed in the meantime.
+     */
+    fun captureThumbnailDeferred() {
+        val view = webView ?: return
+        view.postDelayed({
+            if (webView === view) doCaptureThumbnail(view)
+        }, 260)
+    }
+
+    private fun doCaptureThumbnail(view: WebView) {
         try {
             val w = view.width
             val h = view.height

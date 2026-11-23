@@ -6,9 +6,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.core.view.WindowCompat
 import com.tuxunbrowse.android.data.Store
 import com.tuxunbrowse.android.data.ThemeMode
 import com.tuxunbrowse.android.ui.BrowserApp
@@ -37,6 +39,16 @@ class MainActivity : ComponentActivity() {
                 ThemeMode.SYSTEM -> isSystemInDarkTheme()
                 ThemeMode.LIGHT -> false
                 ThemeMode.DARK -> true
+            }
+            // enableEdgeToEdge() picks the system-bar icon shade from
+            // the *system* theme, but the app theme can be forced the
+            // other way in settings — dark icons would vanish on the
+            // dark UI (and vice versa). Keep the bar icons matched to
+            // the theme actually on screen.
+            SideEffect {
+                val controller = WindowCompat.getInsetsController(window, window.decorView)
+                controller.isAppearanceLightStatusBars = !darkTheme
+                controller.isAppearanceLightNavigationBars = !darkTheme
             }
             TuxunBrowseTheme(darkTheme = darkTheme) {
                 BrowserApp(

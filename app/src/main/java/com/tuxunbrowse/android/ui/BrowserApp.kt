@@ -557,7 +557,9 @@ fun BrowserApp(
     ): BrowserTab {
         // The tab being switched away from gets its one switch-away
         // thumbnail capture (the other capture point is page finish).
-        activeTab()?.captureThumbnail()
+        // Deferred: drawing the bitmap in the same frame the switch
+        // crossfade starts could stall the transition's first frame.
+        activeTab()?.captureThumbnailDeferred()
         val tab = makeTab(effectiveEngine(engine, url), incognito, url, desktopMode)
         tabs.add(tab)
         activeTabId = tab.id
@@ -1473,14 +1475,14 @@ fun BrowserApp(
                 onSelectTab = { target ->
                     val outgoing = activeTab()
                     if (outgoing != null && outgoing.id != target.id) {
-                        outgoing.captureThumbnail()
+                        outgoing.captureThumbnailDeferred()
                     }
                     // Selecting a tab counts as using its thumbnail
                     // for the app-wide LRU cap (v0.23.0).
                     target.noteThumbnailUsed()
                     activeTabId = target.id
                 },
-                onTabsOpened = { activeTab()?.captureThumbnail() },
+                onTabsOpened = { activeTab()?.captureThumbnailDeferred() },
                 onCloseTab = { closeTab(it) },
                 onCloseAllTabs = { closeAllTabs() },
                 onCloseOtherTabs = { closeOtherTabs() },
@@ -2722,12 +2724,19 @@ private fun HomeContent(
                             containerColor = MaterialTheme.colorScheme.primary
                         )
                     ) {
-                        FoundationImage(
+                        // The launcher foreground's strokes are fixed
+                        // white in the drawable, which is invisible on
+                        // the dark scheme's light primary — render it as
+                        // an Icon tinted with onPrimary, the official
+                        // content colour paired with primary in both
+                        // schemes (white on blue, navy on light blue).
+                        Icon(
                             painter = androidx.compose.ui.res.painterResource(
                                 com.tuxunbrowse.android.R.drawable
                                     .ic_launcher_foreground
                             ),
                             contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimary,
                             modifier = Modifier
                                 .size(56.dp)
                                 .padding(6.dp)
