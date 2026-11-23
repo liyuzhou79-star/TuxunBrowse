@@ -70,6 +70,10 @@ class Store(context: Context) {
         get() = SearchEngine.fromId(prefs.getString(KEY_SEARCH_ENGINE, null))
         set(value) = prefs.edit().putString(KEY_SEARCH_ENGINE, value.id).apply()
 
+    var adBlockEnabled: Boolean
+        get() = prefs.getBoolean(KEY_AD_BLOCK, true)
+        set(value) = prefs.edit().putBoolean(KEY_AD_BLOCK, value).apply()
+
     fun loadCompatSites(): MutableSet<String> {
         val raw = prefs.getString(KEY_COMPAT_SITES, null) ?: return mutableSetOf()
         return try {
@@ -134,6 +138,7 @@ class Store(context: Context) {
         private const val KEY_MAIN_ENGINE = "main_engine"
         private const val KEY_INCOGNITO_ENGINE = "incognito_engine"
         private const val KEY_SEARCH_ENGINE = "search_engine"
+        private const val KEY_AD_BLOCK = "ad_block"
         private const val KEY_COMPAT_SITES = "compat_sites"
         private const val KEY_BOOKMARKS = "bookmarks"
         private const val KEY_HISTORY = "history"

@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Language
@@ -86,7 +87,7 @@ import com.tuxunbrowse.android.data.resolveInput
 import com.tuxunbrowse.android.engine.BrowserTab
 import com.tuxunbrowse.android.engine.TabContent
 
-private enum class Screen { PICKER, BROWSER, BOOKMARKS, HISTORY, SETTINGS }
+private enum class Screen { PICKER, BROWSER, BOOKMARKS, HISTORY, SETTINGS, DOWNLOADS }
 
 @Composable
 fun BrowserApp() {
@@ -102,6 +103,7 @@ fun BrowserApp() {
     val compatSites = remember {
         mutableStateListOf<String>().apply { addAll(store.loadCompatSites()) }
     }
+    var linkMenuTarget by remember { mutableStateOf<String?>(null) }
 
     fun recordVisit(title: String, url: String) {
         if (history.firstOrNull()?.url == url) return
@@ -120,16 +122,24 @@ fun BrowserApp() {
     // wired up below once the tab-replacement helper exists.
     var compatRedirectHandler: (String) -> Unit = {}
 
-    fun makeTab(engine: Engine, incognito: Boolean, url: String): BrowserTab =
+    fun makeTab(
+        engine: Engine,
+        incognito: Boolean,
+        url: String,
+        desktopMode: Boolean = false
+    ): BrowserTab =
         BrowserTab(
             engine = engine,
             incognito = incognito,
             startUrl = url,
+            desktopMode = desktopMode,
             onVisit = { t, u -> recordVisit(t, u) },
             shouldUseWebView = { target ->
                 engine == Engine.GECKO && isCompatHost(hostOf(target), compatSites.toSet())
             },
-            onCompatRedirect = { target -> compatRedirectHandler(target) }
+            onCompatRedirect = { target -> compatRedirectHandler(target) },
+            isAdBlockEnabled = { store.adBlockEnabled },
+            onLinkContext = { link -> linkMenuTarget = link }
         )
 
     fun effectiveEngine(engine: Engine, url: String): Engine =
@@ -144,15 +154,19 @@ fun BrowserApp() {
         return tab
     }
 
-    fun replaceTabEngine(tab: BrowserTab, newEngine: Engine): BrowserTab {
+    fun recreateTab(tab: BrowserTab, newEngine: Engine, desktopMode: Boolean): BrowserTab {
         val idx = tabs.indexOf(tab)
-        if (idx < 0 || tab.engine == newEngine) return tab
-        val replacement = makeTab(newEngine, tab.incognito, tab.url)
+        if (idx < 0) return tab
+        if (tab.engine == newEngine && tab.desktopMode == desktopMode) return tab
+        val replacement = makeTab(newEngine, tab.incognito, tab.url, desktopMode)
         tabs[idx] = replacement
         tab.destroy()
         if (activeTabId == tab.id) activeTabId = replacement.id
         return replacement
     }
+
+    fun replaceTabEngine(tab: BrowserTab, newEngine: Engine): BrowserTab =
+        recreateTab(tab, newEngine, tab.desktopMode)
 
     compatRedirectHandler = { target ->
         val tab = activeTab()
@@ -264,6 +278,14 @@ fun BrowserApp() {
                     val tab = activeTab() ?: return@BrowserScreen
                     switchTabEngine(tab, engine, rememberSite)
                 },
+                activeDesktopMode = current?.desktopMode ?: false,
+                onToggleDesktopMode = { enabled ->
+                    val tab = activeTab() ?: return@BrowserScreen
+                    recreateTab(tab, tab.engine, enabled)
+                },
+                onFind = { query, forward -> activeTab()?.findInPage(query, forward) },
+                onClearFind = { activeTab()?.clearFind() },
+                onOpenDownloads = { screen = Screen.DOWNLOADS },
                 onOpenBookmarks = { screen = Screen.BOOKMARKS },
                 onOpenHistory = { screen = Screen.HISTORY },
                 onOpenSettings = { screen = Screen.SETTINGS },
@@ -310,6 +332,86 @@ fun BrowserApp() {
                 store.clearHistory()
             },
             onRemoveCompatSite = { removeCompatSite(it) }
+        )
+
+        Screen.DOWNLOADS -> DownloadsScreen(
+            onBack = { screen = Screen.BROWSER }
+        )
+    }
+
+    val linkTarget = linkMenuTarget
+    if (linkTarget != null) {
+        AlertDialog(
+            onDismissRequest = { linkMenuTarget = null },
+            title = { Text("链接") },
+            text = {
+                LazyColumn {
+                    item {
+                        Text(
+                            linkTarget,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("在新标签页打开") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    linkMenuTarget = null
+                                    newTab(store.mainEngine, false, linkTarget)
+                                    screen = Screen.BROWSER
+                                }
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("复制链接") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    val clipboard = context.getSystemService(
+                                        android.content.Context.CLIPBOARD_SERVICE
+                                    ) as android.content.ClipboardManager
+                                    clipboard.setPrimaryClip(
+                                        android.content.ClipData.newPlainText(
+                                            "link", linkTarget
+                                        )
+                                    )
+                                    android.widget.Toast.makeText(
+                                        context, "链接已复制",
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
+                                    linkMenuTarget = null
+                                }
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("分享链接") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    val intent = android.content.Intent(
+                                        android.content.Intent.ACTION_SEND
+                                    )
+                                        .setType("text/plain")
+                                        .putExtra(
+                                            android.content.Intent.EXTRA_TEXT, linkTarget
+                                        )
+                                    context.startActivity(
+                                        android.content.Intent.createChooser(intent, "分享链接")
+                                    )
+                                    linkMenuTarget = null
+                                }
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { linkMenuTarget = null }) { Text("取消") }
+            }
         )
     }
 }
@@ -545,6 +647,11 @@ private fun BrowserScreen(
     onNavigate: (String) -> Unit,
     onGoHome: () -> Unit,
     onSwitchEngine: (Engine, Boolean) -> Unit,
+    activeDesktopMode: Boolean,
+    onToggleDesktopMode: (Boolean) -> Unit,
+    onFind: (String, Boolean) -> Unit,
+    onClearFind: () -> Unit,
+    onOpenDownloads: () -> Unit,
     onOpenBookmarks: () -> Unit,
     onOpenHistory: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -554,6 +661,8 @@ private fun BrowserScreen(
     var showMenu by remember { mutableStateOf(false) }
     var showIncognitoPicker by remember { mutableStateOf(false) }
     var showEngineSwitch by remember { mutableStateOf(false) }
+    var showFindBar by remember { mutableStateOf(false) }
+    var findQuery by remember { mutableStateOf("") }
     var addressText by remember(activeTab?.id) {
         mutableStateOf(activeTab?.takeUnless { it.isHome }?.url ?: "")
     }
@@ -601,6 +710,31 @@ private fun BrowserScreen(
                             text = { Text("回到首页") },
                             leadingIcon = { Icon(Icons.Filled.Home, contentDescription = null) },
                             onClick = { showMenu = false; onGoHome() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("页面内查找") },
+                            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                            onClick = { showMenu = false; showFindBar = true }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("桌面版网站") },
+                            leadingIcon = {
+                                Icon(Icons.Filled.Language, contentDescription = null)
+                            },
+                            trailingIcon = {
+                                Switch(
+                                    checked = activeDesktopMode,
+                                    onCheckedChange = { onToggleDesktopMode(it) }
+                                )
+                            },
+                            onClick = { onToggleDesktopMode(!activeDesktopMode) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("下载") },
+                            leadingIcon = {
+                                Icon(Icons.Filled.Download, contentDescription = null)
+                            },
+                            onClick = { showMenu = false; onOpenDownloads() }
                         )
                         DropdownMenuItem(
                             text = { Text("书签") },
@@ -706,6 +840,42 @@ private fun BrowserScreen(
                     progress = { activeTab.progress / 100f },
                     modifier = Modifier.fillMaxWidth()
                 )
+            }
+            if (showFindBar && activeTab != null && !activeTab.isHome) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    OutlinedTextField(
+                        value = findQuery,
+                        onValueChange = { findQuery = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        placeholder = { Text("在页面里查找") },
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(
+                            onSearch = { onFind(findQuery, true) }
+                        )
+                    )
+                    IconButton(onClick = { onFind(findQuery, false) }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "上一个")
+                    }
+                    IconButton(onClick = { onFind(findQuery, true) }) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowForward,
+                            contentDescription = "下一个"
+                        )
+                    }
+                    IconButton(onClick = {
+                        showFindBar = false
+                        findQuery = ""
+                        onClearFind()
+                    }) {
+                        Icon(Icons.Filled.Close, contentDescription = "关闭查找")
+                    }
+                }
             }
             if (activeTab != null) {
                 if (activeTab.isHome) {
@@ -1004,6 +1174,133 @@ private fun HistoryScreen(
     }
 }
 
+private data class DownloadEntry(
+    val id: Long,
+    val title: String,
+    val statusText: String,
+    val sizeText: String
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DownloadsScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    var entries by remember { mutableStateOf<List<DownloadEntry>>(emptyList()) }
+    LaunchedEffect(Unit) {
+        val manager = context.getSystemService(
+            android.content.Context.DOWNLOAD_SERVICE
+        ) as android.app.DownloadManager
+        val loaded = mutableListOf<DownloadEntry>()
+        try {
+            val cursor = manager.query(android.app.DownloadManager.Query())
+            cursor?.use { c ->
+                val idIdx = c.getColumnIndex(android.app.DownloadManager.COLUMN_ID)
+                val titleIdx = c.getColumnIndex(android.app.DownloadManager.COLUMN_TITLE)
+                val statusIdx = c.getColumnIndex(android.app.DownloadManager.COLUMN_STATUS)
+                val totalIdx =
+                    c.getColumnIndex(android.app.DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
+                val doneIdx = c.getColumnIndex(
+                    android.app.DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR
+                )
+                while (c.moveToNext()) {
+                    val status = c.getInt(statusIdx)
+                    val statusText = when (status) {
+                        android.app.DownloadManager.STATUS_SUCCESSFUL -> "已完成"
+                        android.app.DownloadManager.STATUS_FAILED -> "失败"
+                        android.app.DownloadManager.STATUS_RUNNING -> "下载中"
+                        android.app.DownloadManager.STATUS_PAUSED -> "已暂停"
+                        else -> "排队中"
+                    }
+                    val total = c.getLong(totalIdx)
+                    val done = c.getLong(doneIdx)
+                    val sizeText = if (total > 0) {
+                        "${done / 1024} KB / ${total / 1024} KB"
+                    } else {
+                        "${done / 1024} KB"
+                    }
+                    loaded.add(
+                        DownloadEntry(
+                            id = c.getLong(idIdx),
+                            title = c.getString(titleIdx) ?: "未命名文件",
+                            statusText = statusText,
+                            sizeText = sizeText
+                        )
+                    )
+                }
+            }
+        } catch (t: Throwable) {
+            // Download list is best-effort; an empty list is shown instead.
+        }
+        entries = loaded.reversed()
+    }
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("下载") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            if (entries.isEmpty()) {
+                item {
+                    Text(
+                        "还没有下载记录。在网页里点到下载链接时，文件会交给系统下载，进度和结果会列在这里。",
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.padding(16.dp)
+                    )
+                }
+            }
+            items(entries, key = { it.id }) { entry ->
+                ListItem(
+                    headlineContent = { Text(entry.title, maxLines = 2) },
+                    supportingContent = { Text("${entry.statusText} · ${entry.sizeText}") },
+                    leadingContent = { Icon(Icons.Filled.Download, contentDescription = null) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            try {
+                                val manager = context.getSystemService(
+                                    android.content.Context.DOWNLOAD_SERVICE
+                                ) as android.app.DownloadManager
+                                val uri = manager.getUriForDownloadedFile(entry.id)
+                                if (uri != null) {
+                                    val intent = android.content.Intent(
+                                        android.content.Intent.ACTION_VIEW
+                                    )
+                                        .setDataAndType(
+                                            uri, manager.getMimeTypeForDownloadedFile(entry.id)
+                                        )
+                                        .addFlags(
+                                            android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                        )
+                                        .addFlags(
+                                            android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                                        )
+                                    context.startActivity(intent)
+                                }
+                            } catch (t: Throwable) {
+                                android.widget.Toast.makeText(
+                                    context, "这个文件暂时打不开",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                )
+                HorizontalDivider()
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsScreen(
@@ -1015,6 +1312,7 @@ private fun SettingsScreen(
     var mainEngine by remember { mutableStateOf(store.mainEngine) }
     var incognitoEngine by remember { mutableStateOf(store.incognitoEngine) }
     var searchEngine by remember { mutableStateOf(store.searchEngine) }
+    var adBlock by remember { mutableStateOf(store.adBlockEnabled) }
     var compatList by remember { mutableStateOf(store.loadCompatSites().sorted()) }
     var showCleared by remember { mutableStateOf(false) }
     Scaffold(
@@ -1154,6 +1452,26 @@ private fun SettingsScreen(
                 }
             }
             item {
+                Text("广告拦截", style = MaterialTheme.typography.titleMedium)
+            }
+            item {
+                ListItem(
+                    headlineContent = { Text("拦截广告和跟踪请求") },
+                    supportingContent = {
+                        Text("WebView 按内置名单拦截常见广告域名，立即生效；火狐用它自带的跟踪保护，重启应用后完全生效。关掉后所有网站原样加载。")
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = adBlock,
+                            onCheckedChange = {
+                                adBlock = it
+                                store.adBlockEnabled = it
+                            }
+                        )
+                    }
+                )
+            }
+            item {
                 Text("数据", style = MaterialTheme.typography.titleMedium)
             }
             item {
@@ -1172,7 +1490,7 @@ private fun SettingsScreen(
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text("关于 TuxunBrowse", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "版本 0.2.0。免费开源的双内核浏览器：火狐 GeckoView 与系统 WebView 由用户自选，" +
+                            "版本 0.3.0。免费开源的双内核浏览器：火狐 GeckoView 与系统 WebView 由用户自选，" +
                                 "首页是应用自己的页面（搜索框、常用书签、最近历史），不拿任何网站的页面冒充首页。" +
                                 "两个内核的登录状态互不相通，这是双内核的固有代价。",
                             style = MaterialTheme.typography.bodyMedium

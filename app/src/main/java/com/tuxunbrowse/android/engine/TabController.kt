@@ -22,6 +22,7 @@ import androidx.compose.runtime.Composable
 import com.tuxunbrowse.android.data.Engine
 import com.tuxunbrowse.android.data.HOME_URL
 import org.mozilla.geckoview.AllowOrDeny
+import org.mozilla.geckoview.ContentBlocking
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
@@ -39,6 +40,15 @@ object GeckoHolder {
         if (runtime != null) return runtime
         return try {
             runtime = GeckoRuntime.create(context.applicationContext)
+            // Firefox-side ad/tracker protection: GeckoView's own content
+            // blocking with its default anti-tracking categories. Guarded:
+            // if this ever fails, browsing must still work.
+            try {
+                runtime?.settings?.contentBlocking
+                    ?.setAntiTracking(ContentBlocking.AntiTracking.DEFAULT)
+            } catch (t: Throwable) {
+                // Content blocking is best-effort only.
+            }
             runtime
         } catch (t: Throwable) {
             available = false
@@ -49,14 +59,21 @@ object GeckoHolder {
 
 private var nextTabId = 1
 
+private const val DESKTOP_USER_AGENT =
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+        "Chrome/120.0.0.0 Safari/537.36"
+
 /** One browser tab. Holds its own WebView or GeckoSession so tabs keep state. */
 class BrowserTab(
     val engine: Engine,
     val incognito: Boolean,
     startUrl: String,
+    val desktopMode: Boolean = false,
     private val onVisit: (title: String, url: String) -> Unit,
     private val shouldUseWebView: (String) -> Boolean = { false },
-    private val onCompatRedirect: (String) -> Unit = {}
+    private val onCompatRedirect: (String) -> Unit = {},
+    private val isAdBlockEnabled: () -> Boolean = { true },
+    private val onLinkContext: (String) -> Unit = {}
 ) {
     val id: Int = nextTabId++
     var url by mutableStateOf(startUrl)
@@ -104,6 +121,32 @@ class BrowserTab(
         }
     }
 
+    fun findInPage(query: String, forward: Boolean) {
+        if (query.isBlank()) return
+        when (engine) {
+            Engine.WEBVIEW -> {
+                val view = webView ?: return
+                view.findAllAsync(query)
+                view.findNext(forward)
+            }
+            Engine.GECKO -> {
+                val flags = if (forward) {
+                    GeckoSession.FINDER_FIND_FORWARD
+                } else {
+                    GeckoSession.FINDER_FIND_BACKWARDS
+                }
+                geckoSession?.finder?.find(query, flags)
+            }
+        }
+    }
+
+    fun clearFind() {
+        when (engine) {
+            Engine.WEBVIEW -> webView?.clearMatches()
+            Engine.GECKO -> geckoSession?.finder?.clear()
+        }
+    }
+
     fun destroy() {
         webView?.let {
             it.stopLoading()
@@ -126,7 +169,40 @@ class BrowserTab(
         view.settings.javaScriptEnabled = true
         view.settings.domStorageEnabled = true
         view.settings.loadsImagesAutomatically = true
+        if (desktopMode) {
+            view.settings.userAgentString = DESKTOP_USER_AGENT
+            view.settings.useWideViewPort = true
+            view.settings.loadWithOverviewMode = true
+        }
+        view.setOnLongClickListener { v ->
+            val hit = (v as WebView).hitTestResult
+            val extra = hit.extra
+            if ((hit.type == WebView.HitTestResult.SRC_ANCHOR_TYPE ||
+                    hit.type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) &&
+                !extra.isNullOrBlank()
+            ) {
+                onLinkContext(extra)
+                true
+            } else {
+                false
+            }
+        }
         view.webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(
+                wv: WebView,
+                request: android.webkit.WebResourceRequest
+            ): android.webkit.WebResourceResponse? {
+                val target = request.url?.toString() ?: return null
+                return if (isAdBlockEnabled() && AdBlocker.isAdRequest(target)) {
+                    android.webkit.WebResourceResponse(
+                        "text/plain", "utf-8",
+                        java.io.ByteArrayInputStream(ByteArray(0))
+                    )
+                } else {
+                    null
+                }
+            }
+
             override fun onPageFinished(wv: WebView, finishedUrl: String?) {
                 super.onPageFinished(wv, finishedUrl)
                 val u = finishedUrl ?: return
@@ -159,9 +235,14 @@ class BrowserTab(
     fun obtainGecko(context: Context): GeckoView? {
         geckoView?.let { return it }
         val runtime = GeckoHolder.ensure(context) ?: return null
-        val settings = GeckoSessionSettings.Builder()
+        val settingsBuilder = GeckoSessionSettings.Builder()
             .usePrivateMode(incognito)
-            .build()
+        if (desktopMode) {
+            settingsBuilder
+                .userAgentMode(GeckoSessionSettings.USER_AGENT_MODE_DESKTOP)
+                .viewportMode(GeckoSessionSettings.VIEWPORT_MODE_DESKTOP)
+        }
+        val settings = settingsBuilder.build()
         val session = GeckoSession(settings)
         session.navigationDelegate = object : GeckoSession.NavigationDelegate {
             override fun onLocationChange(
@@ -196,6 +277,13 @@ class BrowserTab(
                     onCompatRedirect(target)
                     return GeckoResult.fromValue(AllowOrDeny.DENY)
                 }
+                // Navigation-level ad blocking for Gecko (subresource
+                // requests are covered by content blocking instead).
+                if (target.startsWith("http") && isAdBlockEnabled() &&
+                    AdBlocker.isAdRequest(target)
+                ) {
+                    return GeckoResult.fromValue(AllowOrDeny.DENY)
+                }
                 return null
             }
         }
@@ -213,6 +301,16 @@ class BrowserTab(
         session.contentDelegate = object : GeckoSession.ContentDelegate {
             override fun onTitleChange(s: GeckoSession, newTitle: String?) {
                 if (!newTitle.isNullOrBlank()) title = newTitle
+            }
+
+            override fun onContextMenu(
+                s: GeckoSession,
+                screenX: Int,
+                screenY: Int,
+                element: GeckoSession.ContentDelegate.ContextElement
+            ) {
+                val link = element.linkUri
+                if (!link.isNullOrBlank()) onLinkContext(link)
             }
         }
         session.open(runtime)
