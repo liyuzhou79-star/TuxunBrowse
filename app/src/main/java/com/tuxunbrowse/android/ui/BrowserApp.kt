@@ -78,6 +78,7 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Tab
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
@@ -134,6 +135,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -141,10 +144,14 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.tuxunbrowse.android.data.Bookmark
 import com.tuxunbrowse.android.data.DownloadMode
@@ -2379,6 +2386,14 @@ fun BrowserApp(
             jsPromptRequest = null
             jsPrompt.respond(confirmed, text)
         }
+        // A text prompt opens with its input already focused and the
+        // keyboard up, ready to type into.
+        val promptFocusRequester = remember { FocusRequester() }
+        LaunchedEffect(Unit) {
+            if (jsPrompt.kind == GeckoJsPromptKind.TEXT) {
+                promptFocusRequester.requestFocus()
+            }
+        }
         AlertDialog(
             onDismissRequest = {
                 answerJsPrompt(jsPrompt.kind == GeckoJsPromptKind.ALERT, null)
@@ -2394,7 +2409,8 @@ fun BrowserApp(
                                 onValueChange = { textInput = it },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(top = 8.dp),
+                                    .padding(top = 8.dp)
+                                    .focusRequester(promptFocusRequester),
                                 singleLine = true
                             )
                         }
@@ -2436,6 +2452,13 @@ fun BrowserApp(
             authPromptRequest = null
             authPrompt.respond(user, pass)
         }
+        // The dialog opens focused on its first input (the user name,
+        // or the password when the site only asks for one) with the
+        // keyboard up; the password can be peeked at with the eye
+        // button instead of typing blind.
+        var authPassVisible by remember(authPrompt) { mutableStateOf(false) }
+        val authFocusRequester = remember { FocusRequester() }
+        LaunchedEffect(Unit) { authFocusRequester.requestFocus() }
         AlertDialog(
             onDismissRequest = { answerAuth(null, null) },
             title = { Text("这个网站需要登录") },
@@ -2461,7 +2484,8 @@ fun BrowserApp(
                                 label = { Text("用户名") },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(top = 8.dp),
+                                    .padding(top = 8.dp)
+                                    .focusRequester(authFocusRequester),
                                 singleLine = true
                             )
                         }
@@ -2471,14 +2495,43 @@ fun BrowserApp(
                             value = authPass,
                             onValueChange = { authPass = it },
                             label = { Text("密码") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 8.dp),
+                            modifier = if (info.onlyPassword) {
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp)
+                                    .focusRequester(authFocusRequester)
+                            } else {
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp)
+                            },
                             singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(),
+                            visualTransformation = if (authPassVisible) {
+                                VisualTransformation.None
+                            } else {
+                                PasswordVisualTransformation()
+                            },
                             keyboardOptions = KeyboardOptions(
                                 keyboardType = KeyboardType.Password
-                            )
+                            ),
+                            trailingIcon = {
+                                IconButton(
+                                    onClick = { authPassVisible = !authPassVisible }
+                                ) {
+                                    Icon(
+                                        if (authPassVisible) {
+                                            Icons.Filled.VisibilityOff
+                                        } else {
+                                            Icons.Filled.Visibility
+                                        },
+                                        contentDescription = if (authPassVisible) {
+                                            "隐藏密码"
+                                        } else {
+                                            "显示密码"
+                                        }
+                                    )
+                                }
+                            }
                         )
                     }
                     item {
@@ -2859,6 +2912,9 @@ private fun HomeContent(
         )
     }
     if (dialDialogOpen) {
+        // Opens focused on the first field with the keyboard up.
+        val dialFocusRequester = remember { FocusRequester() }
+        LaunchedEffect(Unit) { dialFocusRequester.requestFocus() }
         AlertDialog(
             onDismissRequest = { dialDialogOpen = false },
             title = {
@@ -2872,7 +2928,9 @@ private fun HomeContent(
                             onValueChange = { dialName = it },
                             label = { Text("名称") },
                             placeholder = { Text("可以不填，会用网址的域名") },
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .focusRequester(dialFocusRequester),
                             singleLine = true
                         )
                     }
@@ -2988,6 +3046,9 @@ private fun HomeContent(
         )
     }
     if (showHomeCustomDialog) {
+        // Opens focused on the first field with the keyboard up.
+        val homeCustomFocusRequester = remember { FocusRequester() }
+        LaunchedEffect(Unit) { homeCustomFocusRequester.requestFocus() }
         AlertDialog(
             onDismissRequest = { showHomeCustomDialog = false },
             title = { Text("自定义搜索引擎") },
@@ -2999,7 +3060,9 @@ private fun HomeContent(
                             onValueChange = { homeCustomName = it },
                             label = { Text("名称") },
                             placeholder = { Text("比如：我的搜索") },
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .focusRequester(homeCustomFocusRequester),
                             singleLine = true
                         )
                     }
@@ -3486,13 +3549,52 @@ private fun BrowserScreen(
     var showEngineSwitch by remember { mutableStateOf(false) }
     var showFindBar by remember { mutableStateOf(false) }
     var findQuery by remember { mutableStateOf("") }
-    var addressText by remember(activeTab?.id) {
-        mutableStateOf(activeTab?.takeUnless { it.isHome }?.url ?: "")
+    // The address bar edits a TextFieldValue (not a plain String) so
+    // focus can select the whole URL: tapping the bar selects
+    // everything and typing replaces it, the way other browsers
+    // behave. addressText stays as the plain-text view of the value
+    // for the suggestion/search logic below.
+    var addressValue by remember(activeTab?.id) {
+        mutableStateOf(
+            TextFieldValue(activeTab?.takeUnless { it.isHome }?.url ?: "")
+        )
     }
+    val addressText = addressValue.text
     var addressFocused by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
     LaunchedEffect(activeTab?.url) {
         if (!addressFocused && activeTab != null) {
-            addressText = if (activeTab.isHome) "" else activeTab.url
+            addressValue = TextFieldValue(
+                if (activeTab.isHome) "" else activeTab.url
+            )
+        }
+    }
+    // Switching tabs hands focus back to the page: the text above is
+    // already re-keyed to the new tab, and this drops any leftover
+    // editing focus (and the keyboard) from the previous tab.
+    LaunchedEffect(activeTab?.id) {
+        focusManager.clearFocus()
+    }
+    // Select-all on focus gain, done in an effect so it lands after
+    // the tap's own cursor placement and wins over it.
+    LaunchedEffect(addressFocused) {
+        if (addressFocused && addressValue.text.isNotEmpty()) {
+            addressValue = addressValue.copy(
+                selection = TextRange(0, addressValue.text.length)
+            )
+        }
+    }
+    // Submitting the address bar navigates and hands focus (and the
+    // keyboard) back to the web page.
+    fun submitAddress() {
+        onNavigate(addressValue.text)
+        focusManager.clearFocus()
+    }
+    // The find bar grabs focus (and the keyboard) as soon as it opens.
+    val findFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(showFindBar) {
+        if (showFindBar) {
+            findFocusRequester.requestFocus()
         }
     }
     // Clipboard link hint: read the clipboard once when this screen
@@ -3894,8 +3996,8 @@ private fun BrowserScreen(
                     )
                 }
                 OutlinedTextField(
-                    value = addressText,
-                    onValueChange = { addressText = it },
+                    value = addressValue,
+                    onValueChange = { addressValue = it },
                     modifier = Modifier
                         .weight(1f)
                         .onFocusChanged { addressFocused = it.isFocused },
@@ -3925,7 +4027,7 @@ private fun BrowserScreen(
                     },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                     keyboardActions = KeyboardActions(
-                        onGo = { onNavigate(addressText) }
+                        onGo = { submitAddress() }
                     )
                 )
                 if (activeTab != null) {
@@ -4055,7 +4157,10 @@ private fun BrowserScreen(
                                 },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable { onOpenSuggestion(suggestion.url) }
+                                    .clickable {
+                                        onOpenSuggestion(suggestion.url)
+                                        focusManager.clearFocus()
+                                    }
                             )
                         }
                         if (showSearchTail) {
@@ -4081,7 +4186,7 @@ private fun BrowserScreen(
                                     },
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .clickable { onNavigate(addressText) }
+                                        .clickable { submitAddress() }
                                 )
                             }
                         }
@@ -4104,7 +4209,9 @@ private fun BrowserScreen(
                     OutlinedTextField(
                         value = findQuery,
                         onValueChange = { findQuery = it },
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(findFocusRequester),
                         singleLine = true,
                         placeholder = { Text("在页面里查找") },
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
@@ -4134,6 +4241,9 @@ private fun BrowserScreen(
                         showFindBar = false
                         findQuery = ""
                         onClearFind()
+                        // Closing the find bar hands focus (and the
+                        // keyboard) back to the web page.
+                        focusManager.clearFocus()
                     }) {
                         Icon(Icons.Filled.Close, contentDescription = "关闭查找")
                     }
@@ -5056,6 +5166,9 @@ private fun BookmarksScreen(
     if (editingBookmark != null) {
         var editTitle by remember(editingBookmark) { mutableStateOf(editingBookmark.title) }
         var editUrl by remember(editingBookmark) { mutableStateOf(editingBookmark.url) }
+        // Opens focused on the first field with the keyboard up.
+        val editFocusRequester = remember { FocusRequester() }
+        LaunchedEffect(Unit) { editFocusRequester.requestFocus() }
         AlertDialog(
             onDismissRequest = { editing = null },
             title = { Text("编辑书签") },
@@ -5065,7 +5178,9 @@ private fun BookmarksScreen(
                         OutlinedTextField(
                             value = editTitle,
                             onValueChange = { editTitle = it },
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .focusRequester(editFocusRequester),
                             label = { Text("名称") },
                             singleLine = true
                         )
@@ -7202,6 +7317,9 @@ private fun SettingsScreen(
     // with http:// or https://; anything else is explained in plain
     // language and not saved.
     if (showCustomSearchDialog) {
+        // Opens focused on the first field with the keyboard up.
+        val customSearchFocusRequester = remember { FocusRequester() }
+        LaunchedEffect(Unit) { customSearchFocusRequester.requestFocus() }
         AlertDialog(
             onDismissRequest = { showCustomSearchDialog = false },
             title = { Text("自定义搜索引擎") },
@@ -7213,7 +7331,9 @@ private fun SettingsScreen(
                             onValueChange = { customSearchName = it },
                             label = { Text("名称") },
                             placeholder = { Text("比如：我的搜索") },
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .focusRequester(customSearchFocusRequester),
                             singleLine = true
                         )
                     }
