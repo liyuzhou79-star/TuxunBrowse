@@ -1036,19 +1036,28 @@ fun BrowserApp(
             onDismissRequest = { pendingBackup = null },
             title = { Text("导入这个备份？") },
             text = {
-                Text(
-                    "备份里的书签 ${backupToConfirm.bookmarks.size} 条、" +
-                        "历史 ${backupToConfirm.history.size} 条、" +
-                        "阅读列表 ${backupToConfirm.readingList.size} 条、" +
-                        "快捷方式 ${backupToConfirm.speedDials.size} 条会合并进来，" +
-                        "和现有的重复的会跳过，不会删掉现有的任何东西。" +
-                        if (overwrite.isNotEmpty()) {
-                            "\n\n下面这些设置会被备份里的值覆盖：\n" +
-                                overwrite.joinToString("\n") { "· $it" }
-                        } else {
-                            ""
-                        }
-                )
+                // The overwrite list can run to a dozen lines; on a
+                // short screen a plain Text would push the buttons
+                // off the bottom, so the body scrolls on its own.
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        "备份里的书签 ${backupToConfirm.bookmarks.size} 条、" +
+                            "历史 ${backupToConfirm.history.size} 条、" +
+                            "阅读列表 ${backupToConfirm.readingList.size} 条、" +
+                            "快捷方式 ${backupToConfirm.speedDials.size} 条会合并进来，" +
+                            "和现有的重复的会跳过，不会删掉现有的任何东西。" +
+                            if (overwrite.isNotEmpty()) {
+                                "\n\n下面这些设置会被备份里的值覆盖：\n" +
+                                    overwrite.joinToString("\n") { "· $it" }
+                            } else {
+                                ""
+                            }
+                    )
+                }
             },
             confirmButton = {
                 Button(onClick = {
@@ -2676,7 +2685,10 @@ private fun HomeContent(
             .padding(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 16.dp)
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(
+            top = 16.dp,
+            bottom = 24.dp
+        )
     ) {
         item(span = { GridItemSpan(maxLineSpan) }) {
             // Brand area: the app icon on a primary-coloured official
@@ -4706,7 +4718,10 @@ private fun BookmarksScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
+                .padding(padding),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                bottom = 24.dp
+            )
         ) {
             if (bookmarks.isEmpty()) {
                 item {
@@ -4860,7 +4875,10 @@ private fun HistoryScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
+                .padding(padding),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                bottom = 24.dp
+            )
         ) {
             if (history.isNotEmpty()) {
                 item {
@@ -4967,7 +4985,10 @@ private fun ReadingListScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
+                .padding(padding),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                bottom = 24.dp
+            )
         ) {
             if (items.isEmpty()) {
                 item {
@@ -5151,7 +5172,7 @@ private fun SniffScreen(
                                 items(inGroup, key = { it.url }) { res ->
                                     ListItem(
                                         headlineContent = {
-                                            Text(res.name, maxLines = 1)
+                                            Text(res.name, maxLines = 2)
                                         },
                                         supportingContent = {
                                             Text(
@@ -5390,7 +5411,10 @@ private fun DownloadsScreen(
             state = listState,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
+                .padding(padding),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                bottom = 24.dp
+            )
         ) {
             item {
                 Row(
@@ -5916,7 +5940,10 @@ private fun SettingsScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                bottom = 24.dp
+            )
         ) {
             if (settingsPage == "home") {
                 item {
