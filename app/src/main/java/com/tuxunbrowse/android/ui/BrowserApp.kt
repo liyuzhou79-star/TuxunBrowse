@@ -127,6 +127,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.isActive
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -186,6 +187,9 @@ import com.tuxunbrowse.android.data.hostOf
 import com.tuxunbrowse.android.data.isCompatHost
 import com.tuxunbrowse.android.data.hasBlockedPageScheme
 import com.tuxunbrowse.android.data.isAllowedPageUrl
+import com.tuxunbrowse.android.data.MAX_COMBINED_SUGGESTIONS
+import com.tuxunbrowse.android.data.SEARCH_SUGGESTION_DEBOUNCE_MS
+import com.tuxunbrowse.android.data.fetchSearchSuggestions
 import com.tuxunbrowse.android.data.isUrlLikeInput
 import com.tuxunbrowse.android.data.matchSuggestions
 import com.tuxunbrowse.android.data.resolveInput
@@ -415,8 +419,12 @@ fun BrowserApp(
     // page read, so a change made on either the settings page or the
     // home-page chip applies everywhere at once.
     var searchEngineState by remember { mutableStateOf(store.searchEngine) }
+    var searchSuggestionsState by remember {
+        mutableStateOf(store.searchSuggestionsEnabled)
+    }
     LaunchedEffect(screen) {
         searchEngineState = store.searchEngine
+        searchSuggestionsState = store.searchSuggestionsEnabled
     }
     // Bumped whenever something outside the settings page rewrites
     // the stored settings wholesale (today: a backup import). The
@@ -2163,6 +2171,7 @@ fun BrowserApp(
                 },
                 bookmarks = bookmarks,
                 searchEngine = searchEngineState,
+                searchSuggestionsEnabled = searchSuggestionsState,
                 customSearchName = store.customSearchName,
                 onOpenSuggestion = { url -> openUrl(url) },
                 onGoHome = { activeTab()?.load(HOME_URL) },
@@ -4268,6 +4277,7 @@ private fun BrowserScreen(
     onNavigate: (String) -> Unit,
     bookmarks: List<Bookmark>,
     searchEngine: SearchEngine,
+    searchSuggestionsEnabled: Boolean = false,
     customSearchName: String = "",
     onOpenSuggestion: (String) -> Unit,
     onGoHome: () -> Unit,
@@ -4897,12 +4907,71 @@ private fun BrowserScreen(
                 }
             }
             }
+            // Online search suggestions (v0.50.0). Privacy gates are
+            // all hard checks on this one path — a fetch happens only
+            // when EVERY one passes: the user turned the switch on,
+            // the bar is focused, the active tab is NOT incognito
+            // (incognito never fetches, whatever the switch says),
+            // the engine is a built-in one with a suggestion endpoint
+            // (custom engines have none), and the typed text is not
+            // URL-like (it is about to be opened as an address, so
+            // asking an engine about it would only leak it). With the
+            // switch off this effect never reaches the network call.
+            var onlineSuggestions by remember {
+                mutableStateOf<List<String>>(emptyList())
+            }
+            val suggestionQuery = addressText.trim()
+            val activeIncognito = activeTab?.incognito == true
+            LaunchedEffect(
+                suggestionQuery, addressFocused, searchSuggestionsEnabled,
+                searchEngine, activeIncognito, activeTab?.id
+            ) {
+                if (!searchSuggestionsEnabled || !addressFocused ||
+                    activeIncognito || searchEngine == SearchEngine.CUSTOM ||
+                    suggestionQuery.isEmpty() || isUrlLikeInput(suggestionQuery) ||
+                    hasBlockedPageScheme(suggestionQuery)
+                ) {
+                    onlineSuggestions = emptyList()
+                    return@LaunchedEffect
+                }
+                // Debounce: a new keystroke restarts this effect and
+                // cancels the pending wait, so only a pause in typing
+                // ever sends a request.
+                kotlinx.coroutines.delay(SEARCH_SUGGESTION_DEBOUNCE_MS)
+                val fetched = kotlinx.coroutines.withContext(
+                    kotlinx.coroutines.Dispatchers.IO
+                ) {
+                    fetchSearchSuggestions(searchEngine, suggestionQuery)
+                }
+                // Stale-response guard: if the text moved on while
+                // the request was in flight, this effect has been
+                // cancelled; only publish when still active, and the
+                // fetch for the current text runs in its own effect.
+                if (isActive) {
+                    onlineSuggestions = fetched
+                }
+            }
             // Suggestions are bookmarks only (plus the search tail
             // below): history stays on the History page and is no
             // longer mixed into the address bar. matchSuggestions
             // itself is unchanged — it is simply handed no history.
             val suggestions = if (addressFocused && addressText.isNotBlank()) {
                 matchSuggestions(addressText, bookmarks, emptyList())
+            } else {
+                emptyList()
+            }
+            // Merge order is fixed: bookmark matches first, then
+            // online suggestions, then the search tail row. Online
+            // rows that merely repeat a bookmark title/URL or the
+            // typed text itself are dropped, and the two groups
+            // together are capped so the list stays compact.
+            val onlineRows = if (addressFocused) {
+                val bookmarkKeys = suggestions.map { it.title.lowercase() }.toSet() +
+                    suggestions.map { it.url.lowercase() }
+                onlineSuggestions.filter { s ->
+                    s.lowercase() !in bookmarkKeys &&
+                        !s.equals(suggestionQuery, ignoreCase = true)
+                }.take((MAX_COMBINED_SUGGESTIONS - suggestions.size).coerceAtLeast(0))
             } else {
                 emptyList()
             }
@@ -4916,7 +4985,8 @@ private fun BrowserScreen(
             // The suggestion card unfolds under the address bar when
             // it gains focus and folds away again afterwards.
             AnimatedVisibility(
-                visible = suggestions.isNotEmpty() || showSearchTail,
+                visible = suggestions.isNotEmpty() || onlineRows.isNotEmpty() ||
+                    showSearchTail,
                 enter = fadeIn(tween(220, easing = FastOutSlowInEasing)) +
                     expandVertically(tween(220, easing = FastOutSlowInEasing)),
                 exit = fadeOut(tween(180, easing = FastOutSlowInEasing)) +
@@ -4954,6 +5024,29 @@ private fun BrowserScreen(
                                     .fillMaxWidth()
                                     .clickable {
                                         onOpenSuggestion(suggestion.url)
+                                        focusManager.clearFocus()
+                                    }
+                            )
+                        }
+                        items(onlineRows, key = { "online-$it" }) { word ->
+                            ListItem(
+                                headlineContent = {
+                                    Text(word, maxLines = 1)
+                                },
+                                leadingContent = {
+                                    Icon(
+                                        Icons.Filled.Search,
+                                        contentDescription = "搜索建议"
+                                    )
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        // Same path as submitting the
+                                        // bar by hand: resolveInput
+                                        // turns the word into a search
+                                        // with the current engine.
+                                        onNavigate(word)
                                         focusManager.clearFocus()
                                     }
                             )
@@ -7558,6 +7651,9 @@ private fun SettingsScreen(
     var disableJavaScript by remember(refreshTick) {
         mutableStateOf(store.disableJavaScript)
     }
+    var searchSuggestions by remember(refreshTick) {
+        mutableStateOf(store.searchSuggestionsEnabled)
+    }
     var downloadMode by remember(refreshTick) { mutableStateOf(store.downloadMode) }
     var historyRetention by remember(refreshTick) { mutableStateOf(store.historyRetention) }
     var themeMode by remember(refreshTick) { mutableStateOf(store.themeMode) }
@@ -7852,6 +7948,44 @@ private fun SettingsScreen(
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            // Online search suggestions (v0.50.0): sits directly
+            // under the search-engine choices because it only makes
+            // sense together with them — the suggestions come from
+            // whichever engine is selected above.
+            item {
+                Text("搜索建议", style = MaterialTheme.typography.titleMedium)
+            }
+            item {
+                ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                    ListItem(
+                        headlineContent = { Text("获取联网搜索建议") },
+                        supportingContent = {
+                            Text(
+                                "默认关。开启后，你在地址栏输入的内容会发送给" +
+                                    "当前搜索引擎，用来获取建议词，显示在书签" +
+                                    "联想下面。无痕标签里永远不会获取建议词。" +
+                                    "自定义搜索引擎没有建议词接口，不支持这个" +
+                                    "功能。建议词只在内存里用一下，不会保存" +
+                                    "下来。"
+                            )
+                        },
+                        trailingContent = {
+                            Switch(
+                                checked = searchSuggestions,
+                                onCheckedChange = { checked ->
+                                    searchSuggestions = checked
+                                    store.searchSuggestionsEnabled = checked
+                                }
+                            )
+                        },
+                        modifier = Modifier.clickable {
+                            val checked = !searchSuggestions
+                            searchSuggestions = checked
+                            store.searchSuggestionsEnabled = checked
+                        }
                     )
                 }
             }

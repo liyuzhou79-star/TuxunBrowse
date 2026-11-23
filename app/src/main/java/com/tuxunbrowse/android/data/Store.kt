@@ -14,11 +14,38 @@ enum class Engine(val id: String, val label: String) {
     }
 }
 
-enum class SearchEngine(val id: String, val label: String, val template: String) {
-    BAIDU("baidu", "百度", "https://www.baidu.com/s?wd=%s"),
-    BING("bing", "必应", "https://www.bing.com/search?q=%s"),
-    GOOGLE("google", "Google", "https://www.google.com/search?q=%s"),
-    DUCKDUCKGO("duckduckgo", "DuckDuckGo", "https://duckduckgo.com/?q=%s"),
+enum class SearchEngine(
+    val id: String,
+    val label: String,
+    val template: String,
+    val suggestionTemplate: String = ""
+) {
+    // Suggestion endpoints (v0.50.0, all curl-verified from the build
+    // VM, no key/token needed, all answer the same OpenSearch JSON
+    // shape [query, [suggestion, ...]]):
+    // - Baidu: ie=UTF-8 is load-bearing — without it the endpoint
+    //   answers GBK bytes and Chinese suggestions come out garbled.
+    // - Bing: api.bing.com/osjson.aspx works; the www.bing.com/AS/
+    //   Suggestions endpoint answered empty in testing, not used.
+    // - Google: client=firefox gives the plain OpenSearch shape.
+    // - DuckDuckGo: type=list gives the OpenSearch shape; the
+    //   default shape is [{"phrase": ...}] objects instead.
+    BAIDU(
+        "baidu", "百度", "https://www.baidu.com/s?wd=%s",
+        "https://suggestion.baidu.com/su?wd=%s&action=opensearch&ie=UTF-8"
+    ),
+    BING(
+        "bing", "必应", "https://www.bing.com/search?q=%s",
+        "https://api.bing.com/osjson.aspx?query=%s"
+    ),
+    GOOGLE(
+        "google", "Google", "https://www.google.com/search?q=%s",
+        "https://suggestqueries.google.com/complete/search?client=firefox&q=%s"
+    ),
+    DUCKDUCKGO(
+        "duckduckgo", "DuckDuckGo", "https://duckduckgo.com/?q=%s",
+        "https://duckduckgo.com/ac/?q=%s&type=list"
+    ),
 
     /** User-supplied engine; its real template lives in the Store. */
     CUSTOM("custom", "自定义", "");
@@ -28,6 +55,19 @@ enum class SearchEngine(val id: String, val label: String, val template: String)
         // by resolveInput); never format an empty template.
         val effective = template.ifBlank { BAIDU.template }
         return effective.format(java.net.URLEncoder.encode(query, "UTF-8"))
+    }
+
+    /**
+     * Suggestion endpoint URL for [query], or null when this engine
+     * has no suggestion endpoint (CUSTOM: there is no generic
+     * suggestion protocol for a user-supplied template, so online
+     * suggestions are simply unavailable there).
+     */
+    fun suggestionUrl(query: String): String? {
+        if (suggestionTemplate.isBlank() || query.isBlank()) return null
+        return suggestionTemplate.format(
+            java.net.URLEncoder.encode(query, "UTF-8")
+        )
     }
 
     companion object {
@@ -81,6 +121,91 @@ fun matchSuggestions(
     bookmarks.forEach { consider(it.title, it.url, true) }
     history.forEach { consider(it.title, it.url, false) }
     return out
+}
+
+/** Debounce before an address-bar keystroke may trigger a suggestion fetch. */
+const val SEARCH_SUGGESTION_DEBOUNCE_MS = 300L
+
+/** Connect/read timeout for one suggestion fetch: short, fail silent. */
+const val SEARCH_SUGGESTION_TIMEOUT_MS = 3_000
+
+/** At most this many online suggestions are kept from one response. */
+const val MAX_ONLINE_SUGGESTIONS = 8
+
+/**
+ * Cap on bookmark + online suggestion rows shown together (the
+ * trailing "search this" row is extra). Bookmarks come first, so
+ * online rows only fill the room the bookmarks leave.
+ */
+const val MAX_COMBINED_SUGGESTIONS = 10
+
+/**
+ * Parse one suggestion response. Every built-in engine answers the
+ * OpenSearch shape [query, [suggestion, ...]] (v0.50.0 audit), so one
+ * parser serves all of them. Anything else parses to an empty list.
+ * Blank entries are dropped and duplicates removed case-insensitively.
+ */
+fun parseSearchSuggestions(raw: String, limit: Int = MAX_ONLINE_SUGGESTIONS): List<String> {
+    if (limit <= 0) return emptyList()
+    val arr = try {
+        JSONArray(raw)
+    } catch (e: Exception) {
+        return emptyList()
+    }
+    val inner = arr.optJSONArray(1) ?: return emptyList()
+    val out = mutableListOf<String>()
+    val seen = mutableSetOf<String>()
+    for (i in 0 until inner.length()) {
+        if (out.size >= limit) break
+        val s = inner.optString(i).trim()
+        if (s.isNotEmpty() && seen.add(s.lowercase())) out.add(s)
+    }
+    return out
+}
+
+/**
+ * Fetch online search suggestions for [query] from [engine].
+ * Privacy contract (v0.50.0): this is only ever called when the user
+ * has turned the "search suggestions" switch on, the active tab is
+ * not incognito, the engine is a built-in one and the typed text is
+ * not URL-like — all enforced by the caller in the address bar. The
+ * request itself carries only the query (in the URL) and a plain
+ * User-Agent: no Cookie header (HttpURLConnection sends none unless
+ * a CookieHandler is installed, and this app never installs one),
+ * no account information. The result is kept in memory only: the
+ * query and the suggestions are never written to disk or logged.
+ * Every failure is silent and returns an empty list.
+ */
+fun fetchSearchSuggestions(engine: SearchEngine, query: String): List<String> {
+    val url = engine.suggestionUrl(query.trim()) ?: return emptyList()
+    var conn: java.net.HttpURLConnection? = null
+    return try {
+        conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        conn.connectTimeout = SEARCH_SUGGESTION_TIMEOUT_MS
+        conn.readTimeout = SEARCH_SUGGESTION_TIMEOUT_MS
+        conn.useCaches = false
+        conn.setRequestProperty("User-Agent", "TuxunBrowse")
+        conn.setRequestProperty("Accept", "application/json")
+        if (conn.responseCode !in 200..299) {
+            emptyList()
+        } else {
+            // All four endpoints answer UTF-8 when asked the way the
+            // templates ask (Baidu needs its ie=UTF-8, see above).
+            val raw = conn.inputStream.bufferedReader(
+                java.nio.charset.StandardCharsets.UTF_8
+            ).readText()
+            parseSearchSuggestions(raw)
+        }
+    } catch (t: Throwable) {
+        emptyList()
+    } finally {
+        try {
+            conn?.disconnect()
+        } catch (t: Throwable) {
+            // Nothing to clean up beyond this; failing to disconnect
+            // must never surface.
+        }
+    }
 }
 
 /** A normal (never incognito) tab saved so the session survives a restart. */
@@ -393,6 +518,19 @@ class Store(context: Context) {
         get() = safeBoolean(KEY_DISABLE_JAVASCRIPT, false)
         set(value) = prefs.edit().putBoolean(KEY_DISABLE_JAVASCRIPT, value).apply()
 
+    /**
+     * Online search suggestions (v0.50.0): when on, what the user
+     * types in the address bar is sent to the current search engine
+     * to fetch suggestion words. Default OFF — like the manual
+     * update check (v0.18.0), nothing in this app touches the
+     * network for suggestions until the user opts in. Incognito
+     * tabs never fetch, whatever this switch says, and custom
+     * search engines have no suggestion endpoint at all.
+     */
+    var searchSuggestionsEnabled: Boolean
+        get() = safeBoolean(KEY_SEARCH_SUGGESTIONS, false)
+        set(value) = prefs.edit().putBoolean(KEY_SEARCH_SUGGESTIONS, value).apply()
+
     /** Restore the previous session's tabs on launch (vs always home). */
     var startupRestore: Boolean
         get() = safeBoolean(KEY_STARTUP_RESTORE, true)
@@ -579,6 +717,7 @@ class Store(context: Context) {
         private const val KEY_ALLOW_THIRD_PARTY_COOKIES = "allow_third_party_cookies"
         private const val KEY_BLOCK_IMAGES = "block_images"
         private const val KEY_DISABLE_JAVASCRIPT = "disable_javascript"
+        private const val KEY_SEARCH_SUGGESTIONS = "search_suggestions"
         private const val KEY_COMPAT_SITES = "compat_sites"
         private const val KEY_BOOKMARKS = "bookmarks"
         private const val KEY_HISTORY = "history"
