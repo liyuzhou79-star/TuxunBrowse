@@ -4,6 +4,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -33,6 +34,8 @@ import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -43,6 +46,7 @@ import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -51,6 +55,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -78,8 +83,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
@@ -128,6 +135,8 @@ fun BrowserApp() {
     var linkMenuTarget by remember { mutableStateOf<String?>(null) }
     var lastClosedTab by remember { mutableStateOf<ClosedTabInfo?>(null) }
     var startupDone by remember { mutableStateOf(false) }
+    var fullscreenView by remember { mutableStateOf<android.view.View?>(null) }
+    var geckoFullscreen by remember { mutableStateOf(false) }
 
     fun recordVisit(title: String, url: String) {
         if (history.firstOrNull()?.url == url) return
@@ -165,7 +174,10 @@ fun BrowserApp() {
             isAdBlockEnabled = { store.adBlockEnabled },
             onLinkContext = { link -> linkMenuTarget = link },
             textZoomProvider = { store.textZoomPercent },
-            webDarkProvider = { store.webDarkMode }
+            webDarkProvider = { store.webDarkMode },
+            onFullscreenShow = { view -> fullscreenView = view },
+            onFullscreenHide = { fullscreenView = null },
+            onGeckoFullscreen = { geckoFullscreen = it }
         )
 
     fun effectiveEngine(engine: Engine, url: String): Engine =
@@ -267,7 +279,11 @@ fun BrowserApp() {
     LaunchedEffect(Unit) {
         if (store.mainEngineChosen && tabs.isEmpty()) {
             val (saved, savedActive) = store.loadTabs()
-            val usable = saved.filter { it.url.startsWith("http") || it.url == HOME_URL }
+            val usable = if (store.startupRestore) {
+                saved.filter { it.url.startsWith("http") || it.url == HOME_URL }
+            } else {
+                emptyList()
+            }
             if (usable.isNotEmpty()) {
                 usable.forEach { st ->
                     tabs.add(
@@ -386,6 +402,11 @@ fun BrowserApp() {
         screen = Screen.BROWSER
     }
 
+    BackHandler(enabled = fullscreenView != null) {
+        activeTab()?.exitFullscreen()
+        fullscreenView = null
+    }
+
     when (screen) {
         Screen.PICKER -> EnginePickerScreen(
             title = "选择浏览器内核",
@@ -441,6 +462,24 @@ fun BrowserApp() {
                 },
                 onFind = { query, forward -> activeTab()?.findInPage(query, forward) },
                 onClearFind = { activeTab()?.clearFind() },
+                fullscreenView = fullscreenView,
+                chromeHidden = geckoFullscreen,
+                onExitFullscreen = {
+                    activeTab()?.exitFullscreen()
+                    fullscreenView = null
+                },
+                onToggleReaderMode = {
+                    val tab = activeTab() ?: return@BrowserScreen
+                    when {
+                        tab.engine == Engine.GECKO -> android.widget.Toast.makeText(
+                            context,
+                            "阅读模式暂时只支持 WebView 标签，火狐标签可以先切内核再开",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                        tab.readerActive -> tab.exitReaderMode()
+                        else -> tab.enterReaderMode()
+                    }
+                },
                 onOpenDownloads = { screen = Screen.DOWNLOADS },
                 onOpenBookmarks = { screen = Screen.BOOKMARKS },
                 onOpenHistory = { screen = Screen.HISTORY },
@@ -875,6 +914,10 @@ private fun BrowserScreen(
     onToggleDesktopMode: (Boolean) -> Unit,
     onFind: (String, Boolean) -> Unit,
     onClearFind: () -> Unit,
+    fullscreenView: android.view.View?,
+    chromeHidden: Boolean,
+    onExitFullscreen: () -> Unit,
+    onToggleReaderMode: () -> Unit,
     onOpenDownloads: () -> Unit,
     onOpenBookmarks: () -> Unit,
     onOpenHistory: () -> Unit,
@@ -898,8 +941,29 @@ private fun BrowserScreen(
         }
     }
 
+    if (fullscreenView != null) {
+        // WebView fullscreen (e.g. a video): show only the fullscreen
+        // view plus an exit button. Back also exits (handled upstream).
+        Box(modifier = Modifier.fillMaxSize()) {
+            androidx.compose.ui.viewinterop.AndroidView(
+                factory = { fullscreenView },
+                modifier = Modifier.fillMaxSize()
+            )
+            FilledIconButton(
+                onClick = onExitFullscreen,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(12.dp)
+            ) {
+                Icon(Icons.Filled.Close, contentDescription = "退出全屏")
+            }
+        }
+        return
+    }
+
     Scaffold(
         topBar = {
+            if (!chromeHidden) {
             TopAppBar(
                 title = {
                     Text(
@@ -1002,6 +1066,21 @@ private fun BrowserScreen(
                             onClick = { showMenu = false; showFindBar = true }
                         )
                         DropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (activeTab?.readerActive == true) {
+                                        "退出阅读模式"
+                                    } else {
+                                        "阅读模式"
+                                    }
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Filled.MenuBook, contentDescription = null)
+                            },
+                            onClick = { showMenu = false; onToggleReaderMode() }
+                        )
+                        DropdownMenuItem(
                             text = { Text("桌面版网站") },
                             leadingIcon = {
                                 Icon(Icons.Filled.Language, contentDescription = null)
@@ -1039,8 +1118,10 @@ private fun BrowserScreen(
                     }
                 }
             )
+            }
         },
         bottomBar = {
+            if (!chromeHidden) {
             NavigationBar {
                 NavigationBarItem(
                     selected = false,
@@ -1067,6 +1148,7 @@ private fun BrowserScreen(
                     label = { Text("设置") }
                 )
             }
+            }
         }
     ) { padding ->
         Column(
@@ -1074,6 +1156,7 @@ private fun BrowserScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
+            if (!chromeHidden) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1100,6 +1183,16 @@ private fun BrowserScreen(
                         .onFocusChanged { addressFocused = it.isFocused },
                     singleLine = true,
                     placeholder = { Text("输入网址或搜索") },
+                    leadingIcon = {
+                        when {
+                            activeTab == null || activeTab.isHome ->
+                                Icon(Icons.Filled.Search, contentDescription = null)
+                            activeTab.url.startsWith("https://") ->
+                                Icon(Icons.Filled.Lock, contentDescription = "安全连接")
+                            else ->
+                                Icon(Icons.Filled.Warning, contentDescription = "非安全连接")
+                        }
+                    },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                     keyboardActions = KeyboardActions(
                         onGo = { onNavigate(addressText) }
@@ -1161,6 +1254,7 @@ private fun BrowserScreen(
                         Icon(Icons.Filled.Close, contentDescription = "关闭查找")
                     }
                 }
+            }
             }
             if (activeTab != null) {
                 if (activeTab.isHome) {
@@ -1854,6 +1948,7 @@ private fun SettingsScreen(
     var adBlock by remember { mutableStateOf(store.adBlockEnabled) }
     var textZoom by remember { mutableStateOf(store.textZoomPercent) }
     var webDark by remember { mutableStateOf(store.webDarkMode) }
+    var startupRestore by remember { mutableStateOf(store.startupRestore) }
     var compatList by remember { mutableStateOf(store.loadCompatSites().sorted()) }
     var showCleared by remember { mutableStateOf(false) }
     val settingsContext = LocalContext.current
@@ -2067,6 +2162,26 @@ private fun SettingsScreen(
                                 webDark = it
                                 store.webDarkMode = it
                                 onWebDarkChange(it)
+                            }
+                        )
+                    }
+                )
+            }
+            item {
+                Text("启动", style = MaterialTheme.typography.titleMedium)
+            }
+            item {
+                ListItem(
+                    headlineContent = { Text("启动时恢复上次的标签页") },
+                    supportingContent = {
+                        Text("打开后接着上次没看完的页面继续看。关掉它，每次打开都从首页开始。无痕标签永远不会被恢复。")
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = startupRestore,
+                            onCheckedChange = {
+                                startupRestore = it
+                                store.startupRestore = it
                             }
                         )
                     }

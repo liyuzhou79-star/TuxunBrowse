@@ -87,6 +87,11 @@ class Store(context: Context) {
         get() = prefs.getBoolean(KEY_WEB_DARK, false)
         set(value) = prefs.edit().putBoolean(KEY_WEB_DARK, value).apply()
 
+    /** Restore the previous session's tabs on launch (vs always home). */
+    var startupRestore: Boolean
+        get() = prefs.getBoolean(KEY_STARTUP_RESTORE, true)
+        set(value) = prefs.edit().putBoolean(KEY_STARTUP_RESTORE, value).apply()
+
     fun loadCompatSites(): MutableSet<String> {
         val raw = prefs.getString(KEY_COMPAT_SITES, null) ?: return mutableSetOf()
         return try {
@@ -191,6 +196,7 @@ class Store(context: Context) {
         private const val KEY_TABS = "saved_tabs"
         private const val KEY_TEXT_ZOOM = "text_zoom"
         private const val KEY_WEB_DARK = "web_dark"
+        private const val KEY_STARTUP_RESTORE = "startup_restore"
     }
 }
 

@@ -112,7 +112,10 @@ class BrowserTab(
     private val isAdBlockEnabled: () -> Boolean = { true },
     private val onLinkContext: (String) -> Unit = {},
     private val textZoomProvider: () -> Int = { 100 },
-    private val webDarkProvider: () -> Boolean = { false }
+    private val webDarkProvider: () -> Boolean = { false },
+    private val onFullscreenShow: (android.view.View) -> Unit = {},
+    private val onFullscreenHide: () -> Unit = {},
+    private val onGeckoFullscreen: (Boolean) -> Unit = {}
 ) {
     val id: Int = nextTabId++
     var url by mutableStateOf(startUrl)
@@ -120,6 +123,25 @@ class BrowserTab(
     var progress by mutableIntStateOf(100)
     var canGoBack by mutableStateOf(false)
     var canGoForward by mutableStateOf(false)
+    var readerActive by mutableStateOf(false)
+
+    private var customViewCallback: WebChromeClient.CustomViewCallback? = null
+
+    fun enterReaderMode() {
+        val view = webView ?: return
+        view.evaluateJavascript(READER_JS, null)
+        readerActive = true
+    }
+
+    fun exitReaderMode() {
+        readerActive = false
+        reload()
+    }
+
+    fun exitFullscreen() {
+        customViewCallback?.onCustomViewHidden()
+        customViewCallback = null
+    }
 
     var webView: WebView? = null
     var geckoSession: GeckoSession? = null
@@ -197,6 +219,7 @@ class BrowserTab(
     }
 
     fun destroy() {
+        exitFullscreen()
         webView?.let {
             it.stopLoading()
             it.destroy()
@@ -259,6 +282,7 @@ class BrowserTab(
             override fun onPageFinished(wv: WebView, finishedUrl: String?) {
                 super.onPageFinished(wv, finishedUrl)
                 val u = finishedUrl ?: return
+                readerActive = false
                 url = u
                 title = wv.title ?: ""
                 canGoBack = wv.canGoBack()
@@ -273,6 +297,19 @@ class BrowserTab(
 
             override fun onReceivedTitle(wv: WebView, receivedTitle: String?) {
                 if (!receivedTitle.isNullOrBlank()) title = receivedTitle
+            }
+
+            override fun onShowCustomView(
+                customView: android.view.View,
+                callback: CustomViewCallback
+            ) {
+                customViewCallback = callback
+                onFullscreenShow(customView)
+            }
+
+            override fun onHideCustomView() {
+                customViewCallback = null
+                onFullscreenHide()
             }
         }
         view.setDownloadListener(
@@ -365,6 +402,10 @@ class BrowserTab(
             ) {
                 val link = element.linkUri
                 if (!link.isNullOrBlank()) onLinkContext(link)
+            }
+
+            override fun onFullScreen(s: GeckoSession, fullScreen: Boolean) {
+                onGeckoFullscreen(fullScreen)
             }
 
             // Gecko hands responses it cannot display (files to download)
@@ -496,6 +537,37 @@ fun startSystemDownload(
         Toast.makeText(context, "下载启动失败，请换一个链接重试", Toast.LENGTH_LONG).show()
     }
 }
+
+/**
+ * Reader mode script (WebView only): pick the element with the most
+ * text, keep its HTML, strip scripts/nav/forms, and restyle the page
+ * as a clean single column. Reloading the page exits reader mode.
+ */
+private const val READER_JS = """
+(function() {
+  var candidates = document.querySelectorAll('article, main, section, div');
+  var best = null, bestLen = 0;
+  candidates.forEach(function(el) {
+    var t = (el.innerText || '').length;
+    if (t > bestLen) { bestLen = t; best = el; }
+  });
+  var pageTitle = document.title || '';
+  var content = best ? best.innerHTML : document.body.innerHTML;
+  document.body.innerHTML =
+    '<h1 style="font-size:22px;line-height:1.4">' + pageTitle + '</h1>' + content;
+  document.body.querySelectorAll('script,style,iframe,form,nav,header,footer,aside')
+    .forEach(function(e) { e.remove(); });
+  var st = document.createElement('style');
+  st.textContent =
+    'body{font-family:sans-serif;line-height:1.75;padding:16px;' +
+    'max-width:720px;margin:0 auto;font-size:17px}' +
+    'img,video{max-width:100%;height:auto}' +
+    'pre,code{white-space:pre-wrap;word-break:break-word}';
+  document.head.appendChild(st);
+  window.scrollTo(0, 0);
+  return 'ok';
+})()
+"""
 
 @Composable
 fun TabContent(tab: BrowserTab, modifier: Modifier = Modifier) {
