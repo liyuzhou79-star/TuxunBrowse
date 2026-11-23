@@ -63,7 +63,11 @@ import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -82,6 +86,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DockedSearchBar
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
@@ -2239,7 +2244,7 @@ fun BrowserApp(
  * box, a bookmark shortcut grid and recent history. It never loads an
  * external start page.
  */
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun HomeContent(
     bookmarks: List<Bookmark>,
@@ -2633,54 +2638,74 @@ private fun HomeContent(
         contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 16.dp)
     ) {
         item(span = { GridItemSpan(maxLineSpan) }) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            // Brand area: the app icon on a primary-coloured official
+            // Card, the name in headline type, and the one-line
+            // tagline from the README.
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer
+                ),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Icon(
-                    Icons.Filled.Language,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(40.dp)
-                )
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("TuxunBrowse", style = MaterialTheme.typography.headlineMedium)
-                    Text(
-                        "输入网址或搜索，开始上网。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primary
+                        )
+                    ) {
+                        FoundationImage(
+                            painter = androidx.compose.ui.res.painterResource(
+                                com.tuxunbrowse.android.R.drawable
+                                    .ic_launcher_foreground
+                            ),
+                            contentDescription = null,
+                            modifier = Modifier
+                                .size(56.dp)
+                                .padding(6.dp)
+                        )
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            "TuxunBrowse",
+                            style = MaterialTheme.typography.headlineMedium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                        Text(
+                            "打开就是网页——没有信息流，没有推送，没有广告。",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
                 }
             }
         }
         item(span = { GridItemSpan(maxLineSpan) }) {
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                placeholder = {
-                    Text("用${engineShortName()}搜索，或输入网址")
-                },
-                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(
-                    onSearch = {
-                        if (query.isNotBlank()) {
-                            onSearchUrl(
-                                resolveInput(query, currentEngine, currentCustomTemplate)
-                            )
-                        }
-                    },
-                    onGo = {
-                        if (query.isNotBlank()) {
-                            onSearchUrl(
-                                resolveInput(query, currentEngine, currentCustomTemplate)
-                            )
-                        }
+            // The big home search box is the official DockedSearchBar
+            // (inactive state: an input field only, no suggestions
+            // layer). Submitting goes through the same resolveInput
+            // path the old text field used.
+            DockedSearchBar(
+                query = query,
+                onQueryChange = { query = it },
+                onSearch = {
+                    if (query.isNotBlank()) {
+                        onSearchUrl(
+                            resolveInput(query, currentEngine, currentCustomTemplate)
+                        )
                     }
-                )
-            )
+                },
+                active = false,
+                onActiveChange = {},
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = {
+                    Text("用${engineShortName()}搜索，或输入网址", maxLines = 1)
+                },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) }
+            ) {}
         }
         item(span = { GridItemSpan(maxLineSpan) }) {
             // Quick engine switch: only the short engine name on the
@@ -3032,6 +3057,7 @@ private fun BrowserScreen(
     }
     var showRecentClosed by remember { mutableStateOf(false) }
     var showSiteInfo by remember { mutableStateOf(false) }
+    var showMoreTools by remember { mutableStateOf(false) }
     // Long-press on back/forward: this tab's real back/forward stack.
     var navHistory by remember {
         mutableStateOf<Pair<List<NavHistoryEntry>, Int>?>(null)
@@ -3130,26 +3156,10 @@ private fun BrowserScreen(
                         Icon(Icons.Filled.MoreVert, contentDescription = "菜单")
                     }
                     DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                        // Ad-block status for this page. WebView tabs
-                        // count the requests they blocked; GeckoView
-                        // gives no such count, so its line shows the
-                        // switch state only — no invented number.
-                        Text(
-                            text = when {
-                                !adBlockEnabled -> "广告拦截已关"
-                                activeTab?.engine == Engine.GECKO ->
-                                    "广告拦截已开"
-                                activeTab != null && activeTab.blockedCount > 0 ->
-                                    "本页已拦截 ${activeTab.blockedCount} 个"
-                                else -> "广告拦截已开"
-                            },
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(
-                                horizontal = 12.dp, vertical = 8.dp
-                            )
-                        )
-                        HorizontalDivider()
+                        // Slim main menu (user's own list): high-
+                        // frequency items only. The ad-block status
+                        // line moved to the settings ad-block page;
+                        // low-frequency tools live under "更多工具".
                         DropdownMenuItem(
                             text = { Text("新建标签页") },
                             leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
@@ -3193,44 +3203,6 @@ private fun BrowserScreen(
                                             intent, "分享当前页"
                                         )
                                     )
-                                }
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("用其他浏览器打开") },
-                            leadingIcon = {
-                                Icon(Icons.Filled.OpenInNew, contentDescription = null)
-                            },
-                            onClick = {
-                                showMenu = false
-                                val tab = activeTab
-                                if (tab == null || tab.isHome ||
-                                    !(tab.url.startsWith("http://") ||
-                                        tab.url.startsWith("https://"))
-                                ) {
-                                    android.widget.Toast.makeText(
-                                        context,
-                                        "这是应用内部的页面，没法用其他浏览器打开",
-                                        android.widget.Toast.LENGTH_LONG
-                                    ).show()
-                                } else {
-                                    try {
-                                        val intent = android.content.Intent(
-                                            android.content.Intent.ACTION_VIEW,
-                                            android.net.Uri.parse(tab.url)
-                                        )
-                                        context.startActivity(
-                                            android.content.Intent.createChooser(
-                                                intent, "用其他浏览器打开"
-                                            )
-                                        )
-                                    } catch (t: Throwable) {
-                                        android.widget.Toast.makeText(
-                                            context,
-                                            "没有找到其他浏览器",
-                                            android.widget.Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
                                 }
                             }
                         )
@@ -3297,27 +3269,6 @@ private fun BrowserScreen(
                             onClick = { onToggleDesktopMode(!activeDesktopMode) }
                         )
                         DropdownMenuItem(
-                            text = { Text("打印 / 存为 PDF") },
-                            leadingIcon = {
-                                Icon(Icons.Filled.FileUpload, contentDescription = null)
-                            },
-                            onClick = { showMenu = false; onPrintPage() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("资源嗅探") },
-                            leadingIcon = {
-                                Icon(Icons.Filled.FindInPage, contentDescription = null)
-                            },
-                            onClick = { showMenu = false; onOpenSniffer() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("网页截图") },
-                            leadingIcon = {
-                                Icon(Icons.Filled.PhotoCamera, contentDescription = null)
-                            },
-                            onClick = { showMenu = false; onScreenshot() }
-                        )
-                        DropdownMenuItem(
                             text = { Text("下载") },
                             leadingIcon = {
                                 Icon(Icons.Filled.Download, contentDescription = null)
@@ -3348,19 +3299,16 @@ private fun BrowserScreen(
                             )
                         }
                         DropdownMenuItem(
-                            text = { Text("阅读列表") },
-                            leadingIcon = {
-                                Icon(
-                                    Icons.Filled.FormatListBulleted,
-                                    contentDescription = null
-                                )
-                            },
-                            onClick = { showMenu = false; onOpenReadingList() }
-                        )
-                        DropdownMenuItem(
                             text = { Text("设置") },
                             leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
                             onClick = { showMenu = false; onOpenSettings() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("更多工具") },
+                            leadingIcon = {
+                                Icon(Icons.Filled.MoreHoriz, contentDescription = null)
+                            },
+                            onClick = { showMenu = false; showMoreTools = true }
                         )
                     }
                 }
@@ -3741,6 +3689,118 @@ private fun BrowserScreen(
                             onGoHome = onGoHome
                         )
                     else -> TabContent(tab = tab, modifier = Modifier.fillMaxSize())
+                }
+            }
+        }
+    }
+
+    // ---- More-tools sheet: the low-frequency tools that left the
+    // main menu (their features and handlers are unchanged), plus
+    // the reading-list view entry. ----
+    if (showMoreTools) {
+        ModalBottomSheet(
+            onDismissRequest = { showMoreTools = false },
+            sheetState = rememberModalBottomSheetState()
+        ) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 640.dp)
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                item {
+                    Text("更多工具", style = MaterialTheme.typography.titleLarge)
+                }
+                item {
+                    ListItem(
+                        headlineContent = { Text("网页截图") },
+                        leadingContent = {
+                            Icon(Icons.Filled.PhotoCamera, contentDescription = null)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showMoreTools = false; onScreenshot() }
+                    )
+                }
+                item {
+                    ListItem(
+                        headlineContent = { Text("资源嗅探") },
+                        leadingContent = {
+                            Icon(Icons.Filled.FindInPage, contentDescription = null)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showMoreTools = false; onOpenSniffer() }
+                    )
+                }
+                item {
+                    ListItem(
+                        headlineContent = { Text("打印 / 存为 PDF") },
+                        leadingContent = {
+                            Icon(Icons.Filled.FileUpload, contentDescription = null)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showMoreTools = false; onPrintPage() }
+                    )
+                }
+                item {
+                    ListItem(
+                        headlineContent = { Text("用其他浏览器打开") },
+                        leadingContent = {
+                            Icon(Icons.Filled.OpenInNew, contentDescription = null)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                showMoreTools = false
+                                val tab = activeTab
+                                if (tab == null || tab.isHome ||
+                                    !(tab.url.startsWith("http://") ||
+                                        tab.url.startsWith("https://"))
+                                ) {
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        "这是应用内部的页面，没法用其他浏览器打开",
+                                        android.widget.Toast.LENGTH_LONG
+                                    ).show()
+                                } else {
+                                    try {
+                                        val intent = android.content.Intent(
+                                            android.content.Intent.ACTION_VIEW,
+                                            android.net.Uri.parse(tab.url)
+                                        )
+                                        context.startActivity(
+                                            android.content.Intent.createChooser(
+                                                intent, "用其他浏览器打开"
+                                            )
+                                        )
+                                    } catch (t: Throwable) {
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            "没有找到其他浏览器",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
+                            }
+                    )
+                }
+                item {
+                    ListItem(
+                        headlineContent = { Text("阅读列表") },
+                        leadingContent = {
+                            Icon(
+                                Icons.Filled.FormatListBulleted,
+                                contentDescription = null
+                            )
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showMoreTools = false; onOpenReadingList() }
+                    )
                 }
             }
         }
@@ -5601,6 +5661,11 @@ private fun SettingsScreen(
     var downloadMode by remember { mutableStateOf(store.downloadMode) }
     var historyRetention by remember { mutableStateOf(store.historyRetention) }
     var themeMode by remember { mutableStateOf(store.themeMode) }
+    // Settings is a two-level menu now: a home list of six
+    // categories, each opening its own sub-page. Back from a
+    // sub-page returns here; back from home leaves settings.
+    var settingsPage by remember { mutableStateOf("home") }
+    BackHandler(enabled = settingsPage != "home") { settingsPage = "home" }
     var compatList by remember { mutableStateOf(store.loadCompatSites().sorted()) }
     var showCleared by remember { mutableStateOf(false) }
     var defaultTick by remember { mutableStateOf(0) }
@@ -5681,9 +5746,27 @@ private fun SettingsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("设置") },
+                title = {
+                    Text(
+                        when (settingsPage) {
+                            "engine" -> "内核与搜索引擎"
+                            "appearance" -> "外观与字体"
+                            "privacy" -> "隐私与数据"
+                            "download" -> "下载"
+                            "adblock" -> "广告拦截"
+                            "about" -> "关于"
+                            else -> "设置"
+                        }
+                    )
+                },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = {
+                        if (settingsPage != "home") {
+                            settingsPage = "home"
+                        } else {
+                            onBack()
+                        }
+                    }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                     }
                 }
@@ -5697,6 +5780,44 @@ private fun SettingsScreen(
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            if (settingsPage == "home") {
+                item {
+                    Text(
+                        "点一个分类进去改，改完点左上角返回。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+                items(
+                    listOf(
+                        Triple("engine", "内核与搜索引擎", Icons.Filled.Language),
+                        Triple("appearance", "外观与字体", Icons.Filled.Palette),
+                        Triple("privacy", "隐私与数据", Icons.Filled.Lock),
+                        Triple("download", "下载", Icons.Filled.Download),
+                        Triple("adblock", "广告拦截", Icons.Filled.VisibilityOff),
+                        Triple("about", "关于", Icons.Filled.Info)
+                    )
+                ) { (key, label, icon) ->
+                    ElevatedCard(
+                        onClick = { settingsPage = key },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        ListItem(
+                            headlineContent = { Text(label) },
+                            leadingContent = {
+                                Icon(icon, contentDescription = null)
+                            },
+                            trailingContent = {
+                                Icon(
+                                    Icons.Filled.ChevronRight,
+                                    contentDescription = "进入"
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+            if (settingsPage == "engine") {
             item {
                 Text("主内核", style = MaterialTheme.typography.titleMedium)
                 Text(
@@ -5856,10 +5977,22 @@ private fun SettingsScreen(
                     HorizontalDivider()
                 }
             }
+            }
+            if (settingsPage == "adblock") {
             item {
                 Text("广告拦截", style = MaterialTheme.typography.titleMedium)
             }
-            item {
+
+                item {
+                    Text(
+                        if (adBlock) {
+                            "广告拦截已开（状态行从主菜单挪到了这里）"
+                        } else {
+                            "广告拦截已关（状态行从主菜单挪到了这里）"
+                        },
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }            item {
                 ListItem(
                     headlineContent = { Text("拦截广告和跟踪请求") },
                     supportingContent = {
@@ -5879,7 +6012,7 @@ private fun SettingsScreen(
             item {
                 Text(
                     "内置拦截名单共 ${AdBlocker.blockedHostCount} 个广告/跟踪域名。" +
-                        "WebView 标签按这份名单拦截，菜单顶部会显示本页拦下了几个；" +
+                        "WebView 标签按这份名单拦截，单个页面拦下了几个可以在网站信息里看；" +
                         "火狐标签用内核自带的跟踪保护，没有个数统计。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -5915,6 +6048,8 @@ private fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+            }
+            if (settingsPage == "download") {
             item {
                 Text("下载", style = MaterialTheme.typography.titleMedium)
                 Text(
@@ -5953,6 +6088,8 @@ private fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+            }
+            if (settingsPage == "appearance") {
             item {
                 Text("外观", style = MaterialTheme.typography.titleMedium)
                 Text(
@@ -6044,6 +6181,8 @@ private fun SettingsScreen(
                     }
                 )
             }
+            }
+            if (settingsPage == "privacy") {
             item {
                 Text("启动", style = MaterialTheme.typography.titleMedium)
             }
@@ -6064,6 +6203,8 @@ private fun SettingsScreen(
                     }
                 )
             }
+            }
+            if (settingsPage == "engine") {
             item {
                 Text("默认浏览器", style = MaterialTheme.typography.titleMedium)
                 Text(
@@ -6134,6 +6275,8 @@ private fun SettingsScreen(
                     Text("重新检测默认浏览器状态")
                 }
             }
+            }
+            if (settingsPage == "privacy") {
             item {
                 Text("隐私", style = MaterialTheme.typography.titleMedium)
                 Text(
@@ -6211,6 +6354,8 @@ private fun SettingsScreen(
                     Text("从备份文件导入")
                 }
             }
+            }
+            if (settingsPage == "about") {
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(16.dp)) {
@@ -6239,7 +6384,8 @@ private fun SettingsScreen(
                     }
                 }
             }
-            item { Spacer(modifier = Modifier.padding(bottom = 24.dp)) }
+            item { Spacer(modifier = Modifier.padding(bottom = 24.dp)) }            }
+
         }
     }
     val newRelease = updateAvailable
