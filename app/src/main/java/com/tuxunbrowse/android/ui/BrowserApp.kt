@@ -123,6 +123,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.debounce
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -288,6 +290,7 @@ private data class SslPromptState(
     val respond: (Boolean) -> Unit
 )
 
+@OptIn(FlowPreview::class)
 @Composable
 fun BrowserApp(
     initialUrl: String? = null,
@@ -301,14 +304,29 @@ fun BrowserApp(
     }
     val tabs = remember { mutableStateListOf<BrowserTab>() }
     var activeTabId by remember { mutableStateOf(-1) }
-    val bookmarks = remember { mutableStateListOf<Bookmark>().apply { addAll(store.loadBookmarks()) } }
-    val history = remember { mutableStateListOf<HistoryItem>().apply { addAll(store.loadHistory()) } }
-    val readingList = remember {
-        mutableStateListOf<ReadingItem>().apply { addAll(store.loadReadingList()) }
-    }
+    // Startup loading split (v0.28.0 audit): the three big JSON lists
+    // start out EMPTY here and are filled in by the startup effect
+    // below, which parses them on a background dispatcher before it
+    // restores any tab. That ordering is what makes the split safe:
+    // nothing can read or mutate these lists before the fill —
+    // visits are recorded only by tab callbacks, bookmark/read-later
+    // actions need an active tab, and tabs are created only later in
+    // that same effect. Parsing them inside remember{} instead ran
+    // the whole lot (history alone is capped at 500 entries) on the
+    // main thread during the very first composition.
+    val bookmarks = remember { mutableStateListOf<Bookmark>() }
+    val history = remember { mutableStateListOf<HistoryItem>() }
+    val readingList = remember { mutableStateListOf<ReadingItem>() }
+    // Speed dials stay synchronous on purpose: the list is hard-capped
+    // at 12 tiny entries (a couple of KB of JSON at most) and the home
+    // page shows them, so there is nothing worth deferring.
     val speedDials = remember {
         mutableStateListOf<SpeedDial>().apply { addAll(store.loadSpeedDials()) }
     }
+    // Compat sites also stay synchronous on purpose: the very first
+    // restored tab must already know them (effectiveEngine / the
+    // shouldUseWebView check run when that tab is created and first
+    // loads), and the set is a handful of domain strings.
     val compatSites = remember {
         mutableStateListOf<String>().apply { addAll(store.loadCompatSites()) }
     }
@@ -886,11 +904,30 @@ fun BrowserApp(
     // Runs once, before the persistence effect below is allowed to save
     // anything, so a fresh start can never wipe the saved session first.
     LaunchedEffect(Unit) {
+        // Background fill of the three big lists (v0.28.0): parse the
+        // stored JSON off the main thread, then publish the results
+        // into the state lists above. This must stay the FIRST step of
+        // this effect — the retention cleanup below reads history, and
+        // tab restore further down is what makes user actions on these
+        // lists possible at all, so the fill always lands first.
+        val loadedLists = kotlinx.coroutines.withContext(
+            kotlinx.coroutines.Dispatchers.Default
+        ) {
+            Triple(
+                store.loadBookmarks(),
+                store.loadHistory(),
+                store.loadReadingList()
+            )
+        }
+        bookmarks.addAll(loadedLists.first)
+        history.addAll(loadedLists.second)
+        readingList.addAll(loadedLists.third)
         // History retention cleanup: drop normal-history entries older
         // than the user's chosen window. Runs inside this effect (off
         // the startup critical path, filtering on a background
         // dispatcher); incognito visits are never recorded, so they
-        // are untouched by definition.
+        // are untouched by definition. It runs after the history fill
+        // above, so it always sees the full stored list (v0.16.0).
         val retentionDays = store.historyRetention.days
         if (retentionDays > 0 && history.isNotEmpty()) {
             val cutoff = System.currentTimeMillis() - retentionDays * 86_400_000L
@@ -907,7 +944,16 @@ fun BrowserApp(
             }
         }
         if (store.mainEngineChosen && tabs.isEmpty()) {
-            val (saved, savedActive) = store.loadTabs()
+            // The saved-session JSON is parsed off the main thread
+            // too (v0.28.0); restore still happens only after this
+            // returns, and startupDone is still set only at the very
+            // end, so the persistence effect below can never save
+            // before restore has run (the v0.4.0 guard is intact).
+            val (saved, savedActive) = kotlinx.coroutines.withContext(
+                kotlinx.coroutines.Dispatchers.Default
+            ) {
+                store.loadTabs()
+            }
             val usable = if (store.startupRestore) {
                 saved.filter { it.url.startsWith("http") || it.url == HOME_URL }
             } else {
@@ -940,13 +986,22 @@ fun BrowserApp(
     }
 
     // Keep the saved session in sync with the live tab list.
+    // Debounced (v0.28.0): tab state changes on every navigation step
+    // (each redirect / URL change re-emits), and every emission used
+    // to serialize the whole session JSON on the main thread and push
+    // it through SharedPreferences. Saving only the state that is
+    // still current 400 ms after the last change keeps the archive
+    // just as complete — intermediate URLs within one navigation were
+    // never worth persisting — at a fraction of the writes. Trade-off
+    // on record: if the process dies inside that 400 ms window, the
+    // archive can lag the very last navigation by one step.
     LaunchedEffect(startupDone) {
         if (!startupDone) return@LaunchedEffect
         snapshotFlow {
             val normal = tabs.filter { !it.incognito }
             normal.map { Triple(it.engine, it.url, it.desktopMode) } to
                 normal.indexOfFirst { it.id == activeTabId }
-        }.collect { (list, idx) ->
+        }.debounce(400L).collect { (list, idx) ->
             store.saveTabs(
                 list.map { SavedTab(it.first, it.second, it.third) },
                 idx.coerceAtLeast(0)
