@@ -838,6 +838,7 @@ class BrowserTab(
     }
 
     @SuppressLint("SetJavaScriptEnabled")
+    @Suppress("DEPRECATION")
     fun obtainWebView(context: Context): WebView {
         webView?.let { return it }
         val view = WebView(context)
@@ -847,6 +848,34 @@ class BrowserTab(
         )
         view.settings.javaScriptEnabled = true
         view.settings.domStorageEnabled = true
+        // Hardened WebView switches (v0.31.0 audit), all pinned
+        // explicitly rather than left to platform defaults:
+        // - No file:// access at all. Nothing in the app loads local
+        //   files as pages (the error page and the home page are
+        //   Compose overlays, downloads go through DownloadManager /
+        //   MediaStore), so the platform default (true) is pure risk.
+        // - No content:// access either: no feature loads content
+        //   URIs as pages (file picking hands URIs to the page's own
+        //   upload callback, which is a different mechanism).
+        // - The two from-file-URLs switches are deprecated but are
+        //   pinned off anyway, so no file page could ever reach local
+        //   files or arbitrary origins through them.
+        // - Mixed content stays NEVER_ALLOW (that already was the
+        //   platform default for this app; pinned so it cannot drift
+        //   with an OEM WebView): an https page may not pull http
+        //   subresources. Recorded trade-off: very old sites that mix
+        //   http images into https pages will show broken images —
+        //   accepted, the alternative weakens every secure page.
+        // - Geolocation off: the app holds no location permission
+        //   and has no permission prompt for it, so pages must not be
+        //   able to ask the engine for a position at all.
+        view.settings.allowFileAccess = false
+        view.settings.allowContentAccess = false
+        view.settings.allowFileAccessFromFileURLs = false
+        view.settings.allowUniversalAccessFromFileURLs = false
+        view.settings.mixedContentMode =
+            android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
+        view.settings.setGeolocationEnabled(false)
         view.settings.loadsImagesAutomatically = true
         view.settings.builtInZoomControls = true
         view.settings.displayZoomControls = false

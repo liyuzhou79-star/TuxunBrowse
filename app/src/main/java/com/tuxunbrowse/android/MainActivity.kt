@@ -33,7 +33,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         themeMode = Store(this).themeMode
-        externalUrl = intent?.dataString?.takeIf { it.startsWith("http") }
+        // Only full http:// or https:// links are taken in (v0.31.0);
+        // the manifest's VIEW filter already limits us to those two
+        // schemes, and BrowserApp.openUrl re-checks at its own gate.
+        externalUrl = intent?.dataString?.takeIf {
+            it.startsWith("http://") || it.startsWith("https://")
+        }
         setContent {
             val darkTheme = when (themeMode) {
                 ThemeMode.SYSTEM -> isSystemInDarkTheme()
@@ -63,6 +68,8 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        externalUrl = intent.dataString?.takeIf { it.startsWith("http") }
+        externalUrl = intent.dataString?.takeIf {
+            it.startsWith("http://") || it.startsWith("https://")
+        }
     }
 }

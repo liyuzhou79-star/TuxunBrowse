@@ -89,6 +89,42 @@ data class SavedTab(val engine: Engine, val url: String, val desktopMode: Boolea
 /** Internal URL of the native home page. Never handed to a web engine. */
 const val HOME_URL = "tuxun://home"
 
+/**
+ * Inbound-URL guard (v0.31.0 security audit). Anything that arrives
+ * from OUTSIDE the app and is about to be opened as a page — a link
+ * handed over by another app, the clipboard hint, a release page URL
+ * from the update check, an imported bookmark, a saved speed dial —
+ * may only be http://, https://, or the app's own internal home URL.
+ * file:, javascript:, data:, content:, intent: and every other scheme
+ * are refused at this one gate (see BrowserApp.openUrl), never opened.
+ * In-page navigation is NOT routed through here: pages linking among
+ * themselves are the engines' own business (shouldOverrideUrlLoading /
+ * onLoadRequest), and subresource loads (a data: image inside a page,
+ * say) never pass through openUrl at all.
+ */
+fun isAllowedPageUrl(url: String): Boolean =
+    url == HOME_URL ||
+        url.startsWith("http://") ||
+        url.startsWith("https://")
+
+/** Schemes that must never be opened as a page, however they arrive. */
+private val BLOCKED_PAGE_SCHEMES = listOf(
+    "javascript:", "data:", "file:", "content:", "intent:",
+    "about:", "view-source:", "blob:"
+)
+
+/**
+ * True when typed or pasted text starts with one of the blocked
+ * schemes above. Used at the places that turn raw text into a URL
+ * (address bar, home search, speed-dial and bookmark editors) so the
+ * refusal happens with a plain-language message instead of the text
+ * being silently reinterpreted as a search or a host name.
+ */
+fun hasBlockedPageScheme(input: String): Boolean {
+    val text = input.trim().lowercase()
+    return BLOCKED_PAGE_SCHEMES.any { text.startsWith(it) }
+}
+
 /** Package name of the TuxunDown multi-thread downloader app. */
 const val TUXUNDOWN_PACKAGE = "com.tuxundown.android"
 
@@ -608,28 +644,35 @@ fun parseBackup(raw: String): BackupData? {
             arr.optJSONObject(it)?.let(parse)
         }
     }
+    // Inbound data (v0.31.0): a backup file comes from outside the
+    // app, so its URLs follow the same http/https-only rule as every
+    // other outside link (see isAllowedPageUrl).
+    fun webUrl(url: String): String? =
+        url.takeIf {
+            it.startsWith("http://") || it.startsWith("https://")
+        }
     val bookmarks = readArr("bookmarks") { o ->
-        val url = o.optString("url")
-        if (url.isBlank()) null else Bookmark(
+        val url = webUrl(o.optString("url")) ?: return@readArr null
+        Bookmark(
             o.optString("title").ifBlank { url }, url, o.optBoolean("pinned")
         )
     }
     val history = readArr("history") { o ->
-        val url = o.optString("url")
-        if (url.isBlank()) null else HistoryItem(
+        val url = webUrl(o.optString("url")) ?: return@readArr null
+        HistoryItem(
             o.optString("title").ifBlank { url }, url, o.optLong("time")
         )
     }
     val reading = readArr("readingList") { o ->
-        val url = o.optString("url")
-        if (url.isBlank()) null else ReadingItem(
+        val url = webUrl(o.optString("url")) ?: return@readArr null
+        ReadingItem(
             o.optString("title").ifBlank { url }, url,
             o.optLong("time"), o.optBoolean("read")
         )
     }
     val dials = readArr("speedDials") { o ->
-        val url = o.optString("url")
-        if (url.isBlank()) null else SpeedDial(
+        val url = webUrl(o.optString("url")) ?: return@readArr null
+        SpeedDial(
             o.optString("title").ifBlank { url }, url
         )
     }
@@ -710,7 +753,12 @@ fun bookmarksFromJson(raw: String): List<Bookmark> {
     return (0 until count).mapNotNull {
         val o = arr.optJSONObject(it) ?: return@mapNotNull null
         val url = o.optString("url")
-        if (url.isBlank()) {
+        // Inbound data (v0.31.0): only web URLs may be imported as
+        // bookmarks — anything else (file:, javascript:, ...) is
+        // dropped here rather than stored and refused at open time.
+        if (url.isBlank() ||
+            !(url.startsWith("http://") || url.startsWith("https://"))
+        ) {
             null
         } else {
             Bookmark(o.optString("title").ifBlank { url }, url, o.optBoolean("pinned"))
@@ -754,7 +802,10 @@ private val HTML_BOOKMARK_REGEX = Regex(
  * Parse a standard Netscape bookmark file (the HTML format every
  * desktop browser exports): `<DT><A HREF="...">title</A>` entries.
  * Returns the bookmarks found plus how many link entries were
- * skipped because their address was blank or not http/https/file.
+ * skipped because their address was blank or not http/https.
+ * (v0.31.0: file: entries are skipped too — imported bookmarks are
+ * inbound data and follow the same http/https-only rule as every
+ * other outside link; see isAllowedPageUrl.)
  * De-duplication against existing bookmarks is the caller's job.
  */
 fun bookmarksFromHtml(raw: String): Pair<List<Bookmark>, Int> {
@@ -764,8 +815,7 @@ fun bookmarksFromHtml(raw: String): Pair<List<Bookmark>, Int> {
         if (out.size >= MAX_IMPORT_ENTRIES) break
         val href = decodeHtmlEntities(match.groupValues[1].trim())
         val scheme = href.substringBefore("://", "").lowercase()
-        val isFile = href.startsWith("file:", ignoreCase = true)
-        if (href.isBlank() || (!isFile && scheme != "http" && scheme != "https")) {
+        if (href.isBlank() || (scheme != "http" && scheme != "https")) {
             skipped++
             continue
         }
@@ -785,9 +835,11 @@ fun resolveInput(
 ): String {
     val text = input.trim()
     if (text.isEmpty()) return HOME_URL
-    if (text.startsWith("http://") || text.startsWith("https://") ||
-        text.startsWith("about:") || text.startsWith("file:")
-    ) return text
+    // Only http(s) URLs pass through as-is (v0.31.0): the old about:
+    // and file: pass-throughs are gone — file: pages are refused like
+    // every other non-web scheme (see isAllowedPageUrl), and about:
+    // pages were never a feature of this browser.
+    if (text.startsWith("http://") || text.startsWith("https://")) return text
     val looksLikeHost = !text.contains(" ") &&
         (text.contains(".") || text.startsWith("localhost"))
     return if (looksLikeHost) {
@@ -813,9 +865,7 @@ fun resolveInput(
 fun isUrlLikeInput(input: String): Boolean {
     val text = input.trim()
     if (text.isEmpty()) return false
-    if (text.startsWith("http://") || text.startsWith("https://") ||
-        text.startsWith("about:") || text.startsWith("file:")
-    ) return true
+    if (text.startsWith("http://") || text.startsWith("https://")) return true
     return !text.contains(" ") &&
         (text.contains(".") || text.startsWith("localhost"))
 }

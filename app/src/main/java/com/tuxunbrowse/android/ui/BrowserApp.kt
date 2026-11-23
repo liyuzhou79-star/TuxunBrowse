@@ -171,6 +171,8 @@ import com.tuxunbrowse.android.data.MAX_IMPORT_FILE_CHARS
 import com.tuxunbrowse.android.data.isValidCustomSearchTemplate
 import com.tuxunbrowse.android.data.hostOf
 import com.tuxunbrowse.android.data.isCompatHost
+import com.tuxunbrowse.android.data.hasBlockedPageScheme
+import com.tuxunbrowse.android.data.isAllowedPageUrl
 import com.tuxunbrowse.android.data.isUrlLikeInput
 import com.tuxunbrowse.android.data.matchSuggestions
 import com.tuxunbrowse.android.data.resolveInput
@@ -1580,6 +1582,25 @@ fun BrowserApp(
     }
 
     fun openUrl(url: String) {
+        // The one inbound gate (v0.31.0): every "open this as a page"
+        // request that arrives from outside a web page funnels through
+        // here — links handed over by other apps, the clipboard hint,
+        // the update check's release page, bookmarks, history, the
+        // reading list, speed dials, address-bar suggestions. Only
+        // http/https and the app's own home page may pass; file:,
+        // javascript:, data:, content:, intent: and friends are
+        // refused with a plain-language message. In-page navigation
+        // never comes through here (the engines handle it), so pages
+        // linking among themselves — and subresources like data:
+        // images inside a page — are unaffected.
+        if (!isAllowedPageUrl(url)) {
+            android.widget.Toast.makeText(
+                context,
+                "这个链接打不开：只支持打开 http 或 https 开头的网址",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            return
+        }
         var tab = activeTab() ?: newTab(store.mainEngine, false, url)
         if (tab.engine == Engine.GECKO &&
             effectiveEngine(Engine.GECKO, url) == Engine.WEBVIEW
@@ -1678,9 +1699,21 @@ fun BrowserApp(
                     store.saveBookmarks(bookmarks)
                 },
                 onNavigate = { text ->
-                    activeTab()?.load(
-                        resolveInput(text, store.searchEngine, store.customSearchTemplate)
-                    )
+                    // Typed input with a non-web scheme (file:,
+                    // javascript:, data:, ...) is refused outright
+                    // (v0.31.0) instead of being reinterpreted as a
+                    // search or a host name.
+                    if (hasBlockedPageScheme(text)) {
+                        android.widget.Toast.makeText(
+                            context,
+                            "这个链接打不开：只支持打开 http 或 https 开头的网址",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        activeTab()?.load(
+                            resolveInput(text, store.searchEngine, store.customSearchTemplate)
+                        )
+                    }
                 },
                 bookmarks = bookmarks,
                 searchEngine = searchEngineState,
@@ -2730,6 +2763,14 @@ private fun HomeContent(
                             homeContext, "先填网址",
                             android.widget.Toast.LENGTH_SHORT
                         ).show()
+                    } else if (hasBlockedPageScheme(dialUrl)) {
+                        // Non-web schemes are never saved as speed
+                        // dials (v0.31.0, same rule as openUrl).
+                        android.widget.Toast.makeText(
+                            homeContext,
+                            "这个链接打不开：只支持打开 http 或 https 开头的网址",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
                     } else {
                         val resolved = resolveInput(
                             dialUrl, currentEngine, currentCustomTemplate
@@ -2966,9 +3007,19 @@ private fun HomeContent(
                 onQueryChange = { query = it },
                 onSearch = {
                     if (query.isNotBlank()) {
-                        onSearchUrl(
-                            resolveInput(query, currentEngine, currentCustomTemplate)
-                        )
+                        // Same refusal as the address bar (v0.31.0):
+                        // a non-web scheme typed here is not a search.
+                        if (hasBlockedPageScheme(query)) {
+                            android.widget.Toast.makeText(
+                                homeContext,
+                                "这个链接打不开：只支持打开 http 或 https 开头的网址",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        } else {
+                            onSearchUrl(
+                                resolveInput(query, currentEngine, currentCustomTemplate)
+                            )
+                        }
                     }
                 },
                 active = false,
@@ -4865,6 +4916,7 @@ private fun BookmarksScreen(
     onImport: () -> Unit,
     onDeleteMany: (List<Bookmark>) -> Unit = {}
 ) {
+    val context = LocalContext.current
     var editing by remember { mutableStateOf<Bookmark?>(null) }
     val editingBookmark = editing
     if (editingBookmark != null) {
@@ -4898,13 +4950,23 @@ private fun BookmarksScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        val resolved = resolveInput(editUrl)
-                        onEdit(
-                            editingBookmark,
-                            editTitle.ifBlank { resolved },
-                            resolved
-                        )
-                        editing = null
+                        if (hasBlockedPageScheme(editUrl)) {
+                            // Non-web schemes are never saved as
+                            // bookmarks (v0.31.0, same rule as openUrl).
+                            android.widget.Toast.makeText(
+                                context,
+                                "这个链接打不开：只支持打开 http 或 https 开头的网址",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        } else {
+                            val resolved = resolveInput(editUrl)
+                            onEdit(
+                                editingBookmark,
+                                editTitle.ifBlank { resolved },
+                                resolved
+                            )
+                            editing = null
+                        }
                     },
                     enabled = editUrl.isNotBlank()
                 ) { Text("保存") }
