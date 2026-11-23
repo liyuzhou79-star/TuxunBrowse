@@ -12,7 +12,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.Image
+import androidx.compose.foundation.Image as FoundationImage
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -50,7 +50,7 @@ import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.FindInPage
-import androidx.compose.material.icons.filled.Image as ImageFileIcon
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -2388,7 +2388,7 @@ private fun BrowserScreen(
                             ) {
                                 val thumb = tab.thumbnail
                                 when {
-                                    thumb != null -> Image(
+                                    thumb != null -> FoundationImage(
                                         bitmap = thumb.asImageBitmap(),
                                         contentDescription = "页面预览",
                                         contentScale = ContentScale.Crop,
@@ -3016,7 +3016,7 @@ private fun SniffScreen(
                                                     SniffKind.FILE ->
                                                         Icons.Filled.InsertDriveFile
                                                     SniffKind.IMAGE ->
-                                                        ImageFileIcon
+                                                        Icons.Filled.Image
                                                     SniffKind.MEDIA ->
                                                         Icons.Filled.Movie
                                                 },
