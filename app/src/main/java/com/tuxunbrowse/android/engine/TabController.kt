@@ -8,6 +8,7 @@ import android.os.Environment
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
+import android.webkit.PermissionRequest
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -28,6 +29,8 @@ import org.mozilla.geckoview.ContentBlocking
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
+import org.mozilla.geckoview.GeckoSession.PermissionDelegate
+import org.mozilla.geckoview.GeckoSession.PromptDelegate
 import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.GeckoView
 import org.mozilla.geckoview.StorageController
@@ -116,6 +119,9 @@ object GeckoHolder {
     }
 }
 
+/** Kinds of JavaScript dialogs a Gecko page can raise. */
+enum class GeckoJsPromptKind { ALERT, CONFIRM, TEXT }
+
 private var nextTabId = 1
 
 private const val DESKTOP_USER_AGENT =
@@ -143,7 +149,28 @@ class BrowserTab(
     private val onFileChooserRequest: (
         WebChromeClient.FileChooserParams,
         ValueCallback<Array<Uri>>
-    ) -> Unit = { _, callback -> callback.onReceiveValue(null) }
+    ) -> Unit = { _, callback -> callback.onReceiveValue(null) },
+    private val onWebPermissionRequest: (PermissionRequest) -> Unit =
+        { request -> request.deny() },
+    private val onGeckoFileChooserRequest: (
+        PromptDelegate.FilePrompt,
+        (List<Uri>) -> Unit
+    ) -> Unit = { _, respond -> respond(emptyList()) },
+    private val onGeckoJsPrompt: (
+        GeckoJsPromptKind, String, String, (Boolean, String?) -> Unit
+    ) -> Unit = { _, _, _, respond -> respond(false, null) },
+    private val onGeckoAndroidPermissions: (
+        Array<String>, PermissionDelegate.Callback
+    ) -> Unit = { _, callback -> callback.reject() },
+    private val onGeckoContentPermission: (
+        PermissionDelegate.ContentPermission
+    ) -> Int = { PermissionDelegate.ContentPermission.VALUE_DENY },
+    private val onGeckoMediaPermission: (
+        String,
+        Array<PermissionDelegate.MediaSource>?,
+        Array<PermissionDelegate.MediaSource>?,
+        PermissionDelegate.MediaCallback
+    ) -> Unit = { _, _, _, callback -> callback.reject() }
 ) {
     val id: Int = nextTabId++
     var url by mutableStateOf(startUrl)
@@ -380,6 +407,23 @@ class BrowserTab(
                 return true
             }
 
+            override fun onPermissionRequest(request: PermissionRequest) {
+                // A page asking for the camera and/or microphone. Only
+                // those two resources are ever handed to the app (which
+                // runs the system runtime-permission flow); anything
+                // else the page asks for is denied outright.
+                val resources = request.resources ?: emptyArray()
+                val known = setOf(
+                    PermissionRequest.RESOURCE_VIDEO_CAPTURE,
+                    PermissionRequest.RESOURCE_AUDIO_CAPTURE
+                )
+                if (resources.isNotEmpty() && resources.all { it in known }) {
+                    onWebPermissionRequest(request)
+                } else {
+                    request.deny()
+                }
+            }
+
             override fun onShowCustomView(
                 customView: android.view.View,
                 callback: CustomViewCallback
@@ -504,6 +548,158 @@ class BrowserTab(
             // body InputStream that the app must consume itself.
             override fun onExternalResponse(s: GeckoSession, response: WebResponse) {
                 saveGeckoDownload(appContext, response)
+            }
+        }
+        // PromptDelegate, verified against the GeckoView 132 AAR with
+        // javap: GeckoSession.setPromptDelegate exists; FilePrompt has
+        // public type/mimeTypes/capture fields and public
+        // confirm(Context, Uri) / confirm(Context, Uri[]) methods;
+        // BasePrompt.dismiss() is public. All other PromptDelegate
+        // methods have default implementations in 132, so only the
+        // ones below are overridden — the rest keep Gecko's baseline
+        // behaviour. AlertPrompt has no public confirm() in 132 (the
+        // BasePrompt one is protected), so an alert's OK button
+        // completes the prompt through dismiss(), which is how an
+        // alert (a message with a single button) is acknowledged.
+        session.promptDelegate = object : PromptDelegate {
+            override fun onFilePrompt(
+                s: GeckoSession,
+                prompt: PromptDelegate.FilePrompt
+            ): GeckoResult<PromptDelegate.PromptResponse> {
+                // Same system file picker the WebView side uses; the
+                // app answers with the picked files, or an empty list
+                // when the user cancels.
+                val result = GeckoResult<PromptDelegate.PromptResponse>()
+                onGeckoFileChooserRequest(prompt) { uris ->
+                    try {
+                        when {
+                            uris.isEmpty() -> result.complete(prompt.dismiss())
+                            prompt.type == PromptDelegate.FilePrompt.Type.MULTIPLE ->
+                                result.complete(
+                                    prompt.confirm(appContext, uris.toTypedArray())
+                                )
+                            else -> result.complete(
+                                prompt.confirm(appContext, uris.first())
+                            )
+                        }
+                    } catch (t: Throwable) {
+                        // The prompt may already be answered (tab closed
+                        // meanwhile); never let that crash the app.
+                        try {
+                            result.complete(prompt.dismiss())
+                        } catch (t2: Throwable) {
+                            // Already answered; nothing left to do.
+                        }
+                    }
+                }
+                return result
+            }
+
+            override fun onAlertPrompt(
+                s: GeckoSession,
+                prompt: PromptDelegate.AlertPrompt
+            ): GeckoResult<PromptDelegate.PromptResponse> {
+                val result = GeckoResult<PromptDelegate.PromptResponse>()
+                onGeckoJsPrompt(
+                    GeckoJsPromptKind.ALERT, prompt.message ?: "", ""
+                ) { _, _ ->
+                    try {
+                        result.complete(prompt.dismiss())
+                    } catch (t: Throwable) {
+                        // Already answered; nothing left to do.
+                    }
+                }
+                return result
+            }
+
+            override fun onButtonPrompt(
+                s: GeckoSession,
+                prompt: PromptDelegate.ButtonPrompt
+            ): GeckoResult<PromptDelegate.PromptResponse> {
+                // JavaScript confirm(): OK is the positive button,
+                // Cancel the negative one (ButtonPrompt.Type values
+                // verified in the 132 AAR: POSITIVE=0, NEGATIVE=2).
+                val result = GeckoResult<PromptDelegate.PromptResponse>()
+                onGeckoJsPrompt(
+                    GeckoJsPromptKind.CONFIRM, prompt.message ?: "", ""
+                ) { confirmed, _ ->
+                    try {
+                        result.complete(
+                            prompt.confirm(
+                                if (confirmed) {
+                                    PromptDelegate.ButtonPrompt.Type.POSITIVE
+                                } else {
+                                    PromptDelegate.ButtonPrompt.Type.NEGATIVE
+                                }
+                            )
+                        )
+                    } catch (t: Throwable) {
+                        // Already answered; nothing left to do.
+                    }
+                }
+                return result
+            }
+
+            override fun onTextPrompt(
+                s: GeckoSession,
+                prompt: PromptDelegate.TextPrompt
+            ): GeckoResult<PromptDelegate.PromptResponse> {
+                // JavaScript prompt(): confirming hands the typed text
+                // back; cancelling dismisses, which makes prompt()
+                // return null in the page, as it should.
+                val result = GeckoResult<PromptDelegate.PromptResponse>()
+                onGeckoJsPrompt(
+                    GeckoJsPromptKind.TEXT,
+                    prompt.message ?: "",
+                    prompt.defaultValue ?: ""
+                ) { confirmed, text ->
+                    try {
+                        result.complete(
+                            if (confirmed) {
+                                prompt.confirm(text ?: "")
+                            } else {
+                                prompt.dismiss()
+                            }
+                        )
+                    } catch (t: Throwable) {
+                        // Already answered; nothing left to do.
+                    }
+                }
+                return result
+            }
+        }
+        // PermissionDelegate, also verified against the 132 AAR:
+        // setPermissionDelegate exists; onAndroidPermissionsRequest
+        // takes (session, String[], Callback with grant()/reject());
+        // onContentPermissionRequest returns GeckoResult<Int> with
+        // ContentPermission VALUE_ALLOW=1 / VALUE_DENY=2; media
+        // (camera/microphone) requests arrive through
+        // onMediaPermissionRequest with MediaSource arrays and a
+        // MediaCallback (there is no PermissionRequest class in 132).
+        // The app side runs the actual system-permission flow.
+        session.permissionDelegate = object : PermissionDelegate {
+            override fun onAndroidPermissionsRequest(
+                s: GeckoSession,
+                permissions: Array<String>,
+                callback: PermissionDelegate.Callback
+            ) {
+                onGeckoAndroidPermissions(permissions, callback)
+            }
+
+            override fun onContentPermissionRequest(
+                s: GeckoSession,
+                perm: PermissionDelegate.ContentPermission
+            ): GeckoResult<Int> =
+                GeckoResult.fromValue(onGeckoContentPermission(perm))
+
+            override fun onMediaPermissionRequest(
+                s: GeckoSession,
+                uri: String,
+                video: Array<PermissionDelegate.MediaSource>?,
+                audio: Array<PermissionDelegate.MediaSource>?,
+                callback: PermissionDelegate.MediaCallback
+            ) {
+                onGeckoMediaPermission(uri, video, audio, callback)
             }
         }
         session.open(runtime)

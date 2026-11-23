@@ -112,9 +112,11 @@ import com.tuxunbrowse.android.data.matchSuggestions
 import com.tuxunbrowse.android.data.resolveInput
 import com.tuxunbrowse.android.engine.BrowserTab
 import com.tuxunbrowse.android.engine.GeckoHolder
+import com.tuxunbrowse.android.engine.GeckoJsPromptKind
 import com.tuxunbrowse.android.engine.TabContent
 import com.tuxunbrowse.android.engine.startSystemDownload
 import kotlinx.coroutines.flow.collect
+import org.mozilla.geckoview.GeckoSession
 
 private enum class Screen { PICKER, BROWSER, BOOKMARKS, HISTORY, SETTINGS, DOWNLOADS, CLEAR_DATA }
 
@@ -123,6 +125,14 @@ private data class ClosedTabInfo(
     val incognito: Boolean,
     val url: String,
     val desktopMode: Boolean
+)
+
+/** A JavaScript dialog (alert/confirm/prompt) waiting for the user. */
+private data class JsPromptState(
+    val kind: GeckoJsPromptKind,
+    val message: String,
+    val defaultValue: String,
+    val respond: (Boolean, String?) -> Unit
 )
 
 @Composable
@@ -148,6 +158,7 @@ fun BrowserApp(
     var startupDone by remember { mutableStateOf(false) }
     var fullscreenView by remember { mutableStateOf<android.view.View?>(null) }
     var geckoFullscreen by remember { mutableStateOf(false) }
+    var jsPromptRequest by remember { mutableStateOf<JsPromptState?>(null) }
 
     fun recordVisit(title: String, url: String) {
         if (history.firstOrNull()?.url == url) return
@@ -178,6 +189,42 @@ fun BrowserApp(
         android.webkit.WebChromeClient.FileChooserParams,
         android.webkit.ValueCallback<Array<android.net.Uri>>
     ) -> Unit = { _, callback -> callback.onReceiveValue(null) }
+
+    // Gecko pages ask for files through PromptDelegate.FilePrompt; the
+    // handler is wired up below next to the WebView file chooser so both
+    // engines share the one system file picker. The default answers
+    // "cancelled" (empty list) so a page is never left waiting.
+    var geckoFileChooserHandler: (
+        GeckoSession.PromptDelegate.FilePrompt,
+        (List<android.net.Uri>) -> Unit
+    ) -> Unit = { _, respond -> respond(emptyList()) }
+
+    // Gecko JavaScript dialogs (alert/confirm/prompt) land here; wired
+    // up below. The default cancels so a page is never left waiting.
+    var geckoJsPromptHandler: (
+        GeckoJsPromptKind, String, String, (Boolean, String?) -> Unit
+    ) -> Unit = { _, _, _, respond -> respond(false, null) }
+
+    // Web pages asking for the camera/microphone (WebView side) land
+    // here; wired up below next to the system-permission launcher. The
+    // default denies so a page is never left waiting.
+    var webPermissionHandler: (android.webkit.PermissionRequest) -> Unit =
+        { request -> request.deny() }
+
+    // The same for Gecko tabs, split by GeckoView's three callbacks;
+    // wired up below. Defaults refuse everything.
+    var geckoAndroidPermHandler: (
+        Array<String>, GeckoSession.PermissionDelegate.Callback
+    ) -> Unit = { _, callback -> callback.reject() }
+    var geckoContentPermHandler: (
+        GeckoSession.PermissionDelegate.ContentPermission
+    ) -> Int = { GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY }
+    var geckoMediaPermHandler: (
+        String,
+        Array<GeckoSession.PermissionDelegate.MediaSource>?,
+        Array<GeckoSession.PermissionDelegate.MediaSource>?,
+        GeckoSession.PermissionDelegate.MediaCallback
+    ) -> Unit = { _, _, _, callback -> callback.reject() }
 
     fun makeTab(
         engine: Engine,
@@ -212,6 +259,20 @@ fun BrowserApp(
             },
             onFileChooserRequest = { params, callback ->
                 fileChooserHandler(params, callback)
+            },
+            onWebPermissionRequest = { request -> webPermissionHandler(request) },
+            onGeckoFileChooserRequest = { prompt, respond ->
+                geckoFileChooserHandler(prompt, respond)
+            },
+            onGeckoJsPrompt = { kind, message, defaultValue, respond ->
+                geckoJsPromptHandler(kind, message, defaultValue, respond)
+            },
+            onGeckoAndroidPermissions = { perms, callback ->
+                geckoAndroidPermHandler(perms, callback)
+            },
+            onGeckoContentPermission = { perm -> geckoContentPermHandler(perm) },
+            onGeckoMediaPermission = { uri, video, audio, callback ->
+                geckoMediaPermHandler(uri, video, audio, callback)
             }
         )
         created = tab
@@ -434,32 +495,202 @@ fun BrowserApp(
         }
     }
 
-    // Web page file uploads (WebView tabs): the page's file button lands
-    // here via fileChooserHandler; the system picker lets the user pick
-    // one or more files. The pending callback must always be answered —
-    // with the picked files, or null when the user cancels — otherwise
-    // the page's upload button stays dead.
-    var pendingFileCallback by remember {
-        mutableStateOf<android.webkit.ValueCallback<Array<android.net.Uri>>?>(null)
+    // Web page file uploads, both engines, one shared system picker:
+    // whichever engine asked last leaves its answer function in
+    // pendingFileAnswer, and the picker's result goes to it. A new
+    // request first answers the pending one with "cancelled" (empty
+    // list) so no page is ever left waiting. WebView tabs arrive via
+    // fileChooserHandler, Gecko tabs via geckoFileChooserHandler
+    // (PromptDelegate.FilePrompt in TabController).
+    var pendingFileAnswer by remember {
+        mutableStateOf<((List<android.net.Uri>) -> Unit)?>(null)
     }
     val fileChooserLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
-        pendingFileCallback?.onReceiveValue(
-            if (uris.isEmpty()) null else uris.toTypedArray()
-        )
-        pendingFileCallback = null
+        pendingFileAnswer?.invoke(uris)
+        pendingFileAnswer = null
     }
-    fileChooserHandler = { params, callback ->
-        // A new request supersedes one still waiting for an answer.
-        pendingFileCallback?.onReceiveValue(null)
-        pendingFileCallback = callback
-        val mime = params.acceptTypes?.firstOrNull { it.isNotBlank() } ?: "*/*"
+    fun launchFilePicker(mime: String, answer: (List<android.net.Uri>) -> Unit) {
+        pendingFileAnswer?.invoke(emptyList())
+        pendingFileAnswer = answer
         try {
             fileChooserLauncher.launch(arrayOf(mime))
         } catch (t: Throwable) {
-            pendingFileCallback = null
-            callback.onReceiveValue(null)
+            pendingFileAnswer = null
+            answer(emptyList())
+        }
+    }
+    fileChooserHandler = { params, callback ->
+        val mime = params.acceptTypes?.firstOrNull { it.isNotBlank() } ?: "*/*"
+        launchFilePicker(mime) { uris ->
+            callback.onReceiveValue(
+                if (uris.isEmpty()) null else uris.toTypedArray()
+            )
+        }
+    }
+    geckoFileChooserHandler = { prompt, respond ->
+        val mime = prompt.mimeTypes?.firstOrNull { it.isNotBlank() } ?: "*/*"
+        launchFilePicker(mime, respond)
+    }
+
+    // Gecko JavaScript dialogs: one at a time. A second prompt arriving
+    // while a dialog is up is cancelled at once rather than queued, so
+    // no page waits forever and no answer callback leaks.
+    geckoJsPromptHandler = { kind, message, defaultValue, respond ->
+        if (jsPromptRequest != null) {
+            respond(false, null)
+        } else {
+            jsPromptRequest = JsPromptState(kind, message, defaultValue, respond)
+        }
+    }
+
+    // ---- Web page camera / microphone permissions (both engines) ----
+    // The system is only ever asked when a page itself asks first, and
+    // a page only gets the camera/microphone for the parts the user
+    // actually granted. One system request at a time: a request that
+    // arrives while the system dialog is up is refused at once (with a
+    // plain-language toast) instead of queueing behind it.
+    var pendingSysPermAnswer by remember {
+        mutableStateOf<((Set<String>) -> Unit)?>(null)
+    }
+    var pendingSysPerms by remember { mutableStateOf<List<String>>(emptyList()) }
+    val sysPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        val answer = pendingSysPermAnswer
+        val requested = pendingSysPerms
+        pendingSysPermAnswer = null
+        pendingSysPerms = emptyList()
+        val granted = requested.filter {
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context, it
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        }.toSet()
+        answer?.invoke(granted)
+    }
+    fun requestSysPermissions(
+        perms: Array<String>,
+        answer: (Set<String>) -> Unit
+    ) {
+        val missing = perms.filter {
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context, it
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+        when {
+            missing.isEmpty() -> answer(perms.toSet())
+            pendingSysPermAnswer != null -> {
+                android.widget.Toast.makeText(
+                    context, "上一个权限申请还没处理完，这个先拒绝了，请重试",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+                answer(emptySet())
+            }
+            else -> {
+                pendingSysPermAnswer = answer
+                pendingSysPerms = missing
+                try {
+                    sysPermLauncher.launch(missing.toTypedArray())
+                } catch (t: Throwable) {
+                    pendingSysPermAnswer = null
+                    pendingSysPerms = emptyList()
+                    answer(emptySet())
+                }
+            }
+        }
+    }
+
+    webPermissionHandler = { request ->
+        val resources = request.resources?.toList() ?: emptyList()
+        val needed = buildList {
+            if (android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE in resources) {
+                add(android.Manifest.permission.CAMERA)
+            }
+            if (android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE in resources) {
+                add(android.Manifest.permission.RECORD_AUDIO)
+            }
+        }
+        requestSysPermissions(needed.toTypedArray()) { granted ->
+            val grantedResources = resources.filter { res ->
+                when (res) {
+                    android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE ->
+                        android.Manifest.permission.CAMERA in granted
+                    android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE ->
+                        android.Manifest.permission.RECORD_AUDIO in granted
+                    else -> false
+                }
+            }
+            when {
+                grantedResources.isEmpty() -> {
+                    request.deny()
+                    android.widget.Toast.makeText(
+                        context, "没有拿到摄像头或麦克风权限，网页的这个功能用不了",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+                grantedResources.size < resources.size -> {
+                    request.grant(grantedResources.toTypedArray())
+                    android.widget.Toast.makeText(
+                        context, "只拿到了部分权限，网页的这个功能可能用不全",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+                else -> request.grant(grantedResources.toTypedArray())
+            }
+        }
+    }
+    geckoAndroidPermHandler = { perms, callback ->
+        requestSysPermissions(perms) { granted ->
+            if (perms.all { it in granted }) {
+                callback.grant()
+            } else {
+                callback.reject()
+            }
+        }
+    }
+    geckoContentPermHandler = { perm ->
+        val pd = GeckoSession.PermissionDelegate
+        val cp = GeckoSession.PermissionDelegate.ContentPermission
+        when (perm.permission) {
+            pd.PERMISSION_GEOLOCATION ->
+                if (androidx.core.content.ContextCompat.checkSelfPermission(
+                        context, android.Manifest.permission.ACCESS_FINE_LOCATION
+                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                ) {
+                    cp.VALUE_ALLOW
+                } else {
+                    cp.VALUE_DENY
+                }
+            pd.PERMISSION_AUTOPLAY_INAUDIBLE,
+            pd.PERMISSION_AUTOPLAY_AUDIBLE,
+            pd.PERMISSION_MEDIA_KEY_SYSTEM_ACCESS -> cp.VALUE_ALLOW
+            else -> cp.VALUE_DENY
+        }
+    }
+    geckoMediaPermHandler = { _, video, audio, callback ->
+        val needed = buildList {
+            if (!video.isNullOrEmpty()) add(android.Manifest.permission.CAMERA)
+            if (!audio.isNullOrEmpty()) add(android.Manifest.permission.RECORD_AUDIO)
+        }
+        if (needed.isEmpty()) {
+            callback.reject()
+        } else {
+            requestSysPermissions(needed.toTypedArray()) { granted ->
+                val videoSource = video?.firstOrNull()
+                    ?.takeIf { android.Manifest.permission.CAMERA in granted }
+                val audioSource = audio?.firstOrNull()
+                    ?.takeIf { android.Manifest.permission.RECORD_AUDIO in granted }
+                if (videoSource == null && audioSource == null) {
+                    callback.reject()
+                    android.widget.Toast.makeText(
+                        context, "没有拿到摄像头或麦克风权限，网页的这个功能用不了",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    callback.grant(videoSource, audioSource)
+                }
+            }
         }
     }
 
@@ -883,6 +1114,60 @@ fun BrowserApp(
             },
             confirmButton = {
                 TextButton(onClick = { imageMenuTarget = null }) { Text("取消") }
+            }
+        )
+    }
+
+    // JavaScript dialog from a Gecko page (alert / confirm / prompt),
+    // shown with a real Material 3 AlertDialog. Every exit path answers
+    // the page exactly once: alert acknowledges, confirm reports the
+    // button, prompt hands back the typed text or cancels.
+    val jsPrompt = jsPromptRequest
+    if (jsPrompt != null) {
+        var textInput by remember(jsPrompt) { mutableStateOf(jsPrompt.defaultValue) }
+        fun answerJsPrompt(confirmed: Boolean, text: String?) {
+            jsPromptRequest = null
+            jsPrompt.respond(confirmed, text)
+        }
+        AlertDialog(
+            onDismissRequest = {
+                answerJsPrompt(jsPrompt.kind == GeckoJsPromptKind.ALERT, null)
+            },
+            title = { Text("网页提示") },
+            text = {
+                LazyColumn {
+                    item { Text(jsPrompt.message) }
+                    if (jsPrompt.kind == GeckoJsPromptKind.TEXT) {
+                        item {
+                            OutlinedTextField(
+                                value = textInput,
+                                onValueChange = { textInput = it },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp),
+                                singleLine = true
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (jsPrompt.kind == GeckoJsPromptKind.TEXT) {
+                        answerJsPrompt(true, textInput)
+                    } else {
+                        answerJsPrompt(true, null)
+                    }
+                }) {
+                    Text(if (jsPrompt.kind == GeckoJsPromptKind.ALERT) "好" else "确定")
+                }
+            },
+            dismissButton = {
+                if (jsPrompt.kind != GeckoJsPromptKind.ALERT) {
+                    TextButton(onClick = { answerJsPrompt(false, null) }) {
+                        Text("取消")
+                    }
+                }
             }
         )
     }
