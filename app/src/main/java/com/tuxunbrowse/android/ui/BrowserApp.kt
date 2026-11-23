@@ -1710,6 +1710,10 @@ fun BrowserApp(
                 onToggleReaderMode = {
                     val tab = activeTab() ?: return@BrowserScreen
                     when {
+                        tab.isHome -> android.widget.Toast.makeText(
+                            context, "先打开一个网页再用阅读模式",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
                         tab.engine == Engine.GECKO -> android.widget.Toast.makeText(
                             context,
                             "阅读模式暂时只支持 WebView 标签，火狐标签可以先切内核再开",
@@ -3521,7 +3525,17 @@ private fun BrowserScreen(
                         DropdownMenuItem(
                             text = { Text("页面内查找") },
                             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                            onClick = { showMenu = false; showFindBar = true }
+                            onClick = {
+                                showMenu = false
+                                if (activeTab == null || activeTab.isHome) {
+                                    android.widget.Toast.makeText(
+                                        context, "先打开一个网页再查找",
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
+                                } else {
+                                    showFindBar = true
+                                }
+                            }
                         )
                         DropdownMenuItem(
                             text = {
@@ -4718,7 +4732,9 @@ private fun BrowserScreen(
                                     onClick = { picked = engine }
                                 )
                             },
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { picked = engine }
                         )
                     }
                     if (currentHost != null && picked == Engine.WEBVIEW &&
@@ -4786,7 +4802,9 @@ private fun BrowserScreen(
                                     onClick = { picked = engine }
                                 )
                             },
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { picked = engine }
                         )
                     }
                 }
@@ -6449,11 +6467,7 @@ private fun SettingsScreen(
 
                 item {
                     Text(
-                        if (adBlock) {
-                            "广告拦截已开（状态行从主菜单挪到了这里）"
-                        } else {
-                            "广告拦截已关（状态行从主菜单挪到了这里）"
-                        },
+                        if (adBlock) "广告拦截已开" else "广告拦截已关",
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
