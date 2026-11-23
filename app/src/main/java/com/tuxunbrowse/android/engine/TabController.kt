@@ -368,6 +368,18 @@ class BrowserTab(
     private val onUrlDownload: (
         String, String?, String?, String?
     ) -> Unit = { _, _, _, _ -> },
+    // A tap on a direct file link (.apk/.zip/... by extension): both
+    // engines intercept the navigation before it happens and report
+    // the URL here; the app routes it through the same URL-type
+    // download dispatch as the download listener. Distinct from
+    // onExternalResponse on the Gecko side, which is the
+    // response-type path (the server answered with a file) and keeps
+    // saving the stream itself.
+    private val onDirectDownload: (String) -> Unit = {},
+    // Whether the ad-slot hiding stylesheet should be injected after
+    // each finished WebView page (master ad-block switch AND its
+    // sub-option, combined by the app). WebView only.
+    private val isAdHideSlotsEnabled: () -> Boolean = { false },
     // Fired from the exact same code path that increments the
     // per-page blocked counter, so the lifetime total in the Store
     // can never drift from the per-page numbers.
@@ -790,6 +802,37 @@ class BrowserTab(
                 }
             }
 
+            override fun shouldOverrideUrlLoading(
+                wv: WebView,
+                request: WebResourceRequest
+            ): Boolean {
+                // A tap on a direct file link (.apk/.zip/... by
+                // extension): WebView would navigate to it as if it
+                // were a page and land on an error screen — the
+                // DownloadListener never fires for plain link taps,
+                // only for Content-Disposition / unsupported-MIME
+                // responses. Intercept here instead and hand the URL
+                // to the app's download dispatch.
+                // False-positive guards, all required: main frame
+                // only, http(s) only (other schemes keep their
+                // existing handling), and only for a real user tap
+                // (hasGesture) — redirect chains and script-driven
+                // navigations are let through untouched, since telling
+                // a "necessary" hop apart from a download is not
+                // possible and breaking a login/payment redirect
+                // would be far worse than missing a download.
+                val target = request.url?.toString() ?: return false
+                if (request.isForMainFrame && request.hasGesture() &&
+                    (target.startsWith("http://") ||
+                        target.startsWith("https://")) &&
+                    isDirectDownloadUrl(target)
+                ) {
+                    onDirectDownload(target)
+                    return true
+                }
+                return false
+            }
+
             override fun onPageStarted(
                 wv: WebView,
                 startedUrl: String?,
@@ -926,6 +969,17 @@ class BrowserTab(
                 // One thumbnail capture per finished load; the other
                 // capture point is the tab being switched away from.
                 captureThumbnail()
+                // Ad-slot hiding: hide the (often empty) ad
+                // containers the request blocking left behind.
+                // Silent on failure — a page that refuses the
+                // injection simply keeps its slots.
+                if (isAdHideSlotsEnabled()) {
+                    try {
+                        wv.evaluateJavascript(AD_HIDE_JS, null)
+                    } catch (t: Throwable) {
+                        // Injection is best-effort only.
+                    }
+                }
             }
         }
         view.webChromeClient = object : WebChromeClient() {
@@ -1117,6 +1171,23 @@ class BrowserTab(
                 if (target.startsWith("http") && isAdBlockEnabled() &&
                     AdBlocker.isAdRequest(target)
                 ) {
+                    return GeckoResult.fromValue(AllowOrDeny.DENY)
+                }
+                // A tap on a direct file link: same determination
+                // as the WebView side (shared extension set, user
+                // gesture only, never a redirect hop — LoadRequest's
+                // hasUserGesture/isRedirect fields verified against
+                // the GeckoView 132 AAR). DENY the navigation and
+                // hand the URL to the app's URL-type download
+                // dispatch. This link-tap path is distinct from
+                // onExternalResponse below, which is the
+                // response-type path (the server answered with a
+                // file Gecko cannot display) and keeps saving the
+                // stream itself; the two never overlap.
+                if (target.startsWith("http") && request.hasUserGesture &&
+                    !request.isRedirect && isDirectDownloadUrl(target)
+                ) {
+                    onDirectDownload(target)
                     return GeckoResult.fromValue(AllowOrDeny.DENY)
                 }
                 return null
@@ -1801,6 +1872,44 @@ fun sharePageScreenshot(context: Context, bitmap: Bitmap) {
 }
 
 /**
+ * The one shared set of "this link points at a downloadable file"
+ * extensions. Two features read it, so it lives exactly once:
+ * the page resource sniffer (its JS below is generated from these
+ * sets) and the direct-download navigation interception in both
+ * engines ([isDirectDownloadUrl]).
+ */
+val SNIFF_FILE_EXTENSIONS: Set<String> = setOf(
+    "zip", "rar", "7z", "apk", "pdf",
+    "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt",
+    "mp4", "mp3", "mov", "mkv", "avi"
+)
+
+/** Media extensions the sniffer also collects from <link> tags. */
+val SNIFF_MEDIA_EXTENSIONS: Set<String> = setOf(
+    "mp4", "mp3", "mov", "mkv", "avi",
+    "webm", "m4a", "wav", "ogg", "flac"
+)
+
+/** Every extension that marks a URL as a direct file download. */
+val DOWNLOAD_EXTENSIONS: Set<String> =
+    SNIFF_FILE_EXTENSIONS + SNIFF_MEDIA_EXTENSIONS
+
+/**
+ * True when [url]'s path (query string and fragment stripped) ends
+ * in one of the shared download extensions. Used to turn a tap on a
+ * direct .apk/.zip/... link into a download instead of a navigation
+ * that can only fail — WebView would otherwise try to render the
+ * file as a page and land on an error screen.
+ */
+fun isDirectDownloadUrl(url: String): Boolean {
+    val clean = url.substringBefore('?').substringBefore('#')
+    val name = clean.substringAfterLast('/')
+    val dot = name.lastIndexOf('.')
+    if (dot < 0 || dot == name.length - 1) return false
+    return name.substring(dot + 1).lowercase() in DOWNLOAD_EXTENSIONS
+}
+
+/**
  * Page resource sniffer (WebView only): collects direct links to
  * downloadable files from anchors, image sources, media elements
  * and their <source> children, and media/file links in <link> tags.
@@ -1808,7 +1917,7 @@ fun sharePageScreenshot(context: Context, bitmap: Bitmap) {
  * result is de-duplicated before it leaves the page. The list is
  * capped so a pathological page cannot flood the UI.
  */
-private const val SNIFF_JS = """
+private val SNIFF_JS = """
 (function() {
   function abs(u) {
     if (!u) return '';
@@ -1828,9 +1937,8 @@ private const val SNIFF_JS = """
     if (dot < 0) return '';
     return clean.substring(dot + 1).toLowerCase();
   }
-  var fileExts = ['zip','rar','7z','apk','pdf','doc','docx','xls','xlsx',
-    'ppt','pptx','txt','mp4','mp3','mov','mkv','avi'];
-  var mediaExts = ['mp4','mp3','mov','mkv','avi','webm','m4a','wav','ogg','flac'];
+  var fileExts = [${SNIFF_FILE_EXTENSIONS.joinToString(",") { "'$it'" }}];
+  var mediaExts = [${SNIFF_MEDIA_EXTENSIONS.joinToString(",") { "'$it'" }}];
   var seen = {};
   var out = [];
   function push(raw, kind) {
@@ -1893,6 +2001,37 @@ private const val READER_JS = """
   document.head.appendChild(st);
   window.scrollTo(0, 0);
   return 'ok';
+})()
+"""
+
+/**
+ * Ad-slot hiding (WebView only): a small stylesheet injected after
+ * each page finishes, hiding elements whose markup is unambiguously
+ * an ad container. The selector list is deliberately conservative —
+ * AdSense/GPT markers, ad-* ids, ad banner/slot class names and ad
+ * network iframes only — so real page content is never hidden by
+ * accident; a missed slot is acceptable, a hidden article is not.
+ * Injected once per document (guarded by the style element's id);
+ * any failure is silent. Gecko tabs never see this: GeckoView has
+ * no CSS injection path and its content blocking already covers
+ * the tracking side.
+ */
+private const val AD_HIDE_JS = """
+(function() {
+  try {
+    if (document.getElementById('tuxunbrowse-ad-hide')) return 'ok';
+    var st = document.createElement('style');
+    st.id = 'tuxunbrowse-ad-hide';
+    st.textContent =
+      'ins.adsbygoogle,[data-ad-slot],[data-ad-client],' +
+      '[id^="ad-"],[id^="ads-"],[id^="google_ads"],[id*="div-gpt-ad"],' +
+      '[class*="ad-banner"],[class*="ad_banner"],[class*="adsbygoogle"],' +
+      '[class*="ad-slot"],[class*="ad-placeholder"],[class*="advertisement"],' +
+      'iframe[src*="doubleclick"],iframe[src*="googlesyndication"],' +
+      'iframe[src*="adsbygoogle"]{display:none!important}';
+    (document.head || document.documentElement).appendChild(st);
+    return 'ok';
+  } catch (e) { return 'skip'; }
 })()
 """
 

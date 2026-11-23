@@ -218,6 +218,18 @@ class Store(context: Context) {
         get() = prefs.getBoolean(KEY_AD_BLOCK, true)
         set(value) = prefs.edit().putBoolean(KEY_AD_BLOCK, value).apply()
 
+    /**
+     * Sub-option of ad blocking: also hide the (often empty) ad slots
+     * left on WebView pages by injecting a small stylesheet. Only
+     * meaningful while [adBlockEnabled] is on; the settings UI greys
+     * it out otherwise. WebView tabs only — Gecko has no CSS
+     * injection path and its content blocking already covers the
+     * tracking side.
+     */
+    var adHideSlots: Boolean
+        get() = prefs.getBoolean(KEY_AD_HIDE_SLOTS, true)
+        set(value) = prefs.edit().putBoolean(KEY_AD_HIDE_SLOTS, value).apply()
+
     /** Web page text size in percent: 85 / 100 / 115 / 130. */
     var textZoomPercent: Int
         get() = prefs.getInt(KEY_TEXT_ZOOM, 100)
@@ -410,6 +422,7 @@ class Store(context: Context) {
         private const val KEY_CUSTOM_SEARCH_NAME = "custom_search_name"
         private const val KEY_CUSTOM_SEARCH_TEMPLATE = "custom_search_template"
         private const val KEY_AD_BLOCK = "ad_block"
+        private const val KEY_AD_HIDE_SLOTS = "ad_hide_slots"
         private const val KEY_COMPAT_SITES = "compat_sites"
         private const val KEY_BOOKMARKS = "bookmarks"
         private const val KEY_HISTORY = "history"

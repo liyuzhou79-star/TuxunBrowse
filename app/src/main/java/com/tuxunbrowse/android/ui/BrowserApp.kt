@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -93,6 +94,7 @@ import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -110,6 +112,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -125,6 +128,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -507,6 +511,32 @@ fun BrowserApp(
                         referer = created?.url
                     )
                 }
+            },
+            onDirectDownload = { target ->
+                // A tapped direct file link, intercepted by either
+                // engine before navigating. URL-type dispatch, same
+                // as the download listener: startSystemDownload
+                // fills in the current session's Cookie and a
+                // fallback User-Agent itself; the Referer is the
+                // page the tap happened on (the tab has not moved).
+                val fileName = android.webkit.URLUtil.guessFileName(
+                    target, null, null
+                )
+                downloadWithMode(target, fileName) {
+                    startSystemDownload(
+                        context, target, null, null, null,
+                        referer = created?.url
+                    )
+                }
+                if (store.downloadMode != DownloadMode.ASK) {
+                    android.widget.Toast.makeText(
+                        context, "已开始下载 $fileName",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            },
+            isAdHideSlotsEnabled = {
+                store.adBlockEnabled && store.adHideSlots
             },
             onBlockedRequest = { store.noteBlocked() }
         )
@@ -3675,6 +3705,7 @@ private fun BrowserScreen(
             // travel well. Keyed by tab id, and the content is looked
             // up by that id so the outgoing and incoming sides each
             // show their own tab during the transition.
+            val tabContent: @Composable () -> Unit = {
             AnimatedContent(
                 targetState = activeTab?.id,
                 transitionSpec = {
@@ -3701,6 +3732,30 @@ private fun BrowserScreen(
                         )
                     else -> TabContent(tab = tab, modifier = Modifier.fillMaxSize())
                 }
+            }
+            }
+            // Pull-to-refresh (official Material 3 PullToRefreshBox):
+            // pulling down on a web page reloads the current tab.
+            // The home page is an app page — a pull there means
+            // nothing, so it is not wrapped; the error overlay and
+            // fullscreen states (chromeHidden / the early fullscreen
+            // return above) are not wrapped either. isRefreshing is
+            // bound to the tab's own loading progress, so the
+            // indicator folds away by itself when the load ends.
+            // Both engines go through the same onReloadPage path.
+            val refreshTab = activeTab
+            if (refreshTab != null && !refreshTab.isHome &&
+                refreshTab.loadError == null && !chromeHidden
+            ) {
+                PullToRefreshBox(
+                    isRefreshing = refreshTab.progress < 100,
+                    onRefresh = onReloadPage,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    tabContent()
+                }
+            } else {
+                tabContent()
             }
         }
     }
@@ -5246,6 +5301,26 @@ private fun DownloadsScreen(
         entries = loaded.reversed()
     }
 
+    // Status filter (presentation only — the DownloadManager query
+    // above is unchanged, this just narrows what the list shows).
+    // 0 = all, 1 = in progress (queued / running / paused),
+    // 2 = completed, 3 = failed.
+    var statusFilter by remember { mutableStateOf(0) }
+    val listState = rememberLazyListState()
+    LaunchedEffect(statusFilter) {
+        listState.scrollToItem(0)
+    }
+    val visibleEntries = entries.filter { entry ->
+        when (statusFilter) {
+            1 -> entry.status == android.app.DownloadManager.STATUS_PENDING ||
+                entry.status == android.app.DownloadManager.STATUS_RUNNING ||
+                entry.status == android.app.DownloadManager.STATUS_PAUSED
+            2 -> entry.status == android.app.DownloadManager.STATUS_SUCCESSFUL
+            3 -> entry.status == android.app.DownloadManager.STATUS_FAILED
+            else -> true
+        }
+    }
+
     var pendingDeleteEntry by remember { mutableStateOf<DownloadEntry?>(null) }
     val toDeleteEntry = pendingDeleteEntry
     if (toDeleteEntry != null) {
@@ -5312,16 +5387,46 @@ private fun DownloadsScreen(
         }
     ) { padding ->
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
         ) {
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf("全部", "进行中", "已完成", "失败")
+                        .forEachIndexed { index, label ->
+                            FilterChip(
+                                selected = statusFilter == index,
+                                onClick = { statusFilter = index },
+                                label = { Text(label) }
+                            )
+                        }
+                }
+            }
             if (entries.isEmpty()) {
                 item {
                     EmptyState(Icons.Filled.Download, "还没有下载记录。")
                 }
+            } else if (visibleEntries.isEmpty()) {
+                item {
+                    EmptyState(
+                        Icons.Filled.Download,
+                        when (statusFilter) {
+                            1 -> "没有进行中的下载"
+                            2 -> "没有已完成的下载"
+                            3 -> "没有失败的下载"
+                            else -> "还没有下载记录。"
+                        }
+                    )
+                }
             }
-            items(entries, key = { it.id }) { entry ->
+            items(visibleEntries, key = { it.id }) { entry ->
                 ListItem(
                     headlineContent = { Text(entry.title, maxLines = 2) },
                     supportingContent = {
@@ -5686,6 +5791,7 @@ private fun SettingsScreen(
     var customSearchTemplate by remember { mutableStateOf(store.customSearchTemplate) }
     var customSearchError by remember { mutableStateOf<String?>(null) }
     var adBlock by remember { mutableStateOf(store.adBlockEnabled) }
+    var adHideSlots by remember { mutableStateOf(store.adHideSlots) }
     var totalBlocked by remember { mutableStateOf(store.totalBlocked) }
     var textZoom by remember { mutableStateOf(store.textZoomPercent) }
     var webDark by remember { mutableStateOf(store.webDarkMode) }
@@ -6037,6 +6143,25 @@ private fun SettingsScreen(
                             onCheckedChange = {
                                 adBlock = it
                                 store.adBlockEnabled = it
+                            }
+                        )
+                    }
+                )
+            }
+            item {
+                ListItem(
+                    modifier = Modifier.alpha(if (adBlock) 1f else 0.5f),
+                    headlineContent = { Text("隐藏页面广告位") },
+                    supportingContent = {
+                        Text("把网页上拦掉广告后剩下的空广告位也藏起来。只认特征很明确的广告容器，宁可漏掉也不误藏正文。此项仅对 WebView 标签生效；火狐标签由内核自带的内容拦截处理。")
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = adHideSlots,
+                            enabled = adBlock,
+                            onCheckedChange = {
+                                adHideSlots = it
+                                store.adHideSlots = it
                             }
                         )
                     }
