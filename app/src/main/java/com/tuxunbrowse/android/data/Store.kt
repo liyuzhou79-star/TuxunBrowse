@@ -29,8 +29,38 @@ enum class SearchEngine(val id: String, val label: String, val template: String)
     }
 }
 
-data class Bookmark(val title: String, val url: String)
+data class Bookmark(val title: String, val url: String, val pinned: Boolean = false)
 data class HistoryItem(val title: String, val url: String, val time: Long)
+
+/** One address-bar suggestion row, from a bookmark or a history entry. */
+data class Suggestion(val title: String, val url: String, val bookmarked: Boolean)
+
+/**
+ * Address-bar suggestions: bookmarks first, then history, matched by a
+ * case-insensitive substring on title or URL, de-duplicated by URL.
+ */
+fun matchSuggestions(
+    query: String,
+    bookmarks: List<Bookmark>,
+    history: List<HistoryItem>,
+    limit: Int = 8
+): List<Suggestion> {
+    val q = query.trim().lowercase()
+    if (q.isEmpty()) return emptyList()
+    val out = mutableListOf<Suggestion>()
+    val seen = mutableSetOf<String>()
+    fun consider(title: String, url: String, bookmarked: Boolean) {
+        if (out.size >= limit || !url.startsWith("http")) return
+        if (title.lowercase().contains(q) || url.lowercase().contains(q)) {
+            if (seen.add(url)) {
+                out.add(Suggestion(title.ifBlank { url }, url, bookmarked))
+            }
+        }
+    }
+    bookmarks.forEach { consider(it.title, it.url, true) }
+    history.forEach { consider(it.title, it.url, false) }
+    return out
+}
 
 /** A normal (never incognito) tab saved so the session survives a restart. */
 data class SavedTab(val engine: Engine, val url: String, val desktopMode: Boolean)
@@ -119,11 +149,11 @@ class Store(context: Context) {
     }
 
     fun loadBookmarks(): MutableList<Bookmark> = readList(KEY_BOOKMARKS) {
-        Bookmark(it.optString("title"), it.optString("url"))
+        Bookmark(it.optString("title"), it.optString("url"), it.optBoolean("pinned"))
     }.toMutableList()
 
     fun saveBookmarks(list: List<Bookmark>) = writeList(KEY_BOOKMARKS, list) {
-        JSONObject().put("title", it.title).put("url", it.url)
+        JSONObject().put("title", it.title).put("url", it.url).put("pinned", it.pinned)
     }
 
     fun loadHistory(): MutableList<HistoryItem> = readList(KEY_HISTORY) {
@@ -204,7 +234,9 @@ class Store(context: Context) {
 fun bookmarksToJson(list: List<Bookmark>): String {
     val arr = JSONArray()
     list.forEach {
-        arr.put(JSONObject().put("title", it.title).put("url", it.url))
+        arr.put(
+            JSONObject().put("title", it.title).put("url", it.url).put("pinned", it.pinned)
+        )
     }
     return JSONObject()
         .put("app", "TuxunBrowse")
@@ -229,7 +261,11 @@ fun bookmarksFromJson(raw: String): List<Bookmark> {
     return (0 until arr.length()).mapNotNull {
         val o = arr.optJSONObject(it) ?: return@mapNotNull null
         val url = o.optString("url")
-        if (url.isBlank()) null else Bookmark(o.optString("title").ifBlank { url }, url)
+        if (url.isBlank()) {
+            null
+        } else {
+            Bookmark(o.optString("title").ifBlank { url }, url, o.optBoolean("pinned"))
+        }
     }
 }
 

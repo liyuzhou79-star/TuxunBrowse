@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -51,6 +53,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
@@ -103,6 +106,7 @@ import com.tuxunbrowse.android.data.bookmarksFromJson
 import com.tuxunbrowse.android.data.bookmarksToJson
 import com.tuxunbrowse.android.data.hostOf
 import com.tuxunbrowse.android.data.isCompatHost
+import com.tuxunbrowse.android.data.matchSuggestions
 import com.tuxunbrowse.android.data.resolveInput
 import com.tuxunbrowse.android.engine.BrowserTab
 import com.tuxunbrowse.android.engine.GeckoHolder
@@ -450,6 +454,9 @@ fun BrowserApp() {
                 onNavigate = { text ->
                     activeTab()?.load(resolveInput(text, store.searchEngine))
                 },
+                bookmarks = bookmarks,
+                history = history,
+                onOpenSuggestion = { url -> openUrl(url) },
                 onGoHome = { activeTab()?.load(HOME_URL) },
                 onSwitchEngine = { engine, rememberSite ->
                     val tab = activeTab() ?: return@BrowserScreen
@@ -494,6 +501,13 @@ fun BrowserApp() {
                         onDeleteBookmark = {
                             bookmarks.remove(it)
                             store.saveBookmarks(bookmarks)
+                        },
+                        onTogglePinBookmark = { bm ->
+                            val idx = bookmarks.indexOf(bm)
+                            if (idx >= 0) {
+                                bookmarks[idx] = bm.copy(pinned = !bm.pinned)
+                                store.saveBookmarks(bookmarks)
+                            }
                         },
                         onOpenHistoryItem = { openUrl(it.url) },
                         onOpenAllBookmarks = { screen = Screen.BOOKMARKS },
@@ -568,6 +582,15 @@ fun BrowserApp() {
                 if (clearGecko) {
                     GeckoHolder.clearSiteData()
                 }
+            },
+            onClearSite = { host ->
+                GeckoHolder.clearDataFromHost(host)
+                val before = history.size
+                history.removeAll {
+                    val h = hostOf(it.url)
+                    h == host || (h != null && h.endsWith(".$host"))
+                }
+                if (history.size != before) store.saveHistory(history)
             }
         )
 
@@ -667,12 +690,59 @@ private fun HomeContent(
     onSearchUrl: (String) -> Unit,
     onOpenBookmark: (Bookmark) -> Unit,
     onDeleteBookmark: (Bookmark) -> Unit,
+    onTogglePinBookmark: (Bookmark) -> Unit,
     onOpenHistoryItem: (HistoryItem) -> Unit,
     onOpenAllBookmarks: () -> Unit,
     onOpenAllHistory: () -> Unit
 ) {
     var query by remember { mutableStateOf("") }
     var pendingDelete by remember { mutableStateOf<Bookmark?>(null) }
+    var actionTarget by remember { mutableStateOf<Bookmark?>(null) }
+    val target = actionTarget
+    if (target != null) {
+        AlertDialog(
+            onDismissRequest = { actionTarget = null },
+            title = { Text(target.title, maxLines = 2) },
+            text = {
+                LazyColumn {
+                    item {
+                        ListItem(
+                            headlineContent = {
+                                Text(if (target.pinned) "取消置顶" else "置顶到最前面")
+                            },
+                            leadingContent = {
+                                Icon(Icons.Filled.PushPin, contentDescription = null)
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onTogglePinBookmark(target)
+                                    actionTarget = null
+                                }
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("删除书签") },
+                            leadingContent = {
+                                Icon(Icons.Filled.Delete, contentDescription = null)
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    actionTarget = null
+                                    pendingDelete = target
+                                }
+                        )
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { actionTarget = null }) { Text("取消") }
+            }
+        )
+    }
     val toDelete = pendingDelete
     if (toDelete != null) {
         AlertDialog(
@@ -747,13 +817,16 @@ private fun HomeContent(
                 }
             }
         } else {
-            gridItems(bookmarks.take(8), key = { it.url }) { bookmark ->
+            gridItems(
+                bookmarks.sortedByDescending { it.pinned }.take(8),
+                key = { it.url }
+            ) { bookmark ->
                 ElevatedCard(
                     modifier = Modifier
                         .fillMaxWidth()
                         .combinedClickable(
                             onClick = { onOpenBookmark(bookmark) },
-                            onLongClick = { pendingDelete = bookmark }
+                            onLongClick = { actionTarget = bookmark }
                         )
                 ) {
                     ListItem(
@@ -763,6 +836,11 @@ private fun HomeContent(
                         },
                         leadingContent = {
                             Icon(Icons.Filled.Bookmark, contentDescription = null)
+                        },
+                        trailingContent = if (bookmark.pinned) {
+                            { Icon(Icons.Filled.PushPin, contentDescription = "已置顶") }
+                        } else {
+                            null
                         }
                     )
                 }
@@ -908,6 +986,9 @@ private fun BrowserScreen(
     onIncognitoEngineChosen: (Engine) -> Unit,
     onToggleBookmark: () -> Unit,
     onNavigate: (String) -> Unit,
+    bookmarks: List<Bookmark>,
+    history: List<HistoryItem>,
+    onOpenSuggestion: (String) -> Unit,
     onGoHome: () -> Unit,
     onSwitchEngine: (Engine, Boolean) -> Unit,
     activeDesktopMode: Boolean,
@@ -1219,6 +1300,48 @@ private fun BrowserScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
             }
+            val suggestions = if (addressFocused && addressText.isNotBlank()) {
+                matchSuggestions(addressText, bookmarks, history)
+            } else {
+                emptyList()
+            }
+            if (suggestions.isNotEmpty()) {
+                ElevatedCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    LazyColumn(modifier = Modifier.heightIn(max = 320.dp)) {
+                        items(suggestions, key = { it.url }) { suggestion ->
+                            ListItem(
+                                headlineContent = {
+                                    Text(suggestion.title, maxLines = 1)
+                                },
+                                supportingContent = {
+                                    Text(suggestion.url, maxLines = 1)
+                                },
+                                leadingContent = {
+                                    Icon(
+                                        if (suggestion.bookmarked) {
+                                            Icons.Filled.Bookmark
+                                        } else {
+                                            Icons.Filled.History
+                                        },
+                                        contentDescription = if (suggestion.bookmarked) {
+                                            "书签"
+                                        } else {
+                                            "历史"
+                                        }
+                                    )
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onOpenSuggestion(suggestion.url) }
+                            )
+                        }
+                    }
+                }
+            }
             if (showFindBar && activeTab != null && !activeTab.isHome) {
                 Row(
                     modifier = Modifier
@@ -1272,51 +1395,87 @@ private fun BrowserScreen(
             onDismissRequest = { showTabs = false },
             sheetState = sheetState
         ) {
-            LazyColumn(
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(2),
                 modifier = Modifier
                     .fillMaxWidth()
+                    .heightIn(max = 600.dp)
                     .padding(horizontal = 16.dp)
                     .padding(bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                item {
+                item(span = { GridItemSpan(maxLineSpan) }) {
                     Text("标签页", style = MaterialTheme.typography.titleLarge)
                 }
-                items(tabs, key = { it.id }) { tab ->
+                gridItems(tabs, key = { it.id }) { tab ->
+                    val isActive = tab.id == activeTab?.id
                     ElevatedCard(
                         onClick = { onSelectTab(tab); showTabs = false },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = if (isActive) {
+                            CardDefaults.elevatedCardColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer
+                            )
+                        } else {
+                            CardDefaults.elevatedCardColors()
+                        }
                     ) {
-                        ListItem(
-                            headlineContent = {
-                                Text(
-                                    if (tab.isHome) "首页" else tab.title.ifBlank { "新标签页" },
-                                    maxLines = 1
-                                )
-                            },
-                            supportingContent = {
-                                Text(if (tab.isHome) "TuxunBrowse 首页" else tab.url, maxLines = 2)
-                            },
-                            trailingContent = {
-                                Row {
-                                    AssistChip(
-                                        onClick = { },
-                                        label = {
-                                            Text(
-                                                (if (tab.incognito) "无痕 · " else "") +
-                                                    if (tab.engine == Engine.GECKO) "火狐" else "WebView"
-                                            )
-                                        }
-                                    )
-                                    IconButton(onClick = { onCloseTab(tab) }) {
-                                        Icon(Icons.Filled.Close, contentDescription = "关闭标签")
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                AssistChip(
+                                    onClick = { },
+                                    label = {
+                                        Text(
+                                            (if (tab.incognito) "无痕 · " else "") +
+                                                if (tab.engine == Engine.GECKO) {
+                                                    "火狐"
+                                                } else {
+                                                    "WebView"
+                                                }
+                                        )
                                     }
+                                )
+                                IconButton(onClick = { onCloseTab(tab) }) {
+                                    Icon(
+                                        Icons.Filled.Close,
+                                        contentDescription = "关闭标签"
+                                    )
                                 }
                             }
-                        )
+                            Text(
+                                if (tab.isHome) {
+                                    "首页"
+                                } else {
+                                    tab.title.ifBlank { "新标签页" }
+                                },
+                                style = MaterialTheme.typography.titleSmall,
+                                maxLines = 2
+                            )
+                            Text(
+                                if (tab.isHome) {
+                                    "TuxunBrowse 首页"
+                                } else {
+                                    hostOf(tab.url) ?: tab.url
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 1
+                            )
+                            if (isActive) {
+                                Text(
+                                    "当前标签",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
                     }
                 }
-                item {
+                item(span = { GridItemSpan(maxLineSpan) }) {
                     FilledTonalButton(
                         onClick = { showTabs = false; onNewTab() },
                         modifier = Modifier.fillMaxWidth()
@@ -1325,7 +1484,7 @@ private fun BrowserScreen(
                     }
                 }
                 if (canReopenClosed) {
-                    item {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
                         OutlinedButton(
                             onClick = { showTabs = false; onReopenClosed() },
                             modifier = Modifier.fillMaxWidth()
@@ -1545,7 +1704,15 @@ private fun BookmarksScreen(
             items(bookmarks, key = { it.url }) { bookmark ->
                 ListItem(
                     headlineContent = { Text(bookmark.title) },
-                    supportingContent = { Text(bookmark.url) },
+                    supportingContent = {
+                        Text(
+                            if (bookmark.pinned) {
+                                "已置顶（在首页最前面） · ${bookmark.url}"
+                            } else {
+                                bookmark.url
+                            }
+                        )
+                    },
                     leadingContent = { Icon(Icons.Filled.Bookmark, contentDescription = null) },
                     trailingContent = {
                         Row {
@@ -1688,8 +1855,11 @@ private fun HistoryScreen(
 private data class DownloadEntry(
     val id: Long,
     val title: String,
+    val status: Int,
     val statusText: String,
-    val sizeText: String
+    val sizeText: String,
+    val mediaType: String?,
+    val sourceUrl: String?
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1697,7 +1867,8 @@ private data class DownloadEntry(
 private fun DownloadsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     var entries by remember { mutableStateOf<List<DownloadEntry>>(emptyList()) }
-    LaunchedEffect(Unit) {
+    var refreshTick by remember { mutableStateOf(0) }
+    LaunchedEffect(refreshTick) {
         val manager = context.getSystemService(
             android.content.Context.DOWNLOAD_SERVICE
         ) as android.app.DownloadManager
@@ -1713,6 +1884,9 @@ private fun DownloadsScreen(onBack: () -> Unit) {
                 val doneIdx = c.getColumnIndex(
                     android.app.DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR
                 )
+                val typeIdx =
+                    c.getColumnIndex(android.app.DownloadManager.COLUMN_MEDIA_TYPE)
+                val uriIdx = c.getColumnIndex(android.app.DownloadManager.COLUMN_URI)
                 while (c.moveToNext()) {
                     val status = c.getInt(statusIdx)
                     val statusText = when (status) {
@@ -1733,8 +1907,11 @@ private fun DownloadsScreen(onBack: () -> Unit) {
                         DownloadEntry(
                             id = c.getLong(idIdx),
                             title = c.getString(titleIdx) ?: "未命名文件",
+                            status = status,
                             statusText = statusText,
-                            sizeText = sizeText
+                            sizeText = sizeText,
+                            mediaType = c.getString(typeIdx),
+                            sourceUrl = c.getString(uriIdx)
                         )
                     )
                 }
@@ -1743,6 +1920,48 @@ private fun DownloadsScreen(onBack: () -> Unit) {
             // Download list is best-effort; an empty list is shown instead.
         }
         entries = loaded.reversed()
+    }
+
+    fun retryDownload(entry: DownloadEntry) {
+        val source = entry.sourceUrl
+        if (source.isNullOrBlank()) {
+            android.widget.Toast.makeText(
+                context, "这条记录没有原始地址，没法重试",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        try {
+            val manager = context.getSystemService(
+                android.content.Context.DOWNLOAD_SERVICE
+            ) as android.app.DownloadManager
+            val request = android.app.DownloadManager.Request(
+                android.net.Uri.parse(source)
+            )
+                .setTitle(entry.title)
+                .setDescription(source)
+                .setNotificationVisibility(
+                    android.app.DownloadManager.Request
+                        .VISIBILITY_VISIBLE_NOTIFY_COMPLETED
+                )
+                .setDestinationInExternalPublicDir(
+                    android.os.Environment.DIRECTORY_DOWNLOADS, entry.title
+                )
+            if (!entry.mediaType.isNullOrBlank()) {
+                request.setMimeType(entry.mediaType)
+            }
+            manager.enqueue(request)
+            android.widget.Toast.makeText(
+                context, "已重新开始下载：${entry.title}（需要登录才能下的文件可能还是会失败）",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            refreshTick++
+        } catch (t: Throwable) {
+            android.widget.Toast.makeText(
+                context, "重试失败，请回到原网页再点一次下载",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
     }
     Scaffold(
         topBar = {
@@ -1773,11 +1992,46 @@ private fun DownloadsScreen(onBack: () -> Unit) {
             items(entries, key = { it.id }) { entry ->
                 ListItem(
                     headlineContent = { Text(entry.title, maxLines = 2) },
-                    supportingContent = { Text("${entry.statusText} · ${entry.sizeText}") },
+                    supportingContent = {
+                        val parts = mutableListOf(entry.statusText, entry.sizeText)
+                        if (!entry.mediaType.isNullOrBlank()) {
+                            parts.add(entry.mediaType)
+                        }
+                        Text(parts.joinToString(" · "))
+                    },
                     leadingContent = { Icon(Icons.Filled.Download, contentDescription = null) },
+                    trailingContent = if (
+                        entry.status == android.app.DownloadManager.STATUS_FAILED
+                    ) {
+                        {
+                            IconButton(onClick = { retryDownload(entry) }) {
+                                Icon(Icons.Filled.Refresh, contentDescription = "重新下载")
+                            }
+                        }
+                    } else {
+                        null
+                    },
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
+                            if (entry.status !=
+                                android.app.DownloadManager.STATUS_SUCCESSFUL
+                            ) {
+                                android.widget.Toast.makeText(
+                                    context,
+                                    when (entry.status) {
+                                        android.app.DownloadManager.STATUS_FAILED ->
+                                            "这个文件下载失败了，点右边的按钮可以重新下载"
+                                        android.app.DownloadManager.STATUS_RUNNING ->
+                                            "还在下载中，好了以后再打开"
+                                        android.app.DownloadManager.STATUS_PAUSED ->
+                                            "这个下载暂停了，等它继续"
+                                        else -> "这个下载还在排队"
+                                    },
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                                return@clickable
+                            }
                             try {
                                 val manager = context.getSystemService(
                                     android.content.Context.DOWNLOAD_SERVICE
@@ -1817,13 +2071,16 @@ private fun DownloadsScreen(onBack: () -> Unit) {
 private fun ClearDataScreen(
     geckoStarted: Boolean,
     onBack: () -> Unit,
-    onClear: (Boolean, Boolean, Boolean) -> Unit
+    onClear: (Boolean, Boolean, Boolean) -> Unit,
+    onClearSite: (String) -> Unit
 ) {
     var clearHistorySel by remember { mutableStateOf(true) }
     var clearWebView by remember { mutableStateOf(true) }
     var clearGecko by remember { mutableStateOf(true) }
     var showConfirm by remember { mutableStateOf(false) }
     var doneText by remember { mutableStateOf<String?>(null) }
+    var siteInput by remember { mutableStateOf("") }
+    var siteDoneText by remember { mutableStateOf<String?>(null) }
     if (showConfirm) {
         AlertDialog(
             onDismissRequest = { showConfirm = false },
@@ -1925,6 +2182,54 @@ private fun ClearDataScreen(
             }
             if (doneText != null) {
                 item { Text(doneText!!) }
+            }
+            item {
+                HorizontalDivider()
+            }
+            item {
+                Text("按网站清除", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "只想清某一个网站时用这里：输入域名，清掉火狐里这个网站的 Cookie 和网站数据，" +
+                        "并删掉本机保存的这个网站的历史记录。WebView 的网站数据没法按网站单独清，" +
+                        "只能用上面那项整清（系统 WebView 没给这个口子）。",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            item {
+                OutlinedTextField(
+                    value = siteInput,
+                    onValueChange = { siteInput = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("网站域名") },
+                    placeholder = { Text("如 example.com") }
+                )
+            }
+            item {
+                OutlinedButton(
+                    onClick = {
+                        val host = hostOf(siteInput.trim())
+                            ?: hostOf("https://" + siteInput.trim())
+                        if (host == null) {
+                            siteDoneText = "这个域名看不懂，检查一下再试。"
+                        } else {
+                            onClearSite(host)
+                            siteDoneText = if (geckoStarted) {
+                                "已清除 $host 在火狐里的数据和本机历史。"
+                            } else {
+                                "已删掉 $host 的本机历史。火狐这次还没启动过，" +
+                                    "没有它的数据需要清。"
+                            }
+                        }
+                    },
+                    enabled = siteInput.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("清除这个网站的数据")
+                }
+            }
+            if (siteDoneText != null) {
+                item { Text(siteDoneText!!) }
             }
             item { Spacer(modifier = Modifier.padding(bottom = 24.dp)) }
         }

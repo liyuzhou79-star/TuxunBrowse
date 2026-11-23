@@ -92,6 +92,26 @@ object GeckoHolder {
             // Best-effort only.
         }
     }
+
+    /**
+     * StorageController.clearDataFromHost(String, long), verified against
+     * the GeckoView 132 AAR with javap. Returns false when the Gecko
+     * runtime has not started yet (nothing to clear in that case).
+     */
+    fun clearDataFromHost(host: String): Boolean {
+        val rt = runtime ?: return false
+        return try {
+            rt.storageController.clearDataFromHost(
+                host,
+                StorageController.ClearFlags.COOKIES or
+                    StorageController.ClearFlags.DOM_STORAGES or
+                    StorageController.ClearFlags.ALL_CACHES
+            )
+            true
+        } catch (t: Throwable) {
+            false
+        }
+    }
 }
 
 private var nextTabId = 1
