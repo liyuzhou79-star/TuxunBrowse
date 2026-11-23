@@ -188,6 +188,9 @@ data class TabLoadError(
     val detail: String
 )
 
+/** One entry of a tab's real back/forward stack, for the history sheet. */
+data class NavHistoryEntry(val title: String, val url: String)
+
 /** Resource groups the page sniffer reports, in display order. */
 enum class SniffKind { FILE, IMAGE, MEDIA }
 
@@ -469,6 +472,70 @@ class BrowserTab(
         when (engine) {
             Engine.WEBVIEW -> webView?.goForward()
             Engine.GECKO -> geckoSession?.goForward()
+        }
+    }
+
+    /**
+     * Latest Gecko history snapshot, copied out of the HistoryList
+     * inside the delegate callback (the list object itself is only
+     * valid during that callback). WebView tabs do not use this —
+     * they read copyBackForwardList() directly.
+     */
+    var geckoHistoryEntries by mutableStateOf<List<NavHistoryEntry>>(emptyList())
+    var geckoHistoryIndex by mutableStateOf(-1)
+
+    /**
+     * This tab's real back/forward stack (oldest first) plus the
+     * index of the current entry, or null when there is nothing to
+     * show. WebView: copyBackForwardList(). Gecko: the snapshot the
+     * HistoryDelegate reported — the engine's own stack, never a
+     * shadow copy maintained by the app.
+     */
+    fun backForwardList(): Pair<List<NavHistoryEntry>, Int>? {
+        return when (engine) {
+            Engine.WEBVIEW -> {
+                val view = webView ?: return null
+                val list = try {
+                    view.copyBackForwardList()
+                } catch (t: Throwable) {
+                    return null
+                }
+                if (list.size == 0) return null
+                val entries = (0 until list.size).map { i ->
+                    val item = list.getItemAtIndex(i)
+                    NavHistoryEntry(item.title ?: "", item.url ?: "")
+                }
+                entries to list.currentIndex
+            }
+            Engine.GECKO -> {
+                if (geckoHistoryEntries.isEmpty()) null
+                else geckoHistoryEntries to geckoHistoryIndex
+            }
+        }
+    }
+
+    /** Jump to the stack entry at [index] (from [backForwardList]). */
+    fun goToHistoryIndex(index: Int) {
+        when (engine) {
+            Engine.WEBVIEW -> {
+                val list = backForwardList() ?: return
+                val steps = index - list.second
+                if (steps != 0) {
+                    try {
+                        webView?.goBackOrForward(steps)
+                    } catch (t: Throwable) {
+                        // Stack changed under us; stay on the page.
+                    }
+                }
+            }
+            Engine.GECKO -> {
+                // gotoHistoryIndex(int) verified in the 132 AAR.
+                try {
+                    geckoSession?.gotoHistoryIndex(index)
+                } catch (t: Throwable) {
+                    // Same as above: never crash over a stale index.
+                }
+            }
         }
     }
 
@@ -1095,6 +1162,31 @@ class BrowserTab(
                     detail = "分类 ${error.category} · 错误码 ${error.code}"
                 )
                 return null
+            }
+        }
+        // HistoryDelegate, verified against the GeckoView 132 AAR
+        // with javap: onHistoryStateChange(session, HistoryList)
+        // reports the session's real back/forward stack; HistoryList
+        // is a List<HistoryItem> with getCurrentIndex(), HistoryItem
+        // has getUri()/getTitle(), and GeckoSession.gotoHistoryIndex
+        // jumps to an entry. The HistoryList object is only valid
+        // during the callback, so its entries are copied out here
+        // into plain tab state.
+        session.historyDelegate = object : GeckoSession.HistoryDelegate {
+            override fun onHistoryStateChange(
+                s: GeckoSession,
+                historyList: GeckoSession.HistoryDelegate.HistoryList
+            ) {
+                try {
+                    geckoHistoryEntries = historyList.map { item ->
+                        NavHistoryEntry(item.title ?: "", item.uri ?: "")
+                    }
+                    geckoHistoryIndex = historyList.currentIndex
+                } catch (t: Throwable) {
+                    // A stale snapshot is worse than none at all.
+                    geckoHistoryEntries = emptyList()
+                    geckoHistoryIndex = -1
+                }
             }
         }
         session.progressDelegate = object : GeckoSession.ProgressDelegate {

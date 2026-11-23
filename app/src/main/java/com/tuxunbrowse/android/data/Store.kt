@@ -104,6 +104,54 @@ enum class DownloadMode(val id: String, val label: String) {
     }
 }
 
+/** App UI theme: follow the system, always light, or always dark. */
+enum class ThemeMode(val id: String, val label: String) {
+    SYSTEM("system", "跟随系统"),
+    LIGHT("light", "浅色"),
+    DARK("dark", "深色");
+
+    companion object {
+        fun fromId(id: String?): ThemeMode =
+            entries.firstOrNull { it.id == id } ?: SYSTEM
+    }
+}
+
+/**
+ * Total size in bytes of a file or directory tree, or null when the
+ * path does not exist (the UI shows "—" instead of inventing a number).
+ */
+fun dirSizeBytes(file: java.io.File?): Long? {
+    if (file == null || !file.exists()) return null
+    if (file.isFile) return file.length()
+    var total = 0L
+    val stack = ArrayDeque<java.io.File>()
+    stack.add(file)
+    while (stack.isNotEmpty()) {
+        val cur = stack.removeLast()
+        val children = try {
+            cur.listFiles()
+        } catch (t: Throwable) {
+            null
+        } ?: continue
+        for (child in children) {
+            if (child.isDirectory) stack.add(child) else total += child.length()
+        }
+    }
+    return total
+}
+
+/** Plain-language size text: "—" for unknown, otherwise B/KB/MB/GB. */
+fun formatStorageSize(bytes: Long?): String {
+    if (bytes == null) return "—"
+    return when {
+        bytes < 1024L -> "$bytes B"
+        bytes < 1024L * 1024L -> String.format("%.1f KB", bytes / 1024.0)
+        bytes < 1024L * 1024L * 1024L ->
+            String.format("%.1f MB", bytes / (1024.0 * 1024.0))
+        else -> String.format("%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
 /** How long normal (never incognito) history is kept. days = 0 means forever. */
 enum class HistoryRetention(val id: String, val label: String, val days: Int) {
     FOREVER("forever", "永久保留", 0),
@@ -150,6 +198,11 @@ class Store(context: Context) {
     var searchEngine: SearchEngine
         get() = SearchEngine.fromId(prefs.getString(KEY_SEARCH_ENGINE, null))
         set(value) = prefs.edit().putString(KEY_SEARCH_ENGINE, value.id).apply()
+
+    /** App UI theme mode (app chrome only; web content is separate). */
+    var themeMode: ThemeMode
+        get() = ThemeMode.fromId(prefs.getString(KEY_THEME_MODE, null))
+        set(value) = prefs.edit().putString(KEY_THEME_MODE, value.id).apply()
 
     /** Display name of the user's custom search engine (CUSTOM only). */
     var customSearchName: String
@@ -353,6 +406,7 @@ class Store(context: Context) {
         private const val KEY_MAIN_ENGINE = "main_engine"
         private const val KEY_INCOGNITO_ENGINE = "incognito_engine"
         private const val KEY_SEARCH_ENGINE = "search_engine"
+        private const val KEY_THEME_MODE = "theme_mode"
         private const val KEY_CUSTOM_SEARCH_NAME = "custom_search_name"
         private const val KEY_CUSTOM_SEARCH_TEMPLATE = "custom_search_template"
         private const val KEY_AD_BLOCK = "ad_block"

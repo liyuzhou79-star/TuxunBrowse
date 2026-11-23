@@ -40,6 +40,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
@@ -145,6 +146,9 @@ import com.tuxunbrowse.android.data.pickLatestRelease
 import com.tuxunbrowse.android.data.SavedTab
 import com.tuxunbrowse.android.data.SearchEngine
 import com.tuxunbrowse.android.data.Store
+import com.tuxunbrowse.android.data.ThemeMode
+import com.tuxunbrowse.android.data.dirSizeBytes
+import com.tuxunbrowse.android.data.formatStorageSize
 import com.tuxunbrowse.android.data.BackupData
 import com.tuxunbrowse.android.data.BackupSettings
 import com.tuxunbrowse.android.data.backupToJson
@@ -162,6 +166,7 @@ import com.tuxunbrowse.android.engine.AdBlocker
 import com.tuxunbrowse.android.engine.BrowserTab
 import com.tuxunbrowse.android.engine.GeckoHolder
 import com.tuxunbrowse.android.engine.MAX_FULL_PAGE_HEIGHT_PX
+import com.tuxunbrowse.android.engine.NavHistoryEntry
 import com.tuxunbrowse.android.engine.SniffKind
 import com.tuxunbrowse.android.engine.SniffedResource
 import com.tuxunbrowse.android.engine.TabLoadError
@@ -227,7 +232,8 @@ private data class SslPromptState(
 @Composable
 fun BrowserApp(
     initialUrl: String? = null,
-    onInitialUrlConsumed: () -> Unit = {}
+    onInitialUrlConsumed: () -> Unit = {},
+    onThemeModeChanged: (ThemeMode) -> Unit = {}
 ) {
     val context = LocalContext.current
     val store = remember { Store(context) }
@@ -250,6 +256,14 @@ fun BrowserApp(
     var linkMenuTarget by remember { mutableStateOf<String?>(null) }
     var imageMenuTarget by remember { mutableStateOf<String?>(null) }
     val recentClosedTabs = remember { mutableStateListOf<ClosedTabInfo>() }
+    // The search engine as Compose state: the store is the source of
+    // truth on disk, this mirror is what the address bar and the home
+    // page read, so a change made on either the settings page or the
+    // home-page chip applies everywhere at once.
+    var searchEngineState by remember { mutableStateOf(store.searchEngine) }
+    LaunchedEffect(screen) {
+        searchEngineState = store.searchEngine
+    }
     var startupDone by remember { mutableStateOf(false) }
     var fullscreenView by remember { mutableStateOf<android.view.View?>(null) }
     var geckoFullscreen by remember { mutableStateOf(false) }
@@ -1433,7 +1447,7 @@ fun BrowserApp(
                     )
                 },
                 bookmarks = bookmarks,
-                searchEngine = store.searchEngine,
+                searchEngine = searchEngineState,
                 customSearchName = store.customSearchName,
                 onOpenSuggestion = { url -> openUrl(url) },
                 onGoHome = { activeTab()?.load(HOME_URL) },
@@ -1582,9 +1596,19 @@ fun BrowserApp(
                             speedDials.remove(it)
                             store.saveSpeedDials(speedDials)
                         },
-                        searchEngine = store.searchEngine,
+                        searchEngine = searchEngineState,
                         customSearchName = store.customSearchName,
                         customSearchTemplate = store.customSearchTemplate,
+                        onSearchEngineSelected = { engine ->
+                            store.searchEngine = engine
+                            searchEngineState = engine
+                        },
+                        onSaveCustomSearch = { name, template ->
+                            store.customSearchName = name
+                            store.customSearchTemplate = template
+                            store.searchEngine = SearchEngine.CUSTOM
+                            searchEngineState = SearchEngine.CUSTOM
+                        },
                         onSearchUrl = { url -> openUrl(url) },
                         onOpenBookmark = { openUrl(it.url) },
                         onDeleteBookmark = {
@@ -1659,6 +1683,8 @@ fun BrowserApp(
             onImportBackup = {
                 importBackupLauncher.launch(arrayOf("application/json", "text/plain"))
             },
+            onThemeModeChange = { mode -> onThemeModeChanged(mode) },
+            onSearchEngineChange = { searchEngineState = store.searchEngine },
             onTextZoomChange = { percent ->
                 tabs.forEach { it.applyTextZoom(percent) }
                 GeckoHolder.applyFontSizeFactor(percent / 100f)
@@ -2225,6 +2251,8 @@ private fun HomeContent(
     searchEngine: SearchEngine,
     customSearchName: String = "",
     customSearchTemplate: String = "",
+    onSearchEngineSelected: (SearchEngine) -> Unit = {},
+    onSaveCustomSearch: (String, String) -> Unit = { _, _ -> },
     onSearchUrl: (String) -> Unit,
     onOpenBookmark: (Bookmark) -> Unit,
     onDeleteBookmark: (Bookmark) -> Unit,
@@ -2239,6 +2267,24 @@ private fun HomeContent(
     var dialActionTarget by remember { mutableStateOf<SpeedDial?>(null) }
     var dialPendingDelete by remember { mutableStateOf<SpeedDial?>(null) }
     var dialDialogOpen by remember { mutableStateOf(false) }
+    // Home-page search-engine quick switch: same data source as the
+    // settings page (the store, via the callbacks above); this local
+    // mirror is what the home search box reads, so a pick here takes
+    // effect on the home page at once.
+    var currentEngine by remember { mutableStateOf(searchEngine) }
+    var currentCustomName by remember { mutableStateOf(customSearchName) }
+    var currentCustomTemplate by remember { mutableStateOf(customSearchTemplate) }
+    var showEnginePicker by remember { mutableStateOf(false) }
+    var showHomeCustomDialog by remember { mutableStateOf(false) }
+    var homeCustomName by remember { mutableStateOf("") }
+    var homeCustomTemplate by remember { mutableStateOf("") }
+    var homeCustomError by remember { mutableStateOf<String?>(null) }
+    fun engineShortName(): String =
+        if (currentEngine == SearchEngine.CUSTOM) {
+            currentCustomName.ifBlank { "自定义" }
+        } else {
+            currentEngine.label
+        }
     var dialEditing by remember { mutableStateOf<SpeedDial?>(null) }
     var dialName by remember { mutableStateOf("") }
     var dialUrl by remember { mutableStateOf("") }
@@ -2418,7 +2464,7 @@ private fun HomeContent(
                         ).show()
                     } else {
                         val resolved = resolveInput(
-                            dialUrl, searchEngine, customSearchTemplate
+                            dialUrl, currentEngine, currentCustomTemplate
                         )
                         val name = dialName.trim()
                             .ifBlank { hostOf(resolved) ?: resolved }
@@ -2445,6 +2491,135 @@ private fun HomeContent(
             },
             dismissButton = {
                 TextButton(onClick = { dialDialogOpen = false }) { Text("取消") }
+            }
+        )
+    }
+    if (showEnginePicker) {
+        AlertDialog(
+            onDismissRequest = { showEnginePicker = false },
+            title = { Text("选择搜索引擎") },
+            text = {
+                LazyColumn {
+                    items(SearchEngine.entries) { engine ->
+                        ListItem(
+                            headlineContent = {
+                                Text(
+                                    if (engine == SearchEngine.CUSTOM &&
+                                        currentCustomName.isNotBlank()
+                                    ) {
+                                        currentCustomName
+                                    } else {
+                                        engine.label
+                                    }
+                                )
+                            },
+                            trailingContent = {
+                                RadioButton(
+                                    selected = currentEngine == engine,
+                                    onClick = null
+                                )
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    if (engine == SearchEngine.CUSTOM) {
+                                        homeCustomName = currentCustomName
+                                        homeCustomTemplate = currentCustomTemplate
+                                        homeCustomError = null
+                                        showEnginePicker = false
+                                        showHomeCustomDialog = true
+                                    } else {
+                                        currentEngine = engine
+                                        onSearchEngineSelected(engine)
+                                        showEnginePicker = false
+                                    }
+                                }
+                        )
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showEnginePicker = false }) { Text("取消") }
+            }
+        )
+    }
+    if (showHomeCustomDialog) {
+        AlertDialog(
+            onDismissRequest = { showHomeCustomDialog = false },
+            title = { Text("自定义搜索引擎") },
+            text = {
+                LazyColumn {
+                    item {
+                        OutlinedTextField(
+                            value = homeCustomName,
+                            onValueChange = { homeCustomName = it },
+                            label = { Text("名称") },
+                            placeholder = { Text("比如：我的搜索") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                    }
+                    item {
+                        OutlinedTextField(
+                            value = homeCustomTemplate,
+                            onValueChange = { homeCustomTemplate = it },
+                            label = { Text("网址模板") },
+                            placeholder = {
+                                Text("比如：https://example.com/search?q=%s")
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp),
+                            singleLine = true
+                        )
+                    }
+                    item {
+                        Text(
+                            "模板里必须有 %s，它会被换成你要搜的词；" +
+                                "网址要以 http:// 或 https:// 开头。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
+                    val error = homeCustomError
+                    if (error != null) {
+                        item {
+                            Text(
+                                error,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.padding(top = 8.dp)
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    val template = homeCustomTemplate.trim()
+                    homeCustomError = when {
+                        !template.contains("%s") ->
+                            "模板里没有 %s，搜的时候没地方放要搜的词，请补上。"
+                        !template.startsWith("http://") &&
+                            !template.startsWith("https://") ->
+                            "网址要以 http:// 或 https:// 开头，请改一下。"
+                        else -> null
+                    }
+                    if (homeCustomError == null) {
+                        currentCustomName = homeCustomName.trim()
+                        currentCustomTemplate = template
+                        currentEngine = SearchEngine.CUSTOM
+                        onSaveCustomSearch(homeCustomName.trim(), template)
+                        showHomeCustomDialog = false
+                    }
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showHomeCustomDialog = false }) {
+                    Text("取消")
+                }
             }
         )
     }
@@ -2485,15 +2660,7 @@ private fun HomeContent(
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 placeholder = {
-                    Text(
-                        "用${
-                            if (searchEngine == SearchEngine.CUSTOM) {
-                                customSearchName.ifBlank { "自定义" }
-                            } else {
-                                searchEngine.label
-                            }
-                        }搜索，或输入网址"
-                    )
+                    Text("用${engineShortName()}搜索，或输入网址")
                 },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
@@ -2501,18 +2668,34 @@ private fun HomeContent(
                     onSearch = {
                         if (query.isNotBlank()) {
                             onSearchUrl(
-                                resolveInput(query, searchEngine, customSearchTemplate)
+                                resolveInput(query, currentEngine, currentCustomTemplate)
                             )
                         }
                     },
                     onGo = {
                         if (query.isNotBlank()) {
                             onSearchUrl(
-                                resolveInput(query, searchEngine, customSearchTemplate)
+                                resolveInput(query, currentEngine, currentCustomTemplate)
                             )
                         }
                     }
                 )
+            )
+        }
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            // Quick engine switch: only the short engine name on the
+            // chip (a long label would squeeze the search box, the
+            // same lesson as the address bar). The search field above
+            // keeps the full width of the row.
+            AssistChip(
+                onClick = { showEnginePicker = true },
+                label = { Text(engineShortName(), maxLines = 1) },
+                leadingIcon = {
+                    Icon(Icons.Filled.Search, contentDescription = null)
+                },
+                trailingIcon = {
+                    Icon(Icons.Filled.ArrowDropDown, contentDescription = null)
+                }
             )
         }
         // Speed dials live above the bookmarks grid and are stored
@@ -2849,6 +3032,17 @@ private fun BrowserScreen(
     }
     var showRecentClosed by remember { mutableStateOf(false) }
     var showSiteInfo by remember { mutableStateOf(false) }
+    // Long-press on back/forward: this tab's real back/forward stack.
+    var navHistory by remember {
+        mutableStateOf<Pair<List<NavHistoryEntry>, Int>?>(null)
+    }
+    var showNavHistory by remember { mutableStateOf(false) }
+    fun openNavHistory() {
+        val tab = activeTab ?: return
+        if (tab.isHome) return
+        navHistory = tab.backForwardList()
+        showNavHistory = true
+    }
     var showClearSiteConfirm by remember { mutableStateOf(false) }
     var showCloseOthersConfirm by remember { mutableStateOf(false) }
     if (showCloseOthersConfirm) {
@@ -3216,17 +3410,58 @@ private fun BrowserScreen(
                     .padding(horizontal = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                IconButton(
-                    onClick = { activeTab?.goBack() },
-                    enabled = activeTab?.canGoBack == true
+                // Back/forward: tap steps one page; long-press opens
+                // this tab's back/forward history sheet. IconButton
+                // has no long-press path, so the buttons are Boxes
+                // with combinedClickable (tap + long-press) sized
+                // like the neighbouring icon buttons.
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .combinedClickable(
+                            enabled = activeTab != null && !activeTab.isHome,
+                            onClick = {
+                                if (activeTab?.canGoBack == true) {
+                                    activeTab?.goBack()
+                                }
+                            },
+                            onLongClick = { openNavHistory() }
+                        ),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "后退")
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "后退（长按看历史）",
+                        tint = if (activeTab?.canGoBack == true) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                        }
+                    )
                 }
-                IconButton(
-                    onClick = { activeTab?.goForward() },
-                    enabled = activeTab?.canGoForward == true
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .combinedClickable(
+                            enabled = activeTab != null && !activeTab.isHome,
+                            onClick = {
+                                if (activeTab?.canGoForward == true) {
+                                    activeTab?.goForward()
+                                }
+                            },
+                            onLongClick = { openNavHistory() }
+                        ),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "前进")
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = "前进（长按看历史）",
+                        tint = if (activeTab?.canGoForward == true) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                        }
+                    )
                 }
                 OutlinedTextField(
                     value = addressText,
@@ -3506,6 +3741,71 @@ private fun BrowserScreen(
                             onGoHome = onGoHome
                         )
                     else -> TabContent(tab = tab, modifier = Modifier.fillMaxSize())
+                }
+            }
+        }
+    }
+
+    // ---- Back/forward history sheet (long-press on back/forward) ----
+    if (showNavHistory) {
+        ModalBottomSheet(
+            onDismissRequest = { showNavHistory = false },
+            sheetState = rememberModalBottomSheetState()
+        ) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 640.dp)
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                item {
+                    Text("本标签的浏览历史", style = MaterialTheme.typography.titleLarge)
+                }
+                val nav = navHistory
+                if (nav == null || nav.first.isEmpty()) {
+                    item {
+                        EmptyState(
+                            Icons.Filled.History,
+                            "这个标签还没有可以前进后退的页面。"
+                        )
+                    }
+                } else {
+                    // Newest first, so the pages you can go back to
+                    // are at the top; the index math uses the real
+                    // stack position, not the display position.
+                    val entries = nav.first
+                    val current = nav.second
+                    items(entries.indices.reversed().toList(), key = { it }) { idx ->
+                        val entry = entries[idx]
+                        val isCurrent = idx == current
+                        ListItem(
+                            headlineContent = {
+                                Text(
+                                    entry.title.ifBlank { entry.url },
+                                    maxLines = 1,
+                                    fontWeight = if (isCurrent) {
+                                        FontWeight.Bold
+                                    } else {
+                                        FontWeight.Normal
+                                    }
+                                )
+                            },
+                            supportingContent = { Text(entry.url, maxLines = 1) },
+                            trailingContent = if (isCurrent) {
+                                { Text("当前页") }
+                            } else {
+                                null
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showNavHistory = false
+                                    activeTab?.goToHistoryIndex(idx)
+                                }
+                        )
+                    }
                 }
             }
         }
@@ -5030,6 +5330,39 @@ private fun ClearDataScreen(
     var doneText by remember { mutableStateOf<String?>(null) }
     var siteInput by remember { mutableStateOf("") }
     var siteDoneText by remember { mutableStateOf<String?>(null) }
+    // Storage usage of the app's own private directories, measured
+    // on a background thread (recursive file walk). A null entry
+    // means that directory does not exist / cannot be measured, and
+    // the card shows "—" for it instead of inventing a number.
+    val clearDataContext = LocalContext.current
+    var storageSizes by remember {
+        mutableStateOf<Triple<Long?, Long?, Long?>?>(null)
+    }
+    var storageTick by remember { mutableStateOf(0) }
+    LaunchedEffect(storageTick) {
+        storageSizes = kotlinx.coroutines.withContext(
+            kotlinx.coroutines.Dispatchers.IO
+        ) {
+            val cache = dirSizeBytes(clearDataContext.cacheDir)
+            val dataDir = java.io.File(clearDataContext.applicationInfo.dataDir)
+            val webviewData = dirSizeBytes(java.io.File(dataDir, "app_webview"))
+            val geckoDirs = try {
+                clearDataContext.filesDir.listFiles()?.filter {
+                    it.isDirectory &&
+                        (it.name.contains("gecko", ignoreCase = true) ||
+                            it.name.contains("mozilla", ignoreCase = true))
+                } ?: emptyList()
+            } catch (t: Throwable) {
+                emptyList()
+            }
+            var geckoData: Long? = if (geckoDirs.isEmpty()) null else 0L
+            for (dir in geckoDirs) {
+                val size = dirSizeBytes(dir)
+                if (size != null) geckoData = (geckoData ?: 0L) + size
+            }
+            Triple(cache, webviewData, geckoData)
+        }
+    }
     if (showConfirm) {
         AlertDialog(
             onDismissRequest = { showConfirm = false },
@@ -5042,6 +5375,7 @@ private fun ClearDataScreen(
                     showConfirm = false
                     onClear(clearHistorySel, clearWebView, clearGecko)
                     doneText = "已清除勾选的数据。"
+                    storageTick++
                 }) { Text("清除") }
             },
             dismissButton = {
@@ -5068,6 +5402,56 @@ private fun ClearDataScreen(
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            item {
+                ElevatedCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp)
+                ) {
+                    Column(modifier = Modifier.padding(vertical = 8.dp)) {
+                        Text(
+                            "存储占用",
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                        )
+                        val sizes = storageSizes
+                        if (sizes == null) {
+                            Text(
+                                "正在计算…",
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                            )
+                        } else {
+                            ListItem(
+                                headlineContent = { Text("应用缓存") },
+                                trailingContent = {
+                                    Text(formatStorageSize(sizes.first))
+                                }
+                            )
+                            ListItem(
+                                headlineContent = { Text("网页数据（WebView）") },
+                                trailingContent = {
+                                    Text(formatStorageSize(sizes.second))
+                                }
+                            )
+                            ListItem(
+                                headlineContent = { Text("火狐数据") },
+                                trailingContent = {
+                                    Text(formatStorageSize(sizes.third))
+                                }
+                            )
+                        }
+                        Text(
+                            "这里数的是应用自己文件夹里能数到的部分；" +
+                                "用系统下载下的文件存在公共下载文件夹里，不在这里面。" +
+                                "显示「—」的那项是这次没有找到对应的文件夹。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            }
             item {
                 Text(
                     "想清哪样就勾哪样，最后点下面的按钮一次清掉。书签不在这里清，在书签页单独删。",
@@ -5163,6 +5547,7 @@ private fun ClearDataScreen(
                             siteDoneText = "这个域名看不懂，检查一下再试。"
                         } else {
                             onClearSite(host)
+                            storageTick++
                             siteDoneText = if (geckoStarted) {
                                 "已清除 $host 在火狐里的数据和本机历史。"
                             } else {
@@ -5196,6 +5581,8 @@ private fun SettingsScreen(
     onOpenClearData: () -> Unit,
     onExportBackup: () -> Unit = {},
     onImportBackup: () -> Unit = {},
+    onThemeModeChange: (ThemeMode) -> Unit = {},
+    onSearchEngineChange: () -> Unit = {},
     onTextZoomChange: (Int) -> Unit,
     onWebDarkChange: (Boolean) -> Unit
 ) {
@@ -5213,6 +5600,7 @@ private fun SettingsScreen(
     var startupRestore by remember { mutableStateOf(store.startupRestore) }
     var downloadMode by remember { mutableStateOf(store.downloadMode) }
     var historyRetention by remember { mutableStateOf(store.historyRetention) }
+    var themeMode by remember { mutableStateOf(store.themeMode) }
     var compatList by remember { mutableStateOf(store.loadCompatSites().sorted()) }
     var showCleared by remember { mutableStateOf(false) }
     var defaultTick by remember { mutableStateOf(0) }
@@ -5388,6 +5776,7 @@ private fun SettingsScreen(
                         } else {
                             searchEngine = engine
                             store.searchEngine = engine
+                            onSearchEngineChange()
                         }
                     },
                     modifier = Modifier.fillMaxWidth()
@@ -5413,6 +5802,7 @@ private fun SettingsScreen(
                                     } else {
                                         searchEngine = engine
                                         store.searchEngine = engine
+                                        onSearchEngineChange()
                                     }
                                 }
                             )
@@ -5559,6 +5949,46 @@ private fun SettingsScreen(
             item {
                 Text(
                     "火狐标签的下载由浏览器直接保存，不走此设置。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            item {
+                Text("外观", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "应用界面用浅色还是深色。选完立刻生效，所有页面一起变。",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            items(ThemeMode.entries) { mode ->
+                ElevatedCard(
+                    onClick = {
+                        themeMode = mode
+                        store.themeMode = mode
+                        onThemeModeChange(mode)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    ListItem(
+                        headlineContent = { Text("界面主题 · ${mode.label}") },
+                        trailingContent = {
+                            RadioButton(
+                                selected = themeMode == mode,
+                                onClick = {
+                                    themeMode = mode
+                                    store.themeMode = mode
+                                    onThemeModeChange(mode)
+                                }
+                            )
+                        }
+                    )
+                }
+            }
+            item {
+                Text(
+                    "注意：这里只管应用自己的界面（工具栏、设置、首页这些）。" +
+                        "网页内容是深色还是浅色由网页自己决定，和下面的「网页深色模式」设置有关，" +
+                        "跟这里不是一回事，别弄混。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -5920,6 +6350,7 @@ private fun SettingsScreen(
                         store.customSearchTemplate = template
                         searchEngine = SearchEngine.CUSTOM
                         store.searchEngine = SearchEngine.CUSTOM
+                        onSearchEngineChange()
                         showCustomSearchDialog = false
                     }
                 }) {
