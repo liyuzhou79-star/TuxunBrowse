@@ -837,6 +837,64 @@ class BrowserTab(
         geckoView = null
     }
 
+    /**
+     * Host (activity) went to the background (v0.35.0): pause this
+     * tab's engine so page media stops and JS timers/rendering idle
+     * instead of running on in the background. WebView gets its
+     * standard onPause(); a Gecko session is set inactive (signature
+     * verified against the GeckoView 132 AAR by parsing the class
+     * file: public setActive(Z)V, i.e. setActive(boolean)). Tabs
+     * whose engine was never created have nothing to pause. Both
+     * calls are idempotent, so an ON_PAUSE followed by ON_STOP is
+     * harmless.
+     */
+    fun pauseEngine() {
+        try {
+            webView?.onPause()
+        } catch (t: Throwable) {
+            // Engine already gone; nothing to pause.
+        }
+        try {
+            geckoSession?.setActive(false)
+        } catch (t: Throwable) {
+            // Engine already gone; nothing to pause.
+        }
+    }
+
+    /**
+     * Host came back to the foreground (v0.35.0): resume this tab's
+     * engine. WebView tabs all resume (onResume() is cheap and safe
+     * even for a tab that is not on screen); a Gecko session is only
+     * reactivated when [active] says this is the visible tab — the
+     * rest stay inactive, matching the tab-switch rule in
+     * [applyEngineActiveState].
+     */
+    fun resumeEngine(active: Boolean) {
+        try {
+            webView?.onResume()
+        } catch (t: Throwable) {
+            // Engine already gone; nothing to resume.
+        }
+        if (engine == Engine.GECKO) applyEngineActiveState(active)
+    }
+
+    /**
+     * The one place that decides whether this tab's Gecko session is
+     * the active one (v0.35.0): the visible tab's session is active,
+     * every other created session is inactive, so non-visible tabs
+     * do not keep rendering or playing media. WebView tabs need no
+     * equivalent — only the visible tab's WebView is composed, and
+     * the host pause/resume pair above covers the background case.
+     */
+    fun applyEngineActiveState(active: Boolean) {
+        if (engine != Engine.GECKO) return
+        try {
+            geckoSession?.setActive(active)
+        } catch (t: Throwable) {
+            // Engine already gone; nothing to toggle.
+        }
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     @Suppress("DEPRECATION")
     fun obtainWebView(context: Context): WebView {

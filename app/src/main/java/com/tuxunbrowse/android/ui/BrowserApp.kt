@@ -129,6 +129,8 @@ import kotlinx.coroutines.flow.debounce
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -1514,7 +1516,67 @@ fun BrowserApp(
                 // Engine already gone; nothing left to answer.
             }
             sslPromptRequest = null
+            // Engine teardown on the way out (v0.35.0): this
+            // composition only leaves when the activity itself is
+            // destroyed (the user swipes the app away, or a
+            // recreation this app does not handle via configChanges),
+            // and until now nothing on that path ever called a tab's
+            // destroy() — tab engines were only destroyed when a tab
+            // was closed or recreated in place, and on activity death
+            // they were simply abandoned to the system. Destroy each
+            // created engine properly here (WebView.destroy /
+            // GeckoSession.close). GeckoRuntime is a process-wide
+            // singleton and is deliberately NOT shut down: closing
+            // it would break a later start in the same process.
+            tabs.forEach { tab ->
+                try {
+                    tab.destroy()
+                } catch (t: Throwable) {
+                    // One bad tab must not stop the others.
+                }
+            }
         }
+    }
+
+    // Host lifecycle wiring (v0.35.0). Before this version nothing
+    // told the engines when the app went to the background:
+    // MainActivity had no onPause/onResume/onStop overrides,
+    // WebView.onPause/onResume were never called, and no
+    // GeckoSession.setActive existed anywhere — page media kept
+    // playing audibly in the background, JS timers and rendering
+    // kept running, and every created Gecko session stayed
+    // "active" forever, visible tab or not. This observer is the
+    // one wiring point: ON_PAUSE/ON_STOP pauses every created
+    // engine (the mainstream-browser rule: a backgrounded browser
+    // does not keep playing media); ON_RESUME resumes them —
+    // WebView tabs all resume, a Gecko session is reactivated
+    // only when it is the visible tab. Downloads handed to the
+    // system DownloadManager run in a system process and are NOT
+    // affected by any of this pausing.
+    val hostActivity = context as? androidx.activity.ComponentActivity
+    DisposableEffect(hostActivity) {
+        val activity = hostActivity
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP ->
+                    tabs.forEach { it.pauseEngine() }
+                Lifecycle.Event.ON_RESUME ->
+                    tabs.forEach { it.resumeEngine(it.id == activeTabId) }
+                else -> Unit
+            }
+        }
+        activity?.lifecycle?.addObserver(observer)
+        onDispose { activity?.lifecycle?.removeObserver(observer) }
+    }
+
+    // Gecko active-tab rule (v0.35.0): exactly one created Gecko
+    // session is active — the visible tab's; every other created
+    // session is inactive. Keyed on activeTabId and run after
+    // composition, when a newly selected tab's session has been
+    // created by TabContent, so first-switch tabs are covered too.
+    // (Before this, tab switches never touched setActive at all.)
+    LaunchedEffect(activeTabId) {
+        tabs.forEach { it.applyEngineActiveState(it.id == activeTabId) }
     }
 
     webPermissionHandler = { request ->
