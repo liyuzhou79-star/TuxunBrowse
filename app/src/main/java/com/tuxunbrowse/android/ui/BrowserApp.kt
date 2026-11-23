@@ -184,6 +184,7 @@ import com.tuxunbrowse.android.engine.HttpAuthRequestInfo
 import com.tuxunbrowse.android.engine.TabContent
 import com.tuxunbrowse.android.engine.savePageScreenshot
 import com.tuxunbrowse.android.engine.sharePageScreenshot
+import com.tuxunbrowse.android.engine.resolveDownloadFileName
 import com.tuxunbrowse.android.engine.startSystemDownload
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
@@ -519,9 +520,7 @@ fun BrowserApp(
                 // fills in the current session's Cookie and a
                 // fallback User-Agent itself; the Referer is the
                 // page the tap happened on (the tab has not moved).
-                val fileName = android.webkit.URLUtil.guessFileName(
-                    target, null, null
-                )
+                val fileName = resolveDownloadFileName(target, null, null)
                 downloadWithMode(target, fileName) {
                     startSystemDownload(
                         context, target, null, null, null,
@@ -5568,6 +5567,25 @@ private fun DownloadsScreen(
                         }
                 )
                 HorizontalDivider()
+            }
+            item {
+                // Duplicate-name and list-scope notes, so a renamed
+                // or Gecko-side download is never mistaken for a
+                // lost file: DownloadManager never overwrites an
+                // existing file (a repeated download is either
+                // saved under an adjusted name or reported as
+                // "同名文件已经存在"), and Gecko-tab downloads are
+                // saved straight into the system Downloads folder
+                // by the app itself, so they do not appear in this
+                // DownloadManager-backed list.
+                Text(
+                    text = "说明：同一个文件重复下载时，原来的文件不会被覆盖——" +
+                        "系统可能给新文件自动改名保存，也可能提示「同名文件已经存在」。" +
+                        "火狐标签下载的文件由浏览器直接存进系统下载文件夹，不出现在这个列表里。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                )
             }
         }
     }

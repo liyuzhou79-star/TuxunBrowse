@@ -1641,6 +1641,129 @@ class BrowserTab(
     }
 }
 
+/**
+ * Extract the RFC 5987 "filename*" parameter from a
+ * Content-Disposition header, percent-decoded with its declared
+ * charset (UTF-8 in practice). Returns null when there is no
+ * filename* or it does not parse.
+ *
+ * This exists because URLUtil.guessFileName only understands
+ * filename* on Android 15+ for apps targeting SDK 35 (the RFC 6266
+ * compat change); on every older system it uses the RFC 2616
+ * parser, whose pattern knows only plain "filename=" — a server
+ * that sends ONLY filename* (common for non-ASCII names) would
+ * lose its suggested name entirely and the download would fall
+ * back to whatever the URL path happens to end with.
+ */
+fun rfc5987FileName(contentDisposition: String?): String? {
+    if (contentDisposition.isNullOrBlank()) return null
+    val marker = "filename*="
+    val start = contentDisposition.indexOf(marker, ignoreCase = true)
+    if (start < 0) return null
+    var value = contentDisposition.substring(start + marker.length).trim()
+    if (value.startsWith("\"")) {
+        val end = value.indexOf('"', 1)
+        if (end <= 0) return null
+        value = value.substring(1, end)
+    } else {
+        value = value.substringBefore(";").trim()
+    }
+    // Shape: charset'lang'percent-encoded-value
+    val q1 = value.indexOf('\'')
+    val q2 = if (q1 >= 0) value.indexOf('\'', q1 + 1) else -1
+    if (q1 < 0 || q2 < 0) return null
+    val charsetName = value.substring(0, q1).ifBlank { "UTF-8" }
+    val encoded = value.substring(q2 + 1)
+    if (encoded.isBlank()) return null
+    return try {
+        val charset = java.nio.charset.Charset.forName(charsetName)
+        val bytes = java.io.ByteArrayOutputStream(encoded.length)
+        var i = 0
+        while (i < encoded.length) {
+            val c = encoded[i]
+            if (c == '%' && i + 2 < encoded.length) {
+                val hi = Character.digit(encoded[i + 1], 16)
+                val lo = Character.digit(encoded[i + 2], 16)
+                if (hi >= 0 && lo >= 0) {
+                    bytes.write(hi * 16 + lo)
+                    i += 3
+                    continue
+                }
+            }
+            bytes.write(c.code and 0xFF)
+            i++
+        }
+        String(bytes.toByteArray(), charset).trim().ifBlank { null }
+    } catch (t: Throwable) {
+        null
+    }
+}
+
+/**
+ * Clean a server- or URL-suggested file name before it is used as
+ * an on-disk name: drop any directory part (either separator —
+ * the RFC 2616 parser in URLUtil only strips '/'), remove control
+ * characters and quotes, trim leading/trailing dots and spaces so
+ * ".." or ". ." can never survive as a name, and cap the length.
+ * May return blank; callers substitute a fallback.
+ */
+fun sanitizeDownloadFileName(raw: String?): String {
+    if (raw.isNullOrBlank()) return ""
+    var name = raw.trim().replace('\\', '/').substringAfterLast('/').trim()
+    name = name.filter { it.code >= 0x20 && it != '"' }
+    name = name.trim().trimStart { it == '.' || it == ' ' }
+        .trimEnd { it == '.' || it == ' ' }
+    if (name.length > 120) {
+        val dot = name.lastIndexOf('.')
+        val ext = if (dot > 0 && name.length - dot <= 11) name.substring(dot) else ""
+        name = name.substring(0, 120 - ext.length) + ext
+    }
+    return name
+}
+
+/** Extension (with dot) URLUtil would suggest for a MIME type. */
+private fun downloadExtensionForMime(mimeType: String?): String {
+    val ext = mimeType?.let {
+        android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(it)
+    }
+    if (!ext.isNullOrBlank()) return ".$ext"
+    return when {
+        mimeType.equals("text/html", ignoreCase = true) -> ".html"
+        mimeType?.startsWith("text/", ignoreCase = true) == true -> ".txt"
+        else -> ".bin"
+    }
+}
+
+/**
+ * The one place download file names are decided, used by both the
+ * DownloadManager path and the Gecko save path:
+ * 1. An RFC 5987 filename* in the Content-Disposition wins (per
+ *    RFC 6266 it outranks filename=), decoded by rfc5987FileName
+ *    so it works on systems whose URLUtil predates RFC 6266.
+ * 2. Otherwise URLUtil.guessFileName (URL path / filename= /
+ *    MIME-derived extension; it already strips the query string,
+ *    so download.php?id=123 with an APK MIME type becomes
+ *    download.apk, and with no MIME type keeps download.php).
+ * 3. Whatever wins is run through sanitizeDownloadFileName, and
+ *    a blank result falls back to downloadfile + MIME extension
+ *    instead of an empty or extension-less oddity.
+ */
+fun resolveDownloadFileName(
+    url: String,
+    contentDisposition: String?,
+    mimeType: String?
+): String {
+    val star = sanitizeDownloadFileName(rfc5987FileName(contentDisposition))
+    if (star.isNotBlank()) {
+        return if (star.indexOf('.') >= 0) star
+        else star + downloadExtensionForMime(mimeType)
+    }
+    val guessed = sanitizeDownloadFileName(
+        android.webkit.URLUtil.guessFileName(url, contentDisposition, mimeType)
+    )
+    return guessed.ifBlank { "downloadfile" + downloadExtensionForMime(mimeType) }
+}
+
 private val geckoDownloadExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
 /**
@@ -1658,7 +1781,7 @@ fun saveGeckoDownload(context: Context, response: WebResponse) {
     fun header(name: String): String? = headers.entries
         .firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
     val contentType = header("Content-Type")?.substringBefore(";")?.trim()
-    val fileName = android.webkit.URLUtil.guessFileName(
+    val fileName = resolveDownloadFileName(
         uri, header("Content-Disposition"), contentType
     )
     val body = response.body
@@ -1669,6 +1792,12 @@ fun saveGeckoDownload(context: Context, response: WebResponse) {
     Toast.makeText(context, "开始下载：$fileName", Toast.LENGTH_LONG).show()
     geckoDownloadExecutor.execute {
         var ok = false
+        // The name the file actually lands under. MediaStore never
+        // overwrites an existing file: on a name clash it saves
+        // under an adjusted name instead, so the completion toast
+        // below reports this queried-back name, not the requested
+        // one, to avoid "downloaded but can't find it" confusion.
+        var savedName = fileName
         var destUri: android.net.Uri? = null
         var destFile: java.io.File? = null
         try {
@@ -1704,6 +1833,22 @@ fun saveGeckoDownload(context: Context, response: WebResponse) {
                         }
                         resolver.update(dest, done, null, null)
                         ok = true
+                        try {
+                            resolver.query(
+                                dest,
+                                arrayOf(
+                                    android.provider.MediaStore.Downloads.DISPLAY_NAME
+                                ),
+                                null, null, null
+                            )?.use { cur ->
+                                if (cur.moveToFirst()) {
+                                    val actual = cur.getString(0)
+                                    if (!actual.isNullOrBlank()) savedName = actual
+                                }
+                            }
+                        } catch (t: Throwable) {
+                            // Keep the requested name in the toast.
+                        }
                     }
                 }
             } else {
@@ -1740,7 +1885,7 @@ fun saveGeckoDownload(context: Context, response: WebResponse) {
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             Toast.makeText(
                 context,
-                if (ok) "已下载：$fileName（在系统下载文件夹）" else "下载失败：$fileName",
+                if (ok) "已下载：$savedName（在系统下载文件夹）" else "下载失败：$fileName",
                 Toast.LENGTH_LONG
             ).show()
         }
@@ -1773,8 +1918,11 @@ fun startSystemDownload(
     if (url.isNullOrBlank()) return
     try {
         val uri = Uri.parse(url)
-        val fileName = android.webkit.URLUtil.guessFileName(url, contentDisposition, mimetype)
-            .ifBlank { "download" }
+        // Name decided by the shared resolver: RFC 5987 filename*
+        // support on all Android versions, path separators and
+        // ".." cleaned out, and a downloadfile.<ext> fallback
+        // instead of a blank or extension-less name.
+        val fileName = resolveDownloadFileName(url, contentDisposition, mimetype)
         val request = DownloadManager.Request(uri)
             .setTitle(fileName)
             .setDescription(url)
