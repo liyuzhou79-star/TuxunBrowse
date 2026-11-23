@@ -1302,7 +1302,7 @@ fun BrowserApp(
                 replaceTabEngine(tab, Engine.WEBVIEW)
             }
             android.widget.Toast.makeText(
-                context, "已记住：$host 以后用 WebView 打开",
+                context, "已记住：$host 以后用兼容模式打开",
                 android.widget.Toast.LENGTH_SHORT
             ).show()
         }
@@ -1716,7 +1716,7 @@ fun BrowserApp(
                         ).show()
                         tab.engine == Engine.GECKO -> android.widget.Toast.makeText(
                             context,
-                            "阅读模式暂时只支持 WebView 标签，火狐标签可以先切内核再开",
+                            "阅读模式暂时只支持系统 WebView 标签，火狐标签可以先切换内核再开",
                             android.widget.Toast.LENGTH_LONG
                         ).show()
                         tab.readerActive -> tab.exitReaderMode()
@@ -1728,7 +1728,7 @@ fun BrowserApp(
                     when {
                         tab.engine == Engine.GECKO -> android.widget.Toast.makeText(
                             context,
-                            "火狐标签暂时不能打印，可以先切到 WebView 内核再打印或存 PDF",
+                            "火狐标签暂时不能打印，可以先切换到系统 WebView 再打印或存为 PDF",
                             android.widget.Toast.LENGTH_LONG
                         ).show()
                         tab.isHome -> android.widget.Toast.makeText(
@@ -1750,7 +1750,7 @@ fun BrowserApp(
                         ).show()
                         tab.engine == Engine.GECKO -> android.widget.Toast.makeText(
                             context,
-                            "火狐标签暂不支持嗅探，请切换到 WebView 打开本页再试",
+                            "火狐标签暂不支持嗅探，请切换到系统 WebView 打开本页再试",
                             android.widget.Toast.LENGTH_LONG
                         ).show()
                         else -> {
@@ -1768,7 +1768,7 @@ fun BrowserApp(
                         ).show()
                         tab.engine == Engine.GECKO -> android.widget.Toast.makeText(
                             context,
-                            "火狐标签暂不支持网页截图，请切换到 WebView 打开本页再试",
+                            "火狐标签暂不支持网页截图，请切换到系统 WebView 打开本页再试",
                             android.widget.Toast.LENGTH_LONG
                         ).show()
                         else -> screenshotTab = tab
@@ -3127,7 +3127,7 @@ private fun EnginePickerScreen(
             item {
                 EngineCard(
                     engine = Engine.GECKO,
-                    description = "火狐的内核，独立于系统，隐私保护更强，新功能跟得快。代价是安装包大很多（光内核就一百多 MB）。",
+                    description = "火狐自己的内核，独立于系统，自带内核级反跟踪，隐私保护更强，新功能跟得快。代价是安装包大很多（光内核就一百多 MB）。",
                     selected = selected == Engine.GECKO,
                     onSelect = { selected = Engine.GECKO }
                 )
@@ -3143,7 +3143,7 @@ private fun EnginePickerScreen(
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        text = "两个内核的登录状态互不相通：在一个内核里登录过的网站，换到另一个内核打开需要重新登录。某个网站在火狐内核下显示不正常时，可以点地址栏旁边的内核按钮把当前标签切到 WebView，还能记住这个网站以后都用 WebView 打开。",
+                        text = "两个内核的登录状态互不相通：在一个内核里登录过的网站，换到另一个内核打开需要重新登录。某个网站在火狐内核下显示不正常时，可以点地址栏旁边的切换内核按钮，把当前标签切换到系统 WebView（兼容模式），还能记住这个网站以后都用兼容模式打开。",
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.padding(16.dp)
                     )
@@ -3359,7 +3359,7 @@ private fun BrowserScreen(
             onDismissRequest = { showCloseOthersConfirm = false },
             title = { Text("关闭其他标签页？") },
             text = {
-                Text("会关掉除当前标签外的 ${tabs.size - 1} 个标签页。普通标签会记进「最近关闭」（最多 10 个），之后能在标签列表里一个个恢复；无痕标签不会被记录。无痕标签关掉后，WebView 的登录状态会按无痕规则清掉。")
+                Text("会关掉除当前标签外的 ${tabs.size - 1} 个标签页。普通标签会记进「最近关闭」（最多 10 个），之后能在标签列表里一个个恢复；无痕标签不会被记录。无痕标签关掉后，系统 WebView 的登录状态会被清掉。")
             },
             confirmButton = {
                 Button(onClick = {
@@ -3380,7 +3380,7 @@ private fun BrowserScreen(
             onDismissRequest = { showCloseAllConfirm = false },
             title = { Text("关闭全部标签页？") },
             text = {
-                Text("现在开着的 ${tabs.size} 个标签页会全部关掉，然后开一个新的首页标签。普通标签会记进「最近关闭」（最多 10 个），之后能在标签列表里一个个恢复；无痕标签不会被记录。无痕标签关掉后，WebView 的登录状态会按无痕规则清掉。")
+                Text("现在开着的 ${tabs.size} 个标签页会全部关掉，然后开一个新的首页标签。普通标签会记进「最近关闭」（最多 10 个），之后能在标签列表里一个个恢复；无痕标签不会被记录。无痕标签关掉后，系统 WebView 的登录状态会被清掉。")
             },
             confirmButton = {
                 Button(onClick = {
@@ -3753,7 +3753,7 @@ private fun BrowserScreen(
                         Icon(
                             Icons.Filled.SwapHoriz,
                             contentDescription = "切换内核（现在是" +
-                                if (activeTab.engine == Engine.GECKO) "火狐）" else "WebView）"
+                                if (activeTab.engine == Engine.GECKO) "火狐）" else "系统 WebView）"
                         )
                     }
                 }
@@ -4205,9 +4205,9 @@ private fun BrowserScreen(
             text = {
                 Text(
                     "会清掉火狐里 $siteHost 的 Cookie 和网站数据，并删掉本机保存的" +
-                        "这个网站的历史记录。注意：WebView 的网站数据没法按网站单独清" +
-                        "（系统 WebView 没给这个口子），这次不会清 WebView 侧的数据；" +
-                        "要清 WebView 的数据只能去设置里的「清除浏览数据」整清。"
+                        "这个网站的历史记录。注意：系统 WebView 的网站数据没法按网站单独清" +
+                        "（系统 WebView 不支持按网站清除），这次不会清系统 WebView 的数据；" +
+                        "要清的话只能去设置里的「清除浏览数据」整清。"
                 )
             },
             confirmButton = {
@@ -4332,7 +4332,7 @@ private fun BrowserScreen(
                             ListItem(
                                 headlineContent = { Text("本页已拦截") },
                                 supportingContent = {
-                                    Text("火狐用内核自带的拦截，没有个数统计，所以这里不显示数字。")
+                                    Text("火狐用内核自带的反跟踪拦截，没有个数统计，所以这里不显示数字。")
                                 },
                                 leadingContent = {
                                     Icon(Icons.Filled.VisibilityOff, contentDescription = null)
@@ -4492,7 +4492,7 @@ private fun BrowserScreen(
                                                 if (tab.engine == Engine.GECKO) {
                                                     "火狐"
                                                 } else {
-                                                    "WebView"
+                                                    "系统 WebView"
                                                 }
                                         )
                                     }
@@ -4662,7 +4662,7 @@ private fun BrowserScreen(
                                                     (if (info.engine == Engine.GECKO) {
                                                         "火狐 · "
                                                     } else {
-                                                        "WebView · "
+                                                        "系统 WebView · "
                                                     }) + (hostOf(info.url) ?: info.url),
                                                     maxLines = 1
                                                 )
@@ -4742,7 +4742,7 @@ private fun BrowserScreen(
                     ) {
                         item {
                             ListItem(
-                                headlineContent = { Text("这个网站以后都用 WebView 打开") },
+                                headlineContent = { Text("这个网站以后都用兼容模式打开") },
                                 supportingContent = { Text(currentHost) },
                                 trailingContent = {
                                     Switch(
@@ -4791,7 +4791,7 @@ private fun BrowserScreen(
             text = {
                 LazyColumn {
                     item {
-                        Text("无痕标签不会记录历史。选好的内核会单独记住，下次无痕时默认用它。火狐无痕是真隔离；WebView 无痕在最后一个无痕标签关掉时会清掉 WebView 的全部 Cookie，普通 WebView 标签也会跟着退出登录（系统 WebView 只有一个 Cookie 罐，分不开）。")
+                        Text("无痕标签不会记录历史。选好的内核会单独记住，下次无痕时默认用它。火狐无痕是真隔离，Cookie 独立存放；系统 WebView 的无痕标签全部关掉后，会清掉系统 WebView 的全部 Cookie，普通标签也会跟着退出登录（系统 WebView 只有一个 Cookie 罐，分不开）。")
                     }
                     items(Engine.entries) { engine ->
                         ListItem(
@@ -5967,7 +5967,7 @@ private fun ClearDataScreen(
                                 }
                             )
                             ListItem(
-                                headlineContent = { Text("网页数据（WebView）") },
+                                headlineContent = { Text("网页数据（系统 WebView）") },
                                 trailingContent = {
                                     Text(formatStorageSize(sizes.second))
                                 }
@@ -6011,8 +6011,8 @@ private fun ClearDataScreen(
             }
             item {
                 ListItem(
-                    headlineContent = { Text("WebView 的 Cookie 和网站数据") },
-                    supportingContent = { Text("清完后用 WebView 打开的网站都要重新登录。") },
+                    headlineContent = { Text("系统 WebView 的 Cookie 和网站数据") },
+                    supportingContent = { Text("清完后用系统 WebView 打开的网站都要重新登录。") },
                     trailingContent = {
                         Switch(
                             checked = clearWebView,
@@ -6061,8 +6061,8 @@ private fun ClearDataScreen(
                 Text("按网站清除", style = MaterialTheme.typography.titleMedium)
                 Text(
                     "只想清某一个网站时用这里：输入域名，清掉火狐里这个网站的 Cookie 和网站数据，" +
-                        "并删掉本机保存的这个网站的历史记录。WebView 的网站数据没法按网站单独清，" +
-                        "只能用上面那项整清（系统 WebView 没给这个口子）。",
+                        "并删掉本机保存的这个网站的历史记录。系统 WebView 的网站数据没法按网站单独清，" +
+                        "只能用上面那项整清（系统 WebView 不支持按网站清除）。",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -6303,7 +6303,7 @@ private fun SettingsScreen(
             item {
                 Text("主内核", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "新建的普通标签页用这个内核打开。已经打开的标签不会中途换内核，要换就点地址栏旁边的内核按钮。",
+                    "新建的普通标签页用这个内核打开。已经打开的标签不会中途换内核，要换就点地址栏旁边的切换内核按钮。",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -6432,14 +6432,14 @@ private fun SettingsScreen(
             item {
                 Text("兼容模式记住的网站", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "这些网站在火狐内核下打开时会自动改用 WebView。删掉某个网站，它就恢复成用你选的主内核打开。",
+                    "这些网站在火狐内核下打开时会自动改用兼容模式（系统 WebView）打开。删掉某个网站，它就恢复成用你选的主内核打开。",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
             if (compatList.isEmpty()) {
                 item {
                     Text(
-                        "还没有。在火狐标签里打开某个网站觉得不对劲时，点地址栏旁边的「火狐」按钮切到 WebView 并勾选记住，就会记到这里。",
+                        "还没有。在火狐标签里打开某个网站觉得不对劲时，点地址栏旁边的切换内核按钮，把当前标签切换到系统 WebView 并勾选记住，就会记到这里。",
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
@@ -6475,7 +6475,7 @@ private fun SettingsScreen(
                 ListItem(
                     headlineContent = { Text("拦截广告和跟踪请求") },
                     supportingContent = {
-                        Text("WebView 按内置名单拦截常见广告域名，立即生效；火狐用它自带的跟踪保护，重启应用后完全生效。关掉后所有网站原样加载。")
+                        Text("系统 WebView 按内置名单拦截常见广告域名，立即生效；火狐内核用自带的反跟踪，重启应用后完全生效。关掉后所有网站原样加载。")
                     },
                     trailingContent = {
                         Switch(
@@ -6493,7 +6493,7 @@ private fun SettingsScreen(
                     modifier = Modifier.alpha(if (adBlock) 1f else 0.5f),
                     headlineContent = { Text("隐藏页面广告位") },
                     supportingContent = {
-                        Text("把网页上拦掉广告后剩下的空广告位也藏起来。只认特征很明确的广告容器，宁可漏掉也不误藏正文。此项仅对 WebView 标签生效；火狐标签由内核自带的内容拦截处理。")
+                        Text("把网页上拦掉广告后剩下的空广告位也藏起来。只认特征很明确的广告容器，宁可漏掉也不误藏正文。此项仅对系统 WebView 标签生效；火狐标签由内核自带的反跟踪处理。")
                     },
                     trailingContent = {
                         Switch(
@@ -6510,8 +6510,8 @@ private fun SettingsScreen(
             item {
                 Text(
                     "内置拦截名单共 ${AdBlocker.blockedHostCount} 个广告/跟踪域名。" +
-                        "WebView 标签按这份名单拦截，单个页面拦下了几个可以在网站信息里看；" +
-                        "火狐标签用内核自带的跟踪保护，没有个数统计。",
+                        "系统 WebView 标签按这份名单拦截，单个页面拦下了几个可以在网站信息里看；" +
+                        "火狐标签用内核自带的反跟踪，没有个数统计。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -6522,7 +6522,7 @@ private fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        "累计已拦截 $totalBlocked 个（WebView 标签统计）",
+                        "累计已拦截 $totalBlocked 个（系统 WebView 标签统计）",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f)
@@ -6541,7 +6541,7 @@ private fun SettingsScreen(
             }
             item {
                 Text(
-                    "这个累计数只统计 WebView 标签拦下的请求；火狐是内核级拦截，没法计数，不算在里面。",
+                    "这个累计数只统计系统 WebView 标签拦下的请求；火狐是内核级拦截，没法计数，不算在里面。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -6665,7 +6665,7 @@ private fun SettingsScreen(
                 ListItem(
                     headlineContent = { Text("网页深色模式") },
                     supportingContent = {
-                        Text("让网页按深色显示。WebView 标签在 Android 13 以上生效；火狐内核的网页深浅跟随系统深色模式，系统开了深色它就是深色。")
+                        Text("让网页按深色显示。系统 WebView 标签在 Android 13 以上生效；火狐内核的网页深浅跟随系统深色模式，系统开了深色它就是深色。")
                     },
                     trailingContent = {
                         Switch(
@@ -6773,6 +6773,76 @@ private fun SettingsScreen(
                     Text("重新检测默认浏览器状态")
                 }
             }
+            item {
+                Text("两个内核的差别", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "有些功能只有一边有，选内核时可以对照着看。",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            item {
+                ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                    Column {
+                        Text(
+                            "只有系统 WebView 有",
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.padding(
+                                start = 16.dp, top = 16.dp, end = 16.dp
+                            )
+                        )
+                        ListItem(headlineContent = { Text("资源嗅探") })
+                        ListItem(headlineContent = { Text("网页截图与长截图") })
+                        ListItem(headlineContent = { Text("标签预览图") })
+                        ListItem(headlineContent = { Text("阅读模式") })
+                        ListItem(headlineContent = { Text("页内查找计数") })
+                        ListItem(headlineContent = { Text("本页拦截计数") })
+                        ListItem(headlineContent = { Text("广告位隐藏") })
+                        ListItem(headlineContent = { Text("打印 / 存为 PDF") })
+                        HorizontalDivider()
+                        Text(
+                            "火狐的特点",
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.padding(
+                                start = 16.dp, top = 16.dp, end = 16.dp
+                            )
+                        )
+                        ListItem(
+                            headlineContent = { Text("内核级反跟踪") },
+                            supportingContent = {
+                                Text("由内核拦截跟踪，不靠应用的名单")
+                            }
+                        )
+                        ListItem(
+                            headlineContent = { Text("独立的 Cookie 罐") },
+                            supportingContent = {
+                                Text("和系统 WebView 分开存；无痕是真隔离")
+                            }
+                        )
+                        HorizontalDivider()
+                        Text(
+                            "两个内核都有",
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.padding(
+                                start = 16.dp, top = 16.dp, end = 16.dp
+                            )
+                        )
+                        ListItem(
+                            headlineContent = {
+                                Text("文件上传、相机和麦克风、网站登录（基础认证）")
+                            }
+                        )
+                        ListItem(
+                            headlineContent = { Text("下载") },
+                            supportingContent = {
+                                Text(
+                                    "通路不同：系统 WebView 的下载按设置里的下载方式来；" +
+                                        "火狐标签的下载由浏览器直接保存到系统下载文件夹"
+                                )
+                            }
+                        )
+                    }
+                }
+            }
             }
             if (settingsPage == "privacy") {
             item {
@@ -6859,8 +6929,8 @@ private fun SettingsScreen(
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text("关于 TuxunBrowse", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "版本 $versionName。免费开源的双内核浏览器：火狐 GeckoView 与系统 WebView 由用户自选，" +
-                                "首页是应用自己的页面（搜索框、常用书签快捷入口），不拿任何网站的页面冒充首页。" +
+                            "版本 $versionName。免费开源的双内核浏览器：火狐内核（GeckoView）与系统 WebView 由用户自选，" +
+                                "首页是应用自己的页面（搜索框、快捷方式和常用书签快捷入口），不拿任何网站的页面冒充首页。" +
                                 "两个内核的登录状态互不相通，这是双内核的固有代价。",
                             style = MaterialTheme.typography.bodyMedium
                         )

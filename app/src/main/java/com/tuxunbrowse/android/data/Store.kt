@@ -6,7 +6,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 enum class Engine(val id: String, val label: String) {
-    GECKO("gecko", "火狐 GeckoView"),
+    GECKO("gecko", "火狐内核（GeckoView）"),
     WEBVIEW("webview", "系统 WebView");
 
     companion object {

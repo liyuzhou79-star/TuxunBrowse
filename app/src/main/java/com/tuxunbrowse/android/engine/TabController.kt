@@ -2304,7 +2304,7 @@ fun TabContent(tab: BrowserTab, modifier: Modifier = Modifier) {
             modifier = modifier,
             factory = { ctx ->
                 tab.obtainGecko(ctx) ?: android.widget.TextView(ctx).apply {
-                    text = "火狐内核这次没能启动，请到设置里改用系统 WebView 内核，或重启应用再试。"
+                    text = "火狐内核这次没能启动，请到设置里改用系统 WebView，或重启应用再试。"
                 }
             },
             update = { }
