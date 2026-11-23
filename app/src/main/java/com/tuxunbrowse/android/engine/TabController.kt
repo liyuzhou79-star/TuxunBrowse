@@ -150,6 +150,63 @@ data class HttpAuthRequestInfo(
     val onlyPassword: Boolean
 )
 
+/**
+ * A text-selection action request from a Gecko page (v0.43.0).
+ * Wraps GeckoView 132's Selection object, whose shape was verified
+ * against the AAR with javap: SelectionActionDelegate is an
+ * interface with default methods; onShowActionRequest(session,
+ * Selection) hands the app a Selection carrying public final
+ * text / flags / screenRect / availableActions plus execute(String)
+ * and convenience methods (copy(), selectAll(), hide(), ...). The
+ * ACTION_* ids are plain Strings ("org.mozilla.geckoview.COPY" and
+ * friends); FLAG_IS_COLLAPSED=1, FLAG_IS_EDITABLE=2,
+ * FLAG_IS_PASSWORD=4 (constant pool read directly — the javap
+ * display masked the password value). The app presents the actions
+ * itself (Material 3 dialog) and answers through [execute]/[hide];
+ * Gecko fires onHideAction when the selection goes away, which the
+ * tab forwards so the app can drop this object.
+ */
+class GeckoSelectionMenu(
+    private val selection: GeckoSession.SelectionActionDelegate.Selection
+) {
+    /** The selected text, straight from the Selection object. */
+    val text: String = selection.text.orEmpty()
+
+    val isEditable: Boolean =
+        selection.flags and
+            GeckoSession.SelectionActionDelegate.FLAG_IS_EDITABLE != 0
+
+    /** Password-field selection: its text must never be previewed,
+     * shared or sent to a search engine. */
+    val isPassword: Boolean =
+        selection.flags and
+            GeckoSession.SelectionActionDelegate.FLAG_IS_PASSWORD != 0
+
+    fun isAvailable(action: String): Boolean = try {
+        selection.isActionAvailable(action)
+    } catch (t: Throwable) {
+        false
+    }
+
+    /** Run one ACTION_* id in the page (copy/cut/delete/select-all). */
+    fun execute(action: String) {
+        try {
+            selection.execute(action)
+        } catch (t: Throwable) {
+            // A stale selection must never crash the app.
+        }
+    }
+
+    /** Finish the selection on the Gecko side (ACTION_HIDE). */
+    fun hide() {
+        try {
+            selection.hide()
+        } catch (t: Throwable) {
+            // Already gone — nothing to finish.
+        }
+    }
+}
+
 /** Plain-language description of a WebView SSL error's primary problem. */
 /**
  * Pull the common name (CN) out of an X.500 distinguished name such
@@ -387,6 +444,12 @@ class BrowserTab(
     // image produces ONE combined menu instead of two competing ones.
     private val onPageContextMenu: (linkUrl: String?, imageUrl: String?) -> Unit =
         { _, _ -> },
+    // Gecko text-selection actions (v0.43.0): the session's
+    // SelectionActionDelegate forwards show/hide to the app, which
+    // renders the menu. The hide callback lets the app drop a menu
+    // whose selection has already gone away on its own.
+    private val onGeckoSelectionShow: (GeckoSelectionMenu) -> Unit = {},
+    private val onGeckoSelectionHide: () -> Unit = {},
     private val textZoomProvider: () -> Int = { 100 },
     private val webDarkProvider: () -> Boolean = { false },
     // Whether third-party cookies are allowed in this tab's WebView
@@ -1790,6 +1853,29 @@ class BrowserTab(
                 }
             }
         }
+        // SelectionActionDelegate (v0.43.0), verified against the
+        // GeckoView 132 AAR with javap: GeckoSession has
+        // setSelectionActionDelegate(SelectionActionDelegate); the
+        // interface's methods all have default implementations, and
+        // onShowActionRequest's parameters are @NonNull. Only show
+        // and hide are overridden — the clipboard-permission request
+        // (clipboard READ, i.e. paste) keeps Gecko's default
+        // behaviour, unchanged from before this delegate existed.
+        // Before v0.43.0 no delegate was set at all, so a Gecko
+        // long-press selection produced no menu whatsoever.
+        session.selectionActionDelegate =
+            object : GeckoSession.SelectionActionDelegate {
+                override fun onShowActionRequest(
+                    s: GeckoSession,
+                    selection: GeckoSession.SelectionActionDelegate.Selection
+                ) {
+                    onGeckoSelectionShow(GeckoSelectionMenu(selection))
+                }
+
+                override fun onHideAction(s: GeckoSession, reason: Int) {
+                    onGeckoSelectionHide()
+                }
+            }
         // PromptDelegate, verified against the GeckoView 132 AAR with
         // javap: GeckoSession.setPromptDelegate exists; FilePrompt has
         // public type/mimeTypes/capture fields and public

@@ -199,6 +199,7 @@ import com.tuxunbrowse.android.engine.SniffKind
 import com.tuxunbrowse.android.engine.SniffedResource
 import com.tuxunbrowse.android.engine.TabLoadError
 import com.tuxunbrowse.android.engine.GeckoJsPromptKind
+import com.tuxunbrowse.android.engine.GeckoSelectionMenu
 import com.tuxunbrowse.android.engine.HttpAuthRequestInfo
 import com.tuxunbrowse.android.engine.TabContent
 import com.tuxunbrowse.android.engine.savePageScreenshot
@@ -314,6 +315,19 @@ private data class PageContextMenuState(
     val incognito: Boolean
 )
 
+/**
+ * A Gecko text-selection menu waiting to be shown (v0.43.0). Carries
+ * the SOURCE tab's id and incognito flag, captured when the
+ * selection was made: "search the web for this" must load in that
+ * same tab (an incognito selection must stay in the incognito tab),
+ * never in a fresh normal tab.
+ */
+private data class GeckoSelectionMenuState(
+    val tabId: Int,
+    val incognito: Boolean,
+    val menu: GeckoSelectionMenu
+)
+
 /** A WebView SSL certificate error waiting for the user's decision. */
 private data class SslPromptState(
     val url: String,
@@ -363,6 +377,9 @@ fun BrowserApp(
     }
     var pageContextMenu by remember {
         mutableStateOf<PageContextMenuState?>(null)
+    }
+    var geckoSelectionMenu by remember {
+        mutableStateOf<GeckoSelectionMenuState?>(null)
     }
     val recentClosedTabs = remember { mutableStateListOf<ClosedTabInfo>() }
     // The search engine as Compose state: the store is the source of
@@ -657,6 +674,22 @@ fun BrowserApp(
                     engine = src?.engine ?: engine,
                     incognito = src?.incognito ?: incognito
                 )
+            },
+            onGeckoSelectionShow = { menu ->
+                val src = created
+                if (src != null) {
+                    geckoSelectionMenu = GeckoSelectionMenuState(
+                        tabId = src.id,
+                        incognito = src.incognito,
+                        menu = menu
+                    )
+                }
+            },
+            onGeckoSelectionHide = {
+                val src = created
+                if (src != null && geckoSelectionMenu?.tabId == src.id) {
+                    geckoSelectionMenu = null
+                }
             },
             textZoomProvider = { store.textZoomPercent },
             webDarkProvider = { store.webDarkMode },
@@ -2579,6 +2612,214 @@ fun BrowserApp(
             },
             confirmButton = {
                 TextButton(onClick = { pageContextMenu = null }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
+    // Text-selection menu for Gecko tabs (v0.43.0). Before this
+    // version Gecko tabs had no SelectionActionDelegate at all, so
+    // long-pressing to select text produced no menu and copy was
+    // unreachable. The delegate now forwards Gecko's Selection
+    // (selected text + the actions Gecko says are available) here;
+    // the menu is this AlertDialog, same shape as the long-press
+    // context menu above. Every exit path finishes the selection on
+    // the Gecko side (hide) except "select all", which Gecko answers
+    // with a fresh show request carrying the expanded selection.
+    // Copy goes through the shared copyTextToClipboard helper with
+    // the Selection's own text; the incognito clipboard-hint
+    // suppression (v0.27.0) is about READING the clipboard for the
+    // address-bar hint and is untouched. A password field's text is
+    // never previewed, shared or searched.
+    val selMenu = geckoSelectionMenu
+    if (selMenu != null) {
+        val menu = selMenu.menu
+        val selText = menu.text
+        fun closeSelectionMenu() {
+            geckoSelectionMenu = null
+            menu.hide()
+        }
+        AlertDialog(
+            onDismissRequest = { closeSelectionMenu() },
+            title = { Text("已选文字") },
+            text = {
+                LazyColumn {
+                    if (menu.isPassword) {
+                        item {
+                            Text(
+                                "这是密码框里的内容，不显示原文，也不能分享或搜索。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme
+                                    .onSurfaceVariant,
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+                        }
+                    } else if (selText.isNotBlank()) {
+                        item {
+                            Text(
+                                selText,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+                        }
+                    }
+                    if (menu.isAvailable(
+                            GeckoSession.SelectionActionDelegate.ACTION_COPY
+                        )
+                    ) {
+                        item {
+                            ListItem(
+                                headlineContent = { Text("复制") },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        val ok = copyTextToClipboard(
+                                            context, "selection", selText
+                                        )
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            if (ok) "已复制"
+                                            else "复制失败，请重试",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                        closeSelectionMenu()
+                                    }
+                            )
+                        }
+                    }
+                    if (menu.isAvailable(
+                            GeckoSession.SelectionActionDelegate.ACTION_CUT
+                        )
+                    ) {
+                        item {
+                            ListItem(
+                                headlineContent = { Text("剪切") },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        menu.execute(
+                                            GeckoSession.SelectionActionDelegate
+                                                .ACTION_CUT
+                                        )
+                                        closeSelectionMenu()
+                                    }
+                            )
+                        }
+                    }
+                    if (menu.isAvailable(
+                            GeckoSession.SelectionActionDelegate.ACTION_DELETE
+                        )
+                    ) {
+                        item {
+                            ListItem(
+                                headlineContent = { Text("删除") },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        menu.execute(
+                                            GeckoSession.SelectionActionDelegate
+                                                .ACTION_DELETE
+                                        )
+                                        closeSelectionMenu()
+                                    }
+                            )
+                        }
+                    }
+                    if (menu.isAvailable(
+                            GeckoSession.SelectionActionDelegate
+                                .ACTION_SELECT_ALL
+                        )
+                    ) {
+                        item {
+                            ListItem(
+                                headlineContent = { Text("全选") },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        // No close: Gecko answers with a
+                                        // fresh show request for the
+                                        // expanded selection, which
+                                        // replaces this menu's state.
+                                        menu.execute(
+                                            GeckoSession.SelectionActionDelegate
+                                                .ACTION_SELECT_ALL
+                                        )
+                                    }
+                            )
+                        }
+                    }
+                    if (!menu.isPassword && selText.isNotBlank()) {
+                        item {
+                            ListItem(
+                                headlineContent = { Text("分享选中文字") },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        closeSelectionMenu()
+                                        try {
+                                            val intent =
+                                                android.content.Intent(
+                                                    android.content.Intent
+                                                        .ACTION_SEND
+                                                )
+                                                    .setType("text/plain")
+                                                    .putExtra(
+                                                        android.content.Intent
+                                                            .EXTRA_TEXT,
+                                                        selText
+                                                    )
+                                            context.startActivity(
+                                                android.content.Intent
+                                                    .createChooser(
+                                                        intent, "分享选中文字"
+                                                    )
+                                            )
+                                        } catch (t: Throwable) {
+                                            android.widget.Toast.makeText(
+                                                context,
+                                                "没有能分享文字的应用",
+                                                android.widget.Toast
+                                                    .LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    }
+                            )
+                        }
+                        item {
+                            ListItem(
+                                headlineContent = { Text("网页搜索选中文字") },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        // Same tab, always: an incognito
+                                        // selection is searched inside
+                                        // its incognito tab, never in a
+                                        // new normal tab.
+                                        val target = tabs.firstOrNull {
+                                            it.id == selMenu.tabId
+                                        }
+                                        closeSelectionMenu()
+                                        if (target != null) {
+                                            target.load(
+                                                resolveInput(
+                                                    selText,
+                                                    store.searchEngine,
+                                                    store.customSearchTemplate
+                                                )
+                                            )
+                                            screen = Screen.BROWSER
+                                        }
+                                    }
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { closeSelectionMenu() }) {
                     Text("取消")
                 }
             }
