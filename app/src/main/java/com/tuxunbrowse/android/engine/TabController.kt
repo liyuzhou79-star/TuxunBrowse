@@ -34,6 +34,10 @@ import androidx.webkit.WebViewFeature
 import com.tuxunbrowse.android.data.Engine
 import com.tuxunbrowse.android.data.GeckoDownloadRecord
 import com.tuxunbrowse.android.data.HOME_URL
+import com.tuxunbrowse.android.data.ReaderBackground
+import com.tuxunbrowse.android.data.ReaderFontSize
+import com.tuxunbrowse.android.data.ReaderPalette
+import com.tuxunbrowse.android.data.readerPaletteFor
 import com.tuxunbrowse.android.data.Store
 import com.tuxunbrowse.android.data.hostOf
 import org.mozilla.geckoview.AllowOrDeny
@@ -532,6 +536,15 @@ class BrowserTab(
     // changes are pushed to created engines via
     // applyDisableJavaScript.
     private val disableJavaScriptProvider: () -> Boolean = { false },
+    // Reader-mode typesetting (v0.58.0), read live from the Store by
+    // the app at reader-entry time: the font-size step, the
+    // background choice, and the app's resolved darkness (theme mode
+    // resolved, not the raw system value) for the FOLLOW background.
+    private val readerFontSizeProvider: () -> ReaderFontSize =
+        { ReaderFontSize.STANDARD },
+    private val readerBackgroundProvider: () -> ReaderBackground =
+        { ReaderBackground.FOLLOW },
+    private val appDarkProvider: () -> Boolean = { false },
     private val onFullscreenShow: (android.view.View) -> Unit = {},
     private val onFullscreenHide: () -> Unit = {},
     private val onGeckoFullscreen: (Boolean) -> Unit = {},
@@ -649,15 +662,72 @@ class BrowserTab(
 
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
 
+    /**
+     * Enter reader mode (WebView only): inject the extraction script
+     * with the CURRENT reader typesetting settings (v0.58.0) baked
+     * into its stylesheet — font size step and background/text/link
+     * colours resolved from the Store at this moment. The FOLLOW
+     * background resolves against the app's resolved darkness right
+     * now; it does not track later theme changes while reading.
+     *
+     * Algorithmic darkening is switched off for this tab first: the
+     * reader stylesheet already paints explicit colours, and letting
+     * the platform darken them on top would double-darken the page
+     * (a light reader page forced dark, a dark one darkened twice).
+     * It is restored from the provider on exit / next page finish.
+     */
     fun enterReaderMode() {
         val view = webView ?: return
-        view.evaluateJavascript(READER_JS, null)
+        setAlgorithmicDarkening(false)
+        view.evaluateJavascript(
+            buildReaderJs(
+                readerFontSizeProvider(),
+                readerPaletteFor(readerBackgroundProvider(), appDarkProvider())
+            ),
+            null
+        )
         readerActive = true
+    }
+
+    /**
+     * Re-apply the current reader typesetting to a tab that is
+     * already in reader mode (v0.58.0): the settings page calls this
+     * on every reader-setting change, so changing font size or
+     * background while reading takes effect at once. This is safe
+     * because it does NOT re-run the extraction — it only rewrites
+     * the text of the style element the extraction injected (looked
+     * up by its fixed id); the extracted document is untouched.
+     * No-op for tabs not in reader mode.
+     */
+    fun applyReaderStyle() {
+        if (!readerActive) return
+        val view = webView ?: return
+        view.evaluateJavascript(
+            buildReaderStyleJs(
+                readerFontSizeProvider(),
+                readerPaletteFor(readerBackgroundProvider(), appDarkProvider())
+            ),
+            null
+        )
     }
 
     fun exitReaderMode() {
         readerActive = false
+        // Restore the web-dark setting before the reload repaints the
+        // original page (enterReaderMode turned darkening off).
+        setAlgorithmicDarkening(webDarkProvider())
         reload()
+    }
+
+    /** Algorithmic darkening is an API 33+ WebSettings switch. */
+    private fun setAlgorithmicDarkening(enabled: Boolean) {
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            try {
+                webView?.settings?.setAlgorithmicDarkeningAllowed(enabled)
+            } catch (t: Throwable) {
+                // Best-effort only; reader mode itself must still work.
+            }
+        }
     }
 
     fun exitFullscreen() {
@@ -995,9 +1065,12 @@ class BrowserTab(
     }
 
     fun applyWebDark(enabled: Boolean) {
-        if (android.os.Build.VERSION.SDK_INT >= 33) {
-            webView?.settings?.setAlgorithmicDarkeningAllowed(enabled)
-        }
+        // While this tab is in reader mode its page colours come from
+        // the reader stylesheet, and darkening stays off (see
+        // enterReaderMode); the new value takes effect when reader
+        // mode exits and restores it from the provider.
+        if (readerActive) return
+        setAlgorithmicDarkening(enabled)
     }
 
     /**
@@ -1612,6 +1685,13 @@ class BrowserTab(
             override fun onPageFinished(wv: WebView, finishedUrl: String?) {
                 super.onPageFinished(wv, finishedUrl)
                 val u = finishedUrl ?: return
+                if (readerActive) {
+                    // A real navigation out of (or the reload ending)
+                    // reader mode: hand darkening back to the setting.
+                    // Entering reader mode never triggers this — it
+                    // injects into the already-loaded page.
+                    setAlgorithmicDarkening(webDarkProvider())
+                }
                 readerActive = false
                 url = u
                 title = wv.title ?: ""
@@ -3178,7 +3258,35 @@ private val SNIFF_JS = """
  * text, keep its HTML, strip scripts/nav/forms, and restyle the page
  * as a clean single column. Reloading the page exits reader mode.
  */
-private const val READER_JS = """
+/**
+ * Reader-mode extraction + typesetting (WebView only). The
+ * extraction half is unchanged since v0.6.0: pick the element with
+ * the most innerText, keep its HTML under the page title, strip
+ * scripts/styles/iframes/forms/nav/header/footer/aside, and reflow
+ * single-column. The typesetting half is parameterized since
+ * v0.58.0: [font] gives the body/heading sizes, [palette] the
+ * background/text/link colours, both resolved from the user's
+ * reader settings at entry time (see ReaderFontSize /
+ * ReaderBackground in the data layer). Line height (1.75), column
+ * width (720px) and padding (16px) stay fixed — never settings.
+ *
+ * The injected style element carries the fixed id
+ * "tuxunbrowse-reader-style" so [buildReaderStyleJs] can find and
+ * rewrite it later WITHOUT re-running this extraction (re-running
+ * the extraction on the already-extracted document would extract
+ * the extraction). The h1 keeps an inline size so it tracks the
+ * font step as well.
+ */
+private fun readerCss(font: ReaderFontSize, palette: ReaderPalette): String =
+    "html,body{background:" + palette.background + ";color:" + palette.text + "}" +
+        "body{font-family:sans-serif;line-height:1.75;padding:16px;" +
+        "max-width:720px;margin:0 auto;font-size:" + font.bodyPx + "px}" +
+        "a{color:" + palette.link + "}" +
+        "img,video{max-width:100%;height:auto}" +
+        "pre,code{white-space:pre-wrap;word-break:break-word}"
+
+private fun buildReaderJs(font: ReaderFontSize, palette: ReaderPalette): String =
+    """
 (function() {
   var candidates = document.querySelectorAll('article, main, section, div');
   var best = null, bestLen = 0;
@@ -3189,17 +3297,33 @@ private const val READER_JS = """
   var pageTitle = document.title || '';
   var content = best ? best.innerHTML : document.body.innerHTML;
   document.body.innerHTML =
-    '<h1 style="font-size:22px;line-height:1.4">' + pageTitle + '</h1>' + content;
+    '<h1 style="font-size:""" + font.headingPx + """px;line-height:1.4">' + pageTitle + '</h1>' + content;
   document.body.querySelectorAll('script,style,iframe,form,nav,header,footer,aside')
     .forEach(function(e) { e.remove(); });
   var st = document.createElement('style');
-  st.textContent =
-    'body{font-family:sans-serif;line-height:1.75;padding:16px;' +
-    'max-width:720px;margin:0 auto;font-size:17px}' +
-    'img,video{max-width:100%;height:auto}' +
-    'pre,code{white-space:pre-wrap;word-break:break-word}';
+  st.id = 'tuxunbrowse-reader-style';
+  st.textContent = '""" + readerCss(font, palette) + """';
   document.head.appendChild(st);
   window.scrollTo(0, 0);
+  return 'ok';
+})()
+"""
+
+/**
+ * Style-only follow-up for a page already in reader mode (v0.58.0):
+ * rewrite the text of the style element [buildReaderJs] injected,
+ * and re-size the title it inlined. If the element is somehow gone
+ * (the page changed under us), this is a silent no-op — it never
+ * re-extracts.
+ */
+private fun buildReaderStyleJs(font: ReaderFontSize, palette: ReaderPalette): String =
+    """
+(function() {
+  var st = document.getElementById('tuxunbrowse-reader-style');
+  if (!st) return 'skip';
+  st.textContent = '""" + readerCss(font, palette) + """';
+  var h1 = document.querySelector('h1');
+  if (h1) h1.style.fontSize = '""" + font.headingPx + """px';
   return 'ok';
 })()
 """

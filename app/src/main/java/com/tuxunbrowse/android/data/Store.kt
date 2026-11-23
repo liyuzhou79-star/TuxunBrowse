@@ -303,6 +303,89 @@ enum class DownloadMode(val id: String, val label: String) {
     }
 }
 
+/**
+ * Reader-mode body text size (v0.58.0). Deliberately a separate
+ * setting from the web text zoom: text zoom scales every web page in
+ * both engines, this only sizes the re-typeset reader page (WebView
+ * tabs only). The four steps mirror the text-zoom steps' spirit
+ * (small / standard / large / extra large) but are stored as CSS px
+ * for the reader stylesheet, under their own key.
+ */
+enum class ReaderFontSize(val id: String, val label: String, val bodyPx: Int, val headingPx: Int) {
+    SMALL("small", "小", 15, 20),
+    STANDARD("standard", "标准", 17, 22),
+    LARGE("large", "大", 19, 24),
+    EXTRA_LARGE("extra_large", "特大", 21, 26);
+
+    companion object {
+        fun fromId(id: String?): ReaderFontSize =
+            entries.firstOrNull { it.id == id } ?: STANDARD
+    }
+}
+
+/**
+ * Reader-mode page background (v0.58.0). FOLLOW resolves against the
+ * app's own theme at the moment reader mode is entered (the theme
+ * mode after the three-way setting is resolved, not the raw system
+ * value). BEIGE is a warm paper tone for long reading sessions:
+ * Material 3 has no beige role, so its value is a warm paper colour
+ * at the same lightness as the light scheme's surface, recorded here
+ * rather than tuned ad hoc in the injected CSS.
+ */
+enum class ReaderBackground(val id: String, val label: String) {
+    FOLLOW("follow", "跟随应用"),
+    LIGHT("light", "浅色"),
+    BEIGE("beige", "米色护眼"),
+    DARK("dark", "深色");
+
+    companion object {
+        fun fromId(id: String?): ReaderBackground =
+            entries.firstOrNull { it.id == id } ?: FOLLOW
+    }
+}
+
+/** Concrete colours the reader stylesheet paints with. */
+data class ReaderPalette(val background: String, val text: String, val link: String)
+
+/**
+ * Resolve a [ReaderBackground] choice to concrete colours. LIGHT and
+ * DARK use the app theme's own Material 3 surface / onSurface /
+ * primary values (see ui/Theme.kt: light surface #F7F8FA on #1A1C1E
+ * with primary #0B57D0; dark surface #111417 on #E3E7EC with primary
+ * #A8C7FA), so the reader page matches the app around it. FOLLOW
+ * picks the light or dark pair by [appDark] — the app's resolved
+ * darkness at reader-entry time.
+ */
+fun readerPaletteFor(background: ReaderBackground, appDark: Boolean): ReaderPalette =
+    when (background) {
+        ReaderBackground.LIGHT ->
+            ReaderPalette("#F7F8FA", "#1A1C1E", "#0B57D0")
+        ReaderBackground.DARK ->
+            ReaderPalette("#111417", "#E3E7EC", "#A8C7FA")
+        ReaderBackground.BEIGE ->
+            ReaderPalette("#F4ECD8", "#2E2A1F", "#0B57D0")
+        ReaderBackground.FOLLOW ->
+            if (appDark) {
+                ReaderPalette("#111417", "#E3E7EC", "#A8C7FA")
+            } else {
+                ReaderPalette("#F7F8FA", "#1A1C1E", "#0B57D0")
+            }
+    }
+
+/**
+ * The app's resolved darkness for a [ThemeMode]: LIGHT is never
+ * dark, DARK is always dark, SYSTEM reads the device configuration
+ * (the same uiMode night mask isSystemInDarkTheme resolves from).
+ */
+fun isAppDarkTheme(context: Context, mode: ThemeMode): Boolean = when (mode) {
+    ThemeMode.LIGHT -> false
+    ThemeMode.DARK -> true
+    ThemeMode.SYSTEM ->
+        (context.resources.configuration.uiMode and
+            android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
+}
+
 /** App UI theme: follow the system, always light, or always dark. */
 enum class ThemeMode(val id: String, val label: String) {
     SYSTEM("system", "跟随系统"),
@@ -522,6 +605,21 @@ class Store(context: Context) {
     var textZoomPercent: Int
         get() = safeInt(KEY_TEXT_ZOOM, 100)
         set(value) = prefs.edit().putInt(KEY_TEXT_ZOOM, value).apply()
+
+    /**
+     * Reader-mode body text size (v0.58.0). Own key on purpose: the
+     * web text zoom above scales all pages in both engines, this one
+     * only sizes the reader page and must not move when text zoom
+     * changes (or vice versa).
+     */
+    var readerFontSize: ReaderFontSize
+        get() = ReaderFontSize.fromId(safeString(KEY_READER_FONT_SIZE, null))
+        set(value) = prefs.edit().putString(KEY_READER_FONT_SIZE, value.id).apply()
+
+    /** Reader-mode background choice (v0.58.0); see [ReaderBackground]. */
+    var readerBackground: ReaderBackground
+        get() = ReaderBackground.fromId(safeString(KEY_READER_BACKGROUND, null))
+        set(value) = prefs.edit().putString(KEY_READER_BACKGROUND, value.id).apply()
 
     /** Ask web pages to render dark (WebView algorithmic darkening). */
     var webDarkMode: Boolean
@@ -849,6 +947,8 @@ class Store(context: Context) {
         private const val KEY_GECKO_DOWNLOADS = "gecko_downloads"
         private const val KEY_TABS = "saved_tabs"
         private const val KEY_TEXT_ZOOM = "text_zoom"
+        private const val KEY_READER_FONT_SIZE = "reader_font_size"
+        private const val KEY_READER_BACKGROUND = "reader_background"
         private const val KEY_WEB_DARK = "web_dark"
         private const val KEY_STARTUP_RESTORE = "startup_restore"
         private const val KEY_DOWNLOAD_MODE = "download_mode"
@@ -915,7 +1015,11 @@ data class BackupSettings(
     val allowThirdPartyCookies: Boolean? = null,
     val blockImages: Boolean? = null,
     val disableJavaScript: Boolean? = null,
-    val searchSuggestionsEnabled: Boolean? = null
+    val searchSuggestionsEnabled: Boolean? = null,
+    // Added in v0.58.0: reader-mode typesetting. Same optional-on-read
+    // treatment as the v0.51.0 additions.
+    val readerFontSize: ReaderFontSize? = null,
+    val readerBackground: ReaderBackground? = null
 ) {
     /** Plain-language list of what applying these settings would overwrite. */
     fun overwriteSummary(): List<String> {
@@ -935,6 +1039,8 @@ data class BackupSettings(
         if (blockImages != null) out.add("无图模式")
         if (disableJavaScript != null) out.add("禁用 JavaScript")
         if (searchSuggestionsEnabled != null) out.add("联网搜索建议开关")
+        if (readerFontSize != null) out.add("阅读字号")
+        if (readerBackground != null) out.add("阅读背景")
         return out
     }
 }
@@ -1021,6 +1127,10 @@ fun backupToJson(
     settings.disableJavaScript?.let { settingsObj.put("disableJavaScript", it) }
     settings.searchSuggestionsEnabled?.let {
         settingsObj.put("searchSuggestionsEnabled", it)
+    }
+    settings.readerFontSize?.let { settingsObj.put("readerFontSize", it.id) }
+    settings.readerBackground?.let {
+        settingsObj.put("readerBackground", it.id)
     }
     val compatArr = JSONArray()
     compatSites.forEach { compatArr.put(it) }
@@ -1162,7 +1272,11 @@ fun parseBackup(raw: String): BackupData? {
                 s.optBoolean("searchSuggestionsEnabled")
             } else {
                 null
-            }
+            },
+            readerFontSize = s.optString("readerFontSize")
+                .takeIf { it.isNotBlank() }?.let { ReaderFontSize.fromId(it) },
+            readerBackground = s.optString("readerBackground")
+                .takeIf { it.isNotBlank() }?.let { ReaderBackground.fromId(it) }
         )
     }
     // Compat sites (v0.51.0): plain host names only — anything with

@@ -163,6 +163,8 @@ import com.tuxunbrowse.android.data.HOME_URL
 import com.tuxunbrowse.android.data.HistoryItem
 import com.tuxunbrowse.android.data.HistoryRetention
 import com.tuxunbrowse.android.data.TUXUNDOWN_PACKAGE
+import com.tuxunbrowse.android.data.ReaderBackground
+import com.tuxunbrowse.android.data.ReaderFontSize
 import com.tuxunbrowse.android.data.ReadingItem
 import com.tuxunbrowse.android.data.SpeedDial
 import com.tuxunbrowse.android.data.compareVersionNames
@@ -185,6 +187,7 @@ import com.tuxunbrowse.android.data.bookmarksToJson
 import com.tuxunbrowse.android.data.MAX_IMPORT_FILE_CHARS
 import com.tuxunbrowse.android.data.isValidCustomSearchTemplate
 import com.tuxunbrowse.android.data.hostOf
+import com.tuxunbrowse.android.data.isAppDarkTheme
 import com.tuxunbrowse.android.data.hostMatchesSite
 import com.tuxunbrowse.android.data.isCompatHost
 import com.tuxunbrowse.android.data.isDesktopHost
@@ -842,6 +845,9 @@ fun BrowserApp(
             thirdPartyCookiesProvider = { store.allowThirdPartyCookies },
             blockImagesProvider = { store.blockImages },
             disableJavaScriptProvider = { store.disableJavaScript },
+            readerFontSizeProvider = { store.readerFontSize },
+            readerBackgroundProvider = { store.readerBackground },
+            appDarkProvider = { isAppDarkTheme(context, store.themeMode) },
             onFullscreenShow = { view -> fullscreenView = view },
             onFullscreenHide = { fullscreenView = null },
             onGeckoFullscreen = { geckoFullscreen = it },
@@ -1484,7 +1490,9 @@ fun BrowserApp(
                 allowThirdPartyCookies = store.allowThirdPartyCookies,
                 blockImages = store.blockImages,
                 disableJavaScript = store.disableJavaScript,
-                searchSuggestionsEnabled = store.searchSuggestionsEnabled
+                searchSuggestionsEnabled = store.searchSuggestionsEnabled,
+                readerFontSize = store.readerFontSize,
+                readerBackground = store.readerBackground
             ),
             compatSites = store.loadCompatSites().sorted(),
             desktopSites = store.loadDesktopSites().sorted()
@@ -1617,6 +1625,15 @@ fun BrowserApp(
             tabs.forEach { it.applyDisableJavaScript(disabled) }
         }
         s.searchSuggestionsEnabled?.let { store.searchSuggestionsEnabled = it }
+        // Reader typesetting (v0.58.0): plain Store writes, plus a
+        // style re-apply so a tab currently in reader mode picks the
+        // restored values up at once (same live path as the settings
+        // page).
+        s.readerFontSize?.let { store.readerFontSize = it }
+        s.readerBackground?.let { store.readerBackground = it }
+        if (s.readerFontSize != null || s.readerBackground != null) {
+            tabs.forEach { it.applyReaderStyle() }
+        }
         // Compat sites merge like the lists above (union): restoring
         // a backup must never delete a site the user marked here.
         var addedCompat = 0
@@ -2714,6 +2731,9 @@ fun BrowserApp(
             },
             onDisableJavaScriptChange = { disabled ->
                 tabs.forEach { it.applyDisableJavaScript(disabled) }
+            },
+            onReaderStyleChange = {
+                tabs.forEach { it.applyReaderStyle() }
             }
         )
 
@@ -8661,7 +8681,8 @@ private fun SettingsScreen(
     onWebDarkChange: (Boolean) -> Unit,
     onThirdPartyCookiesChange: (Boolean) -> Unit = {},
     onBlockImagesChange: (Boolean) -> Unit = {},
-    onDisableJavaScriptChange: (Boolean) -> Unit = {}
+    onDisableJavaScriptChange: (Boolean) -> Unit = {},
+    onReaderStyleChange: () -> Unit = {}
 ) {
     // Every state below mirrors a stored setting. In-page edits
     // write the local state and the store together, so within this
@@ -8699,6 +8720,8 @@ private fun SettingsScreen(
     var downloadMode by remember(refreshTick) { mutableStateOf(store.downloadMode) }
     var historyRetention by remember(refreshTick) { mutableStateOf(store.historyRetention) }
     var themeMode by remember(refreshTick) { mutableStateOf(store.themeMode) }
+    var readerFont by remember(refreshTick) { mutableStateOf(store.readerFontSize) }
+    var readerBg by remember(refreshTick) { mutableStateOf(store.readerBackground) }
     // Settings is a two-level menu now: a home list of six
     // categories, each opening its own sub-page. Back from a
     // sub-page returns here; back from home leaves settings.
@@ -9316,6 +9339,86 @@ private fun SettingsScreen(
                             }
                         )
                     }
+                )
+            }
+            item {
+                Text("阅读模式", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "阅读模式会把网页正文重新排版成一栏慢慢看的样子，下面两项管它的字号和背景。" +
+                        "阅读模式只支持系统 WebView 标签，火狐标签暂时用不了。" +
+                        "这两项和上面的「网页文字大小」是两回事：文字大小管所有网页，这两项只管阅读模式。",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            items(ReaderFontSize.entries) { font ->
+                ElevatedCard(
+                    onClick = {
+                        readerFont = font
+                        store.readerFontSize = font
+                        onReaderStyleChange()
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    ListItem(
+                        headlineContent = {
+                            Text("阅读字号 · ${font.label}（${font.bodyPx}px）")
+                        },
+                        trailingContent = {
+                            RadioButton(
+                                selected = readerFont == font,
+                                onClick = {
+                                    readerFont = font
+                                    store.readerFontSize = font
+                                    onReaderStyleChange()
+                                }
+                            )
+                        }
+                    )
+                }
+            }
+            items(ReaderBackground.entries) { bg ->
+                ElevatedCard(
+                    onClick = {
+                        readerBg = bg
+                        store.readerBackground = bg
+                        onReaderStyleChange()
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    ListItem(
+                        headlineContent = { Text("阅读背景 · ${bg.label}") },
+                        supportingContent = {
+                            Text(
+                                when (bg) {
+                                    ReaderBackground.FOLLOW ->
+                                        "按应用界面当前的深浅来：界面是深色就用深色背景，浅色就用浅色背景，进阅读模式那一刻定下来"
+                                    ReaderBackground.LIGHT ->
+                                        "一直用浅色背景，白天看更清楚"
+                                    ReaderBackground.BEIGE ->
+                                        "暖米色背景，长时间看长文章时眼睛没那么累"
+                                    ReaderBackground.DARK ->
+                                        "一直用深色背景，晚上看不刺眼"
+                                }
+                            )
+                        },
+                        trailingContent = {
+                            RadioButton(
+                                selected = readerBg == bg,
+                                onClick = {
+                                    readerBg = bg
+                                    store.readerBackground = bg
+                                    onReaderStyleChange()
+                                }
+                            )
+                        }
+                    )
+                }
+            }
+            item {
+                Text(
+                    "正在阅读模式里改这两项，字号和背景会马上跟着换，不用退出重进。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             }
