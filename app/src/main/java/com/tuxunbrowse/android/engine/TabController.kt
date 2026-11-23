@@ -8,6 +8,8 @@ import android.os.Environment
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
+import android.webkit.RenderProcessGoneDetail
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -136,7 +138,12 @@ class BrowserTab(
     private val webDarkProvider: () -> Boolean = { false },
     private val onFullscreenShow: (android.view.View) -> Unit = {},
     private val onFullscreenHide: () -> Unit = {},
-    private val onGeckoFullscreen: (Boolean) -> Unit = {}
+    private val onGeckoFullscreen: (Boolean) -> Unit = {},
+    private val onRendererGone: (String) -> Unit = {},
+    private val onFileChooserRequest: (
+        WebChromeClient.FileChooserParams,
+        ValueCallback<Array<Uri>>
+    ) -> Unit = { _, callback -> callback.onReceiveValue(null) }
 ) {
     val id: Int = nextTabId++
     var url by mutableStateOf(startUrl)
@@ -326,6 +333,20 @@ class BrowserTab(
                 }
             }
 
+            override fun onRenderProcessGone(
+                wv: WebView,
+                detail: RenderProcessGoneDetail
+            ): Boolean {
+                // The system killed this tab's rendering process (usually
+                // under memory pressure). Returning true keeps the app
+                // alive; the app side rebuilds this tab in place with a
+                // fresh WebView and reloads the page it was on. This only
+                // ever fires for WebView tabs — Gecko has no such callback.
+                // Crash or not makes no difference: same recovery path.
+                onRendererGone(url)
+                return true
+            }
+
             override fun onPageFinished(wv: WebView, finishedUrl: String?) {
                 super.onPageFinished(wv, finishedUrl)
                 val u = finishedUrl ?: return
@@ -344,6 +365,19 @@ class BrowserTab(
 
             override fun onReceivedTitle(wv: WebView, receivedTitle: String?) {
                 if (!receivedTitle.isNullOrBlank()) title = receivedTitle
+            }
+
+            override fun onShowFileChooser(
+                wv: WebView,
+                filePathCallback: ValueCallback<Array<Uri>>,
+                fileChooserParams: FileChooserParams
+            ): Boolean {
+                // A web page's file button: hand the request to the app,
+                // which opens the system file picker. The app must always
+                // answer the callback — with the picked files, or null
+                // when the user cancels — or the page waits forever.
+                onFileChooserRequest(fileChooserParams, filePathCallback)
+                return true
             }
 
             override fun onShowCustomView(

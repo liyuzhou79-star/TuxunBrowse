@@ -284,3 +284,18 @@ fun resolveInput(input: String, searchEngine: SearchEngine = SearchEngine.BAIDU)
         searchEngine.searchUrl(text)
     }
 }
+
+/**
+ * True when [resolveInput] would treat the text as a URL to open rather
+ * than words to search for. Mirrors resolveInput's own checks exactly, so
+ * the address bar can decide whether a "search this" row is needed.
+ */
+fun isUrlLikeInput(input: String): Boolean {
+    val text = input.trim()
+    if (text.isEmpty()) return false
+    if (text.startsWith("http://") || text.startsWith("https://") ||
+        text.startsWith("about:") || text.startsWith("file:")
+    ) return true
+    return !text.contains(" ") &&
+        (text.contains(".") || text.startsWith("localhost"))
+}

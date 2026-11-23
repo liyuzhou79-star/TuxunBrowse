@@ -107,6 +107,7 @@ import com.tuxunbrowse.android.data.bookmarksFromJson
 import com.tuxunbrowse.android.data.bookmarksToJson
 import com.tuxunbrowse.android.data.hostOf
 import com.tuxunbrowse.android.data.isCompatHost
+import com.tuxunbrowse.android.data.isUrlLikeInput
 import com.tuxunbrowse.android.data.matchSuggestions
 import com.tuxunbrowse.android.data.resolveInput
 import com.tuxunbrowse.android.engine.BrowserTab
@@ -165,13 +166,30 @@ fun BrowserApp(
     // wired up below once the tab-replacement helper exists.
     var compatRedirectHandler: (String) -> Unit = {}
 
+    // WebView tabs report a killed rendering process through this handler;
+    // wired up below next to compatRedirectHandler. The dead tab and the
+    // URL it was showing are passed so the tab can be rebuilt in place.
+    var renderProcessGoneHandler: (BrowserTab, String) -> Unit = { _, _ -> }
+
+    // WebView pages ask for files through this handler; wired up below
+    // once the activity-result launcher exists. The default answers null
+    // (cancelled) so a page is never left waiting.
+    var fileChooserHandler: (
+        android.webkit.WebChromeClient.FileChooserParams,
+        android.webkit.ValueCallback<Array<android.net.Uri>>
+    ) -> Unit = { _, callback -> callback.onReceiveValue(null) }
+
     fun makeTab(
         engine: Engine,
         incognito: Boolean,
         url: String,
         desktopMode: Boolean = false
-    ): BrowserTab =
-        BrowserTab(
+    ): BrowserTab {
+        // The render-process-gone callback needs to know which tab died,
+        // but the tab does not exist yet while it is being constructed —
+        // so the lambda reads this holder, filled in right after.
+        var created: BrowserTab? = null
+        val tab = BrowserTab(
             engine = engine,
             incognito = incognito,
             startUrl = url,
@@ -188,8 +206,17 @@ fun BrowserApp(
             webDarkProvider = { store.webDarkMode },
             onFullscreenShow = { view -> fullscreenView = view },
             onFullscreenHide = { fullscreenView = null },
-            onGeckoFullscreen = { geckoFullscreen = it }
+            onGeckoFullscreen = { geckoFullscreen = it },
+            onRendererGone = { deadUrl ->
+                created?.let { renderProcessGoneHandler(it, deadUrl) }
+            },
+            onFileChooserRequest = { params, callback ->
+                fileChooserHandler(params, callback)
+            }
         )
+        created = tab
+        return tab
+    }
 
     fun effectiveEngine(engine: Engine, url: String): Engine =
         if (engine == Engine.GECKO && url.startsWith("http") &&
@@ -208,10 +235,15 @@ fun BrowserApp(
         return tab
     }
 
-    fun recreateTab(tab: BrowserTab, newEngine: Engine, desktopMode: Boolean): BrowserTab {
+    fun recreateTab(
+        tab: BrowserTab,
+        newEngine: Engine,
+        desktopMode: Boolean,
+        force: Boolean = false
+    ): BrowserTab {
         val idx = tabs.indexOf(tab)
         if (idx < 0) return tab
-        if (tab.engine == newEngine && tab.desktopMode == desktopMode) return tab
+        if (!force && tab.engine == newEngine && tab.desktopMode == desktopMode) return tab
         val replacement = makeTab(newEngine, tab.incognito, tab.url, desktopMode)
         tabs[idx] = replacement
         tab.destroy()
@@ -227,6 +259,35 @@ fun BrowserApp(
         if (tab != null && tab.engine == Engine.GECKO) {
             val replacement = replaceTabEngine(tab, Engine.WEBVIEW)
             if (replacement.url != target) replacement.load(target)
+        }
+    }
+
+    // A WebView tab's rendering process was killed by the system: rebuild
+    // the tab in place (same slot, same engine, same incognito flag) via
+    // the usual tab-recreation path and reload the page it was on. Works
+    // for incognito tabs too — only the URL is carried over, nothing is
+    // written to disk that was not already there.
+    renderProcessGoneHandler = { tab, deadUrl ->
+        if (tab.engine == Engine.WEBVIEW && tabs.contains(tab)) {
+            // Posted, not run inline: this fires from inside the dead
+            // WebView's own client callback, and rebuilding destroys that
+            // WebView — safer once the callback has returned.
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                if (!tabs.contains(tab)) return@post
+                val target = deadUrl.ifBlank { tab.url }
+                val replacement = recreateTab(
+                    tab, Engine.WEBVIEW, tab.desktopMode, force = true
+                )
+                if (target.isNotBlank() && target != HOME_URL &&
+                    replacement.url != target
+                ) {
+                    replacement.load(target)
+                }
+                android.widget.Toast.makeText(
+                    context, "页面进程被系统结束，已自动恢复",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
         }
     }
 
@@ -373,6 +434,35 @@ fun BrowserApp(
         }
     }
 
+    // Web page file uploads (WebView tabs): the page's file button lands
+    // here via fileChooserHandler; the system picker lets the user pick
+    // one or more files. The pending callback must always be answered —
+    // with the picked files, or null when the user cancels — otherwise
+    // the page's upload button stays dead.
+    var pendingFileCallback by remember {
+        mutableStateOf<android.webkit.ValueCallback<Array<android.net.Uri>>?>(null)
+    }
+    val fileChooserLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        pendingFileCallback?.onReceiveValue(
+            if (uris.isEmpty()) null else uris.toTypedArray()
+        )
+        pendingFileCallback = null
+    }
+    fileChooserHandler = { params, callback ->
+        // A new request supersedes one still waiting for an answer.
+        pendingFileCallback?.onReceiveValue(null)
+        pendingFileCallback = callback
+        val mime = params.acceptTypes?.firstOrNull { it.isNotBlank() } ?: "*/*"
+        try {
+            fileChooserLauncher.launch(arrayOf(mime))
+        } catch (t: Throwable) {
+            pendingFileCallback = null
+            callback.onReceiveValue(null)
+        }
+    }
+
     fun exportBookmarks() {
         if (bookmarks.isEmpty()) {
             android.widget.Toast.makeText(
@@ -486,6 +576,7 @@ fun BrowserApp(
                 },
                 bookmarks = bookmarks,
                 history = history,
+                searchEngine = store.searchEngine,
                 onOpenSuggestion = { url -> openUrl(url) },
                 onGoHome = { activeTab()?.load(HOME_URL) },
                 onSwitchEngine = { engine, rememberSite ->
@@ -1110,6 +1201,7 @@ private fun BrowserScreen(
     onNavigate: (String) -> Unit,
     bookmarks: List<Bookmark>,
     history: List<HistoryItem>,
+    searchEngine: SearchEngine,
     onOpenSuggestion: (String) -> Unit,
     onGoHome: () -> Unit,
     onSwitchEngine: (Engine, Boolean) -> Unit,
@@ -1498,7 +1590,14 @@ private fun BrowserScreen(
             } else {
                 emptyList()
             }
-            if (suggestions.isNotEmpty()) {
+            // Trailing "just search this" row: shown whenever the typed
+            // text is not already a URL (a URL would only duplicate the
+            // Go action), and shown even when there are no bookmark or
+            // history matches, so the list is never a dead end.
+            val trimmedAddress = addressText.trim()
+            val showSearchTail = addressFocused && trimmedAddress.isNotEmpty() &&
+                !isUrlLikeInput(trimmedAddress)
+            if (suggestions.isNotEmpty() || showSearchTail) {
                 ElevatedCard(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1531,6 +1630,27 @@ private fun BrowserScreen(
                                     .fillMaxWidth()
                                     .clickable { onOpenSuggestion(suggestion.url) }
                             )
+                        }
+                        if (showSearchTail) {
+                            item(key = "search-tail") {
+                                ListItem(
+                                    headlineContent = {
+                                        Text(
+                                            "用${searchEngine.label}搜索「$trimmedAddress」",
+                                            maxLines = 1
+                                        )
+                                    },
+                                    leadingContent = {
+                                        Icon(
+                                            Icons.Filled.Search,
+                                            contentDescription = "搜索"
+                                        )
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onNavigate(addressText) }
+                                )
+                            }
                         }
                     }
                 }
