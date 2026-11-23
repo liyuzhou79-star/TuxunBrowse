@@ -343,6 +343,14 @@ fun BrowserApp(
     LaunchedEffect(screen) {
         searchEngineState = store.searchEngine
     }
+    // Bumped whenever something outside the settings page rewrites
+    // the stored settings wholesale (today: a backup import). The
+    // settings page keys its store-mirroring states on this tick, so
+    // an import applied while the settings page is open re-reads the
+    // store instead of showing the pre-import values until the user
+    // leaves and re-enters (the v0.19.0 known limitation, fixed in
+    // v0.33.0).
+    var settingsRefreshTick by remember { mutableStateOf(0) }
     var startupDone by remember { mutableStateOf(false) }
     var fullscreenView by remember { mutableStateOf<android.view.View?>(null) }
     var geckoFullscreen by remember { mutableStateOf(false) }
@@ -1182,6 +1190,16 @@ fun BrowserApp(
             tabs.forEach { it.applyTextZoom(percent) }
             GeckoHolder.applyFontSizeFactor(percent / 100f)
         }
+        if (data.settings.overwriteSummary().isNotEmpty()) {
+            // The store was just rewritten behind the settings
+            // page's back: sync this level's search-engine mirror at
+            // the source (same two-way sync the settings/home
+            // pickers use) and bump the tick the settings page keys
+            // its own mirrors on, so every page shows the imported
+            // values at once instead of after a re-entry.
+            searchEngineState = store.searchEngine
+            settingsRefreshTick++
+        }
         return "书签 +$addedBookmarks 条、历史 +$addedHistory 条、" +
             "阅读列表 +$addedReading 条、快捷方式 +$addedDials 条"
     }
@@ -1944,6 +1962,7 @@ fun BrowserApp(
 
         Screen.SETTINGS -> SettingsScreen(
             store = store,
+            refreshTick = settingsRefreshTick,
             onOpenReleaseUrl = { url -> openUrl(url) },
             onBack = { screen = Screen.BROWSER },
             onClearHistory = {
@@ -6174,6 +6193,7 @@ private fun ClearDataScreen(
 @Composable
 private fun SettingsScreen(
     store: Store,
+    refreshTick: Int = 0,
     onOpenReleaseUrl: (String) -> Unit = {},
     onBack: () -> Unit,
     onClearHistory: () -> Unit,
@@ -6186,28 +6206,36 @@ private fun SettingsScreen(
     onTextZoomChange: (Int) -> Unit,
     onWebDarkChange: (Boolean) -> Unit
 ) {
-    var mainEngine by remember { mutableStateOf(store.mainEngine) }
-    var incognitoEngine by remember { mutableStateOf(store.incognitoEngine) }
-    var searchEngine by remember { mutableStateOf(store.searchEngine) }
+    // Every state below mirrors a stored setting. In-page edits
+    // write the local state and the store together, so within this
+    // page they cannot drift — except when the store is rewritten
+    // wholesale behind this page's back (a backup import is launched
+    // from this very page). Those mirrors are therefore keyed on
+    // refreshTick: BrowserApp bumps it after such a rewrite and the
+    // states re-read the store, instead of showing stale values
+    // until the page is re-entered (v0.33.0).
+    var mainEngine by remember(refreshTick) { mutableStateOf(store.mainEngine) }
+    var incognitoEngine by remember(refreshTick) { mutableStateOf(store.incognitoEngine) }
+    var searchEngine by remember(refreshTick) { mutableStateOf(store.searchEngine) }
     var showCustomSearchDialog by remember { mutableStateOf(false) }
-    var customSearchName by remember { mutableStateOf(store.customSearchName) }
-    var customSearchTemplate by remember { mutableStateOf(store.customSearchTemplate) }
+    var customSearchName by remember(refreshTick) { mutableStateOf(store.customSearchName) }
+    var customSearchTemplate by remember(refreshTick) { mutableStateOf(store.customSearchTemplate) }
     var customSearchError by remember { mutableStateOf<String?>(null) }
-    var adBlock by remember { mutableStateOf(store.adBlockEnabled) }
-    var adHideSlots by remember { mutableStateOf(store.adHideSlots) }
-    var totalBlocked by remember { mutableStateOf(store.totalBlocked) }
-    var textZoom by remember { mutableStateOf(store.textZoomPercent) }
-    var webDark by remember { mutableStateOf(store.webDarkMode) }
-    var startupRestore by remember { mutableStateOf(store.startupRestore) }
-    var downloadMode by remember { mutableStateOf(store.downloadMode) }
-    var historyRetention by remember { mutableStateOf(store.historyRetention) }
-    var themeMode by remember { mutableStateOf(store.themeMode) }
+    var adBlock by remember(refreshTick) { mutableStateOf(store.adBlockEnabled) }
+    var adHideSlots by remember(refreshTick) { mutableStateOf(store.adHideSlots) }
+    var totalBlocked by remember(refreshTick) { mutableStateOf(store.totalBlocked) }
+    var textZoom by remember(refreshTick) { mutableStateOf(store.textZoomPercent) }
+    var webDark by remember(refreshTick) { mutableStateOf(store.webDarkMode) }
+    var startupRestore by remember(refreshTick) { mutableStateOf(store.startupRestore) }
+    var downloadMode by remember(refreshTick) { mutableStateOf(store.downloadMode) }
+    var historyRetention by remember(refreshTick) { mutableStateOf(store.historyRetention) }
+    var themeMode by remember(refreshTick) { mutableStateOf(store.themeMode) }
     // Settings is a two-level menu now: a home list of six
     // categories, each opening its own sub-page. Back from a
     // sub-page returns here; back from home leaves settings.
     var settingsPage by remember { mutableStateOf("home") }
     BackHandler(enabled = settingsPage != "home") { settingsPage = "home" }
-    var compatList by remember { mutableStateOf(store.loadCompatSites().sorted()) }
+    var compatList by remember(refreshTick) { mutableStateOf(store.loadCompatSites().sorted()) }
     var showCleared by remember { mutableStateOf(false) }
     var defaultTick by remember { mutableStateOf(0) }
     val settingsContext = LocalContext.current
