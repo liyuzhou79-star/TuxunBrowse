@@ -109,8 +109,20 @@ fun BrowserApp() {
 
     fun closeTab(tab: BrowserTab) {
         val idx = tabs.indexOf(tab)
+        val wasIncognito = tab.incognito
         tab.destroy()
         tabs.remove(tab)
+        if (wasIncognito && tabs.none { it.incognito }) {
+            // The system WebView keeps one cookie jar for the whole app,
+            // so an incognito WebView tab cannot have cookies of its own.
+            // When the last incognito tab closes, wipe WebView cookies
+            // and web storage so the session leaves nothing behind.
+            // (This also signs normal WebView tabs out — Gecko tabs are
+            // unaffected, they use real private mode.)
+            android.webkit.CookieManager.getInstance().removeAllCookies(null)
+            android.webkit.CookieManager.getInstance().flush()
+            android.webkit.WebStorage.getInstance().deleteAllData()
+        }
         if (tabs.isEmpty()) {
             newTab(store.mainEngine, false)
         } else if (activeTabId == tab.id) {
@@ -223,7 +235,7 @@ private fun EnginePickerScreen(
             item {
                 EngineCard(
                     engine = Engine.GECKO,
-                    description = "火狐的内核，独立于系统，隐私保护更强，新功能跟得快。安装包会大一些（约多 55 MB）。",
+                    description = "火狐的内核，独立于系统，隐私保护更强，新功能跟得快。代价是安装包大很多（光内核就一百多 MB）。",
                     selected = selected == Engine.GECKO,
                     onSelect = { selected = Engine.GECKO }
                 )
@@ -497,7 +509,7 @@ private fun BrowserScreen(
             text = {
                 LazyColumn {
                     item {
-                        Text("无痕标签不会记录历史。选好的内核会单独记住，下次无痕时默认用它。")
+                        Text("无痕标签不会记录历史。选好的内核会单独记住，下次无痕时默认用它。火狐无痕是真隔离；WebView 无痕在最后一个无痕标签关掉时会清掉 WebView 的全部 Cookie，普通 WebView 标签也会跟着退出登录（系统 WebView 只有一个 Cookie 罐，分不开）。")
                     }
                     items(Engine.entries) { engine ->
                         ListItem(
