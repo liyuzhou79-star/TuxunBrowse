@@ -47,6 +47,12 @@ data class ReadingItem(
     val read: Boolean = false
 )
 
+/**
+ * One home-page speed dial: a user-defined shortcut, stored apart
+ * from bookmarks (its own list, its own JSON key).
+ */
+data class SpeedDial(val title: String, val url: String)
+
 /** One address-bar suggestion row, from a bookmark or a history entry. */
 data class Suggestion(val title: String, val url: String, val bookmarked: Boolean)
 
@@ -245,6 +251,14 @@ class Store(context: Context) {
             .put("read", it.read)
     }
 
+    fun loadSpeedDials(): MutableList<SpeedDial> = readList(KEY_SPEED_DIALS) {
+        SpeedDial(it.optString("title"), it.optString("url"))
+    }.toMutableList()
+
+    fun saveSpeedDials(list: List<SpeedDial>) = writeList(KEY_SPEED_DIALS, list) {
+        JSONObject().put("title", it.title).put("url", it.url)
+    }
+
     fun saveTabs(list: List<SavedTab>, activeIndex: Int) {
         val arr = JSONArray()
         list.forEach {
@@ -311,6 +325,7 @@ class Store(context: Context) {
         private const val KEY_STARTUP_RESTORE = "startup_restore"
         private const val KEY_DOWNLOAD_MODE = "download_mode"
         private const val KEY_HISTORY_RETENTION = "history_retention"
+        private const val KEY_SPEED_DIALS = "speed_dials"
     }
 }
 
@@ -453,3 +468,66 @@ fun isUrlLikeInput(input: String): Boolean {
     return !text.contains(" ") &&
         (text.contains(".") || text.startsWith("localhost"))
 }
+
+/**
+ * Split a version name (or a release tag like "v0.17.0") into its
+ * numeric segments. A leading "v"/"V" is dropped, anything after a
+ * "-" suffix is ignored, and a segment that is not a plain number
+ * counts as 0. Pure function — no Android dependencies.
+ */
+fun parseVersionNumbers(version: String): List<Int> {
+    val core = version.trim()
+        .removePrefix("v").removePrefix("V")
+        .substringBefore("-").trim()
+    if (core.isEmpty()) return emptyList()
+    return core.split(".").map { segment ->
+        segment.trim().takeWhile { it.isDigit() }.toIntOrNull() ?: 0
+    }
+}
+
+/**
+ * Compare two version names segment by segment, numerically (so
+ * 0.9.0 < 0.17.0 — a plain string compare would get that wrong).
+ * Missing trailing segments count as 0, so "1.2" == "1.2.0".
+ * Returns negative when [a] is older, 0 when equal, positive when
+ * [a] is newer. Pure function.
+ *
+ * Self-check cases (verified when this was written):
+ * compareVersionNames("0.9.0", "0.17.0") < 0,
+ * compareVersionNames("v0.18.0", "0.18.0") == 0,
+ * compareVersionNames("0.17.0", "0.9.0") > 0,
+ * compareVersionNames("1.2", "1.2.0") == 0,
+ * compareVersionNames("v1.0.1", "1.0.0") > 0.
+ */
+fun compareVersionNames(a: String, b: String): Int {
+    val pa = parseVersionNumbers(a)
+    val pb = parseVersionNumbers(b)
+    val n = maxOf(pa.size, pb.size)
+    for (i in 0 until n) {
+        val x = pa.getOrElse(i) { 0 }
+        val y = pb.getOrElse(i) { 0 }
+        if (x != y) return x.compareTo(y)
+    }
+    return 0
+}
+
+/** True when [tag] looks like a release tag: "v" + numeric segments. */
+fun isReleaseTag(tag: String): Boolean {
+    val t = tag.trim()
+    if (!t.startsWith("v") && !t.startsWith("V")) return false
+    val parts = parseVersionNumbers(t)
+    return parts.isNotEmpty() &&
+        t.removePrefix("v").removePrefix("V").substringBefore("-")
+            .split(".").all { seg -> seg.isNotEmpty() && seg.all { it.isDigit() } }
+}
+
+/**
+ * From (tag_name, html_url) pairs of a repo's releases, pick the one
+ * with the highest vX.Y.Z version. Non-release tags are ignored.
+ * Returns null when nothing qualifies. Pure function.
+ */
+fun pickLatestRelease(
+    releases: List<Pair<String, String>>
+): Pair<String, String>? =
+    releases.filter { isReleaseTag(it.first) }
+        .maxWithOrNull { x, y -> compareVersionNames(x.first, y.first) }

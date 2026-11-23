@@ -61,6 +61,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
@@ -109,6 +110,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.activity.compose.BackHandler
@@ -135,6 +137,9 @@ import com.tuxunbrowse.android.data.HistoryItem
 import com.tuxunbrowse.android.data.HistoryRetention
 import com.tuxunbrowse.android.data.TUXUNDOWN_PACKAGE
 import com.tuxunbrowse.android.data.ReadingItem
+import com.tuxunbrowse.android.data.SpeedDial
+import com.tuxunbrowse.android.data.compareVersionNames
+import com.tuxunbrowse.android.data.pickLatestRelease
 import com.tuxunbrowse.android.data.SavedTab
 import com.tuxunbrowse.android.data.SearchEngine
 import com.tuxunbrowse.android.data.Store
@@ -161,16 +166,25 @@ import com.tuxunbrowse.android.engine.savePageScreenshot
 import com.tuxunbrowse.android.engine.sharePageScreenshot
 import com.tuxunbrowse.android.engine.startSystemDownload
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import org.mozilla.geckoview.GeckoSession
 
 private enum class Screen { PICKER, BROWSER, BOOKMARKS, HISTORY, SETTINGS, DOWNLOADS, CLEAR_DATA, SNIFF, READING_LIST }
 
+/**
+ * One recently closed tab, kept in memory only (never on disk) so it
+ * can be reopened from the tab sheet. Incognito tabs are NEVER put
+ * on this stack — incognito leaves no trace, by definition.
+ */
 private data class ClosedTabInfo(
+    val title: String,
     val engine: Engine,
-    val incognito: Boolean,
     val url: String,
     val desktopMode: Boolean
 )
+
+/** How many recently closed tabs the session stack remembers. */
+private const val MAX_RECENT_CLOSED = 10
 
 /** A pending "which downloader?" question (download mode = ask). */
 private data class AskDownloadRequest(
@@ -221,12 +235,15 @@ fun BrowserApp(
     val readingList = remember {
         mutableStateListOf<ReadingItem>().apply { addAll(store.loadReadingList()) }
     }
+    val speedDials = remember {
+        mutableStateListOf<SpeedDial>().apply { addAll(store.loadSpeedDials()) }
+    }
     val compatSites = remember {
         mutableStateListOf<String>().apply { addAll(store.loadCompatSites()) }
     }
     var linkMenuTarget by remember { mutableStateOf<String?>(null) }
     var imageMenuTarget by remember { mutableStateOf<String?>(null) }
-    var lastClosedTab by remember { mutableStateOf<ClosedTabInfo?>(null) }
+    val recentClosedTabs = remember { mutableStateListOf<ClosedTabInfo>() }
     var startupDone by remember { mutableStateOf(false) }
     var fullscreenView by remember { mutableStateOf<android.view.View?>(null) }
     var geckoFullscreen by remember { mutableStateOf(false) }
@@ -586,10 +603,29 @@ fun BrowserApp(
         replaceTabEngine(tab, newEngine)
     }
 
+    /**
+     * Push a closing tab onto the recently-closed stack (newest
+     * first, capped at [MAX_RECENT_CLOSED], oldest dropped).
+     * Incognito tabs are skipped unconditionally.
+     */
+    fun pushClosedTab(tab: BrowserTab) {
+        if (tab.incognito) return
+        recentClosedTabs.add(
+            0,
+            ClosedTabInfo(
+                tab.title.ifBlank { tab.url },
+                tab.engine, tab.url, tab.desktopMode
+            )
+        )
+        while (recentClosedTabs.size > MAX_RECENT_CLOSED) {
+            recentClosedTabs.removeAt(recentClosedTabs.lastIndex)
+        }
+    }
+
     fun closeTab(tab: BrowserTab) {
         val idx = tabs.indexOf(tab)
         val wasIncognito = tab.incognito
-        lastClosedTab = ClosedTabInfo(tab.engine, tab.incognito, tab.url, tab.desktopMode)
+        pushClosedTab(tab)
         tab.destroy()
         tabs.remove(tab)
         if (wasIncognito && tabs.none { it.incognito }) {
@@ -610,15 +646,18 @@ fun BrowserApp(
         }
     }
 
-    fun reopenLastClosed() {
-        val info = lastClosedTab ?: return
-        lastClosedTab = null
-        newTab(info.engine, info.incognito, info.url, info.desktopMode)
+    /** Reopen one entry of the recently-closed stack and drop it. */
+    fun reopenClosedTab(info: ClosedTabInfo) {
+        recentClosedTabs.remove(info)
+        newTab(info.engine, false, info.url, info.desktopMode)
         screen = Screen.BROWSER
     }
 
     fun closeAllTabs() {
         val hadIncognito = tabs.any { it.incognito }
+        // Every normal tab goes onto the recently-closed stack
+        // (incognito tabs are skipped inside pushClosedTab).
+        tabs.toList().forEach { pushClosedTab(it) }
         tabs.forEach { it.destroy() }
         tabs.clear()
         if (hadIncognito) {
@@ -632,15 +671,18 @@ fun BrowserApp(
     }
 
     /**
-     * Close every tab except the active one. The closed tabs cannot be
-     * brought back as a batch (the undo slot holds a single tab), which
-     * is why the tab sheet asks for confirmation first.
+     * Close every tab except the active one. Normal tabs land on the
+     * recently-closed stack (up to its cap) so they can be reopened
+     * one by one; the sheet still asks for confirmation first because
+     * a large batch can overflow the stack and incognito tabs are
+     * never recorded.
      */
     fun closeOtherTabs() {
         val keep = activeTab() ?: return
         val others = tabs.filter { it.id != keep.id }
         if (others.isEmpty()) return
         val closedIncognito = others.any { it.incognito }
+        others.forEach { pushClosedTab(it) }
         others.forEach { it.destroy() }
         tabs.removeAll(others)
         if (closedIncognito && tabs.none { it.incognito }) {
@@ -1123,8 +1165,8 @@ fun BrowserApp(
                 onCloseTab = { closeTab(it) },
                 onCloseAllTabs = { closeAllTabs() },
                 onCloseOtherTabs = { closeOtherTabs() },
-                canReopenClosed = lastClosedTab != null,
-                onReopenClosed = { reopenLastClosed() },
+                recentClosed = recentClosedTabs,
+                onReopenClosed = { reopenClosedTab(it) },
                 onNewTab = { newTab(store.mainEngine, false) },
                 onNewIncognitoTab = { engine -> newTab(engine, true) },
                 incognitoEngine = store.incognitoEngine,
@@ -1275,6 +1317,23 @@ fun BrowserApp(
                 homeContent = {
                     HomeContent(
                         bookmarks = bookmarks,
+                        speedDials = speedDials,
+                        onOpenSpeedDial = { openUrl(it.url) },
+                        onAddSpeedDial = {
+                            speedDials.add(it)
+                            store.saveSpeedDials(speedDials)
+                        },
+                        onEditSpeedDial = { old, newItem ->
+                            val idx = speedDials.indexOf(old)
+                            if (idx >= 0) {
+                                speedDials[idx] = newItem
+                                store.saveSpeedDials(speedDials)
+                            }
+                        },
+                        onDeleteSpeedDial = {
+                            speedDials.remove(it)
+                            store.saveSpeedDials(speedDials)
+                        },
                         searchEngine = store.searchEngine,
                         customSearchName = store.customSearchName,
                         customSearchTemplate = store.customSearchTemplate,
@@ -1336,6 +1395,7 @@ fun BrowserApp(
 
         Screen.SETTINGS -> SettingsScreen(
             store = store,
+            onOpenReleaseUrl = { url -> openUrl(url) },
             onBack = { screen = Screen.BROWSER },
             onClearHistory = {
                 history.clear()
@@ -1909,6 +1969,11 @@ fun BrowserApp(
 @Composable
 private fun HomeContent(
     bookmarks: List<Bookmark>,
+    speedDials: List<SpeedDial> = emptyList(),
+    onOpenSpeedDial: (SpeedDial) -> Unit = {},
+    onAddSpeedDial: (SpeedDial) -> Unit = {},
+    onEditSpeedDial: (SpeedDial, SpeedDial) -> Unit = { _, _ -> },
+    onDeleteSpeedDial: (SpeedDial) -> Unit = {},
     searchEngine: SearchEngine,
     customSearchName: String = "",
     customSearchTemplate: String = "",
@@ -1921,6 +1986,27 @@ private fun HomeContent(
     var query by remember { mutableStateOf("") }
     var pendingDelete by remember { mutableStateOf<Bookmark?>(null) }
     var actionTarget by remember { mutableStateOf<Bookmark?>(null) }
+    // Speed-dial editor/menu state (add when dialEditing == null).
+    val homeContext = LocalContext.current
+    var dialActionTarget by remember { mutableStateOf<SpeedDial?>(null) }
+    var dialPendingDelete by remember { mutableStateOf<SpeedDial?>(null) }
+    var dialDialogOpen by remember { mutableStateOf(false) }
+    var dialEditing by remember { mutableStateOf<SpeedDial?>(null) }
+    var dialName by remember { mutableStateOf("") }
+    var dialUrl by remember { mutableStateOf("") }
+    fun openDialDialog(editing: SpeedDial?) {
+        if (editing == null && speedDials.size >= 12) {
+            android.widget.Toast.makeText(
+                homeContext, "快捷方式最多 12 个，先删掉一个再加",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        dialEditing = editing
+        dialName = editing?.title ?: ""
+        dialUrl = editing?.url ?: ""
+        dialDialogOpen = true
+    }
     val target = actionTarget
     if (target != null) {
         AlertDialog(
@@ -1980,6 +2066,137 @@ private fun HomeContent(
             },
             dismissButton = {
                 TextButton(onClick = { pendingDelete = null }) { Text("取消") }
+            }
+        )
+    }
+    val dialTarget = dialActionTarget
+    if (dialTarget != null) {
+        AlertDialog(
+            onDismissRequest = { dialActionTarget = null },
+            title = { Text(dialTarget.title, maxLines = 2) },
+            text = {
+                LazyColumn {
+                    item {
+                        ListItem(
+                            headlineContent = { Text("编辑") },
+                            leadingContent = {
+                                Icon(Icons.Filled.Edit, contentDescription = null)
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    dialActionTarget = null
+                                    openDialDialog(dialTarget)
+                                }
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("删除") },
+                            leadingContent = {
+                                Icon(Icons.Filled.Delete, contentDescription = null)
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    dialActionTarget = null
+                                    dialPendingDelete = dialTarget
+                                }
+                        )
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { dialActionTarget = null }) { Text("取消") }
+            }
+        )
+    }
+    val dialToDelete = dialPendingDelete
+    if (dialToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { dialPendingDelete = null },
+            title = { Text("删除这个快捷方式？") },
+            text = { Text("会把「${dialToDelete.title}」从首页快捷方式里删掉。") },
+            confirmButton = {
+                Button(onClick = {
+                    onDeleteSpeedDial(dialToDelete)
+                    dialPendingDelete = null
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { dialPendingDelete = null }) { Text("取消") }
+            }
+        )
+    }
+    if (dialDialogOpen) {
+        AlertDialog(
+            onDismissRequest = { dialDialogOpen = false },
+            title = {
+                Text(if (dialEditing == null) "添加快捷方式" else "编辑快捷方式")
+            },
+            text = {
+                LazyColumn {
+                    item {
+                        OutlinedTextField(
+                            value = dialName,
+                            onValueChange = { dialName = it },
+                            label = { Text("名称") },
+                            placeholder = { Text("可以不填，会用网址的域名") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                    }
+                    item {
+                        OutlinedTextField(
+                            value = dialUrl,
+                            onValueChange = { dialUrl = it },
+                            label = { Text("网址") },
+                            placeholder = { Text("比如 example.com") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp),
+                            singleLine = true
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (dialUrl.isBlank()) {
+                        android.widget.Toast.makeText(
+                            homeContext, "先填网址",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    } else {
+                        val resolved = resolveInput(
+                            dialUrl, searchEngine, customSearchTemplate
+                        )
+                        val name = dialName.trim()
+                            .ifBlank { hostOf(resolved) ?: resolved }
+                        val editing = dialEditing
+                        when {
+                            editing != null -> {
+                                onEditSpeedDial(
+                                    editing, SpeedDial(name, resolved)
+                                )
+                                dialDialogOpen = false
+                            }
+                            speedDials.any { it.url == resolved } ->
+                                android.widget.Toast.makeText(
+                                    homeContext, "已经有这个快捷方式了",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            else -> {
+                                onAddSpeedDial(SpeedDial(name, resolved))
+                                dialDialogOpen = false
+                            }
+                        }
+                    }
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { dialDialogOpen = false }) { Text("取消") }
             }
         )
     }
@@ -2049,6 +2266,60 @@ private fun HomeContent(
                     }
                 )
             )
+        }
+        // Speed dials live above the bookmarks grid and are stored
+        // separately from bookmarks. With no dials at all, only a
+        // small "add" entry remains (no header, no grid), keeping
+        // the home page as lean as before.
+        if (speedDials.isEmpty()) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                TextButton(onClick = { openDialDialog(null) }) {
+                    Icon(Icons.Filled.Add, contentDescription = null)
+                    Text("添加快捷方式", modifier = Modifier.padding(start = 4.dp))
+                }
+            }
+        } else {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Text("快捷方式", style = MaterialTheme.typography.titleMedium)
+            }
+            gridItems(speedDials, key = { it.title + "\n" + it.url }) { dial ->
+                ElevatedCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .combinedClickable(
+                            onClick = { onOpenSpeedDial(dial) },
+                            onLongClick = { dialActionTarget = dial }
+                        )
+                ) {
+                    ListItem(
+                        headlineContent = { Text(dial.title, maxLines = 2) },
+                        supportingContent = {
+                            Text(hostOf(dial.url) ?: dial.url, maxLines = 1)
+                        },
+                        leadingContent = {
+                            Text(
+                                dial.title.firstOrNull()?.toString() ?: "",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    )
+                }
+            }
+            item {
+                ElevatedCard(
+                    onClick = { openDialDialog(null) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    ListItem(
+                        headlineContent = { Text("添加") },
+                        supportingContent = { Text("最多 12 个") },
+                        leadingContent = {
+                            Icon(Icons.Filled.Add, contentDescription = null)
+                        }
+                    )
+                }
+            }
         }
         // The bookmarks block only exists when there really are
         // bookmarks: no header, no grey empty-state card with a long
@@ -2256,8 +2527,8 @@ private fun BrowserScreen(
     onCloseTab: (BrowserTab) -> Unit,
     onCloseAllTabs: () -> Unit,
     onCloseOtherTabs: () -> Unit,
-    canReopenClosed: Boolean,
-    onReopenClosed: () -> Unit,
+    recentClosed: List<ClosedTabInfo>,
+    onReopenClosed: (ClosedTabInfo) -> Unit,
     onNewTab: () -> Unit,
     onNewIncognitoTab: (Engine) -> Unit,
     incognitoEngine: Engine,
@@ -2326,13 +2597,14 @@ private fun BrowserScreen(
             clipUrl = text
         }
     }
+    var showRecentClosed by remember { mutableStateOf(false) }
     var showCloseOthersConfirm by remember { mutableStateOf(false) }
     if (showCloseOthersConfirm) {
         AlertDialog(
             onDismissRequest = { showCloseOthersConfirm = false },
             title = { Text("关闭其他标签页？") },
             text = {
-                Text("会关掉除当前标签外的 ${tabs.size - 1} 个标签页。一次关掉的这些标签没法再恢复。无痕标签关掉后，WebView 的登录状态会按无痕规则清掉。")
+                Text("会关掉除当前标签外的 ${tabs.size - 1} 个标签页。普通标签会记进「最近关闭」（最多 10 个），之后能在标签列表里一个个恢复；无痕标签不会被记录。无痕标签关掉后，WebView 的登录状态会按无痕规则清掉。")
             },
             confirmButton = {
                 Button(onClick = {
@@ -2353,7 +2625,7 @@ private fun BrowserScreen(
             onDismissRequest = { showCloseAllConfirm = false },
             title = { Text("关闭全部标签页？") },
             text = {
-                Text("现在开着的 ${tabs.size} 个标签页会全部关掉，然后开一个新的首页标签。无痕标签关掉后，WebView 的登录状态会按无痕规则清掉。")
+                Text("现在开着的 ${tabs.size} 个标签页会全部关掉，然后开一个新的首页标签。普通标签会记进「最近关闭」（最多 10 个），之后能在标签列表里一个个恢复；无痕标签不会被记录。无痕标签关掉后，WebView 的登录状态会按无痕规则清掉。")
             },
             confirmButton = {
                 Button(onClick = {
@@ -2475,6 +2747,44 @@ private fun BrowserScreen(
                                             intent, "分享当前页"
                                         )
                                     )
+                                }
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("用其他浏览器打开") },
+                            leadingIcon = {
+                                Icon(Icons.Filled.OpenInNew, contentDescription = null)
+                            },
+                            onClick = {
+                                showMenu = false
+                                val tab = activeTab
+                                if (tab == null || tab.isHome ||
+                                    !(tab.url.startsWith("http://") ||
+                                        tab.url.startsWith("https://"))
+                                ) {
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        "这是应用内部的页面，没法用其他浏览器打开",
+                                        android.widget.Toast.LENGTH_LONG
+                                    ).show()
+                                } else {
+                                    try {
+                                        val intent = android.content.Intent(
+                                            android.content.Intent.ACTION_VIEW,
+                                            android.net.Uri.parse(tab.url)
+                                        )
+                                        context.startActivity(
+                                            android.content.Intent.createChooser(
+                                                intent, "用其他浏览器打开"
+                                            )
+                                        )
+                                    } catch (t: Throwable) {
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            "没有找到其他浏览器",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
                                 }
                             }
                         )
@@ -3113,13 +3423,74 @@ private fun BrowserScreen(
                         Text("新建标签页")
                     }
                 }
-                if (canReopenClosed) {
+                if (recentClosed.isNotEmpty()) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
-                        OutlinedButton(
-                            onClick = { showTabs = false; onReopenClosed() },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("恢复刚关闭的标签页")
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            OutlinedButton(
+                                onClick = { showRecentClosed = !showRecentClosed },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    if (showRecentClosed) {
+                                        "最近关闭（${recentClosed.size}）· 收起"
+                                    } else {
+                                        "最近关闭（${recentClosed.size}）"
+                                    }
+                                )
+                            }
+                            AnimatedVisibility(
+                                visible = showRecentClosed,
+                                enter = fadeIn(
+                                    tween(220, easing = FastOutSlowInEasing)
+                                ) + expandVertically(
+                                    tween(220, easing = FastOutSlowInEasing)
+                                ),
+                                exit = fadeOut(
+                                    tween(180, easing = FastOutSlowInEasing)
+                                ) + shrinkVertically(
+                                    tween(180, easing = FastOutSlowInEasing)
+                                )
+                            ) {
+                                Column(modifier = Modifier.fillMaxWidth()) {
+                                    recentClosed.forEach { info ->
+                                        ListItem(
+                                            headlineContent = {
+                                                Text(
+                                                    if (info.url == HOME_URL) {
+                                                        "首页"
+                                                    } else {
+                                                        info.title
+                                                    },
+                                                    maxLines = 1
+                                                )
+                                            },
+                                            supportingContent = {
+                                                Text(
+                                                    (if (info.engine == Engine.GECKO) {
+                                                        "火狐 · "
+                                                    } else {
+                                                        "WebView · "
+                                                    }) + (hostOf(info.url) ?: info.url),
+                                                    maxLines = 1
+                                                )
+                                            },
+                                            leadingContent = {
+                                                Icon(
+                                                    Icons.Filled.History,
+                                                    contentDescription = null
+                                                )
+                                            },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    showTabs = false
+                                                    onReopenClosed(info)
+                                                }
+                                        )
+                                        HorizontalDivider()
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -4243,6 +4614,7 @@ private fun ClearDataScreen(
 @Composable
 private fun SettingsScreen(
     store: Store,
+    onOpenReleaseUrl: (String) -> Unit = {},
     onBack: () -> Unit,
     onClearHistory: () -> Unit,
     onRemoveCompatSite: (String) -> Unit,
@@ -4287,6 +4659,57 @@ private fun SettingsScreen(
                 .getPackageInfo(settingsContext.packageName, 0).versionName ?: ""
         } catch (t: Throwable) {
             ""
+        }
+    }
+    // Manual update check: nothing touches the network until the
+    // user taps the button — no automatic checks, no polling, and
+    // the app never installs anything itself.
+    var checkingUpdate by remember { mutableStateOf(false) }
+    var updateAvailable by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var showUpToDate by remember { mutableStateOf(false) }
+    val settingsScope = rememberCoroutineScope()
+    fun checkForUpdate() {
+        if (checkingUpdate) return
+        checkingUpdate = true
+        settingsScope.launch {
+            val latest = kotlinx.coroutines.withContext(
+                kotlinx.coroutines.Dispatchers.IO
+            ) {
+                try {
+                    val conn = java.net.URL(
+                        "https://api.github.com/repos/liyuzhou79-star/TuxunBrowse/releases?per_page=5"
+                    ).openConnection() as java.net.HttpURLConnection
+                    conn.connectTimeout = 10_000
+                    conn.readTimeout = 10_000
+                    conn.setRequestProperty(
+                        "Accept", "application/vnd.github+json"
+                    )
+                    conn.setRequestProperty("User-Agent", "TuxunBrowse")
+                    if (conn.responseCode !in 200..299) {
+                        null
+                    } else {
+                        val raw = conn.inputStream.bufferedReader().readText()
+                        val arr = org.json.JSONArray(raw)
+                        val pairs = (0 until arr.length()).map { i ->
+                            val o = arr.getJSONObject(i)
+                            o.optString("tag_name") to o.optString("html_url")
+                        }
+                        pickLatestRelease(pairs)
+                    }
+                } catch (t: Throwable) {
+                    null
+                }
+            }
+            checkingUpdate = false
+            when {
+                latest == null -> android.widget.Toast.makeText(
+                    settingsContext, "检查失败，请检查网络",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+                compareVersionNames(latest.first, versionName) > 0 ->
+                    updateAvailable = latest
+                else -> showUpToDate = true
+            }
         }
     }
     Scaffold(
@@ -4735,11 +5158,62 @@ private fun SettingsScreen(
                                 "两个内核的登录状态互不相通，这是双内核的固有代价。",
                             style = MaterialTheme.typography.bodyMedium
                         )
+                        OutlinedButton(
+                            onClick = { checkForUpdate() },
+                            enabled = !checkingUpdate,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 12.dp)
+                        ) {
+                            Text(if (checkingUpdate) "正在检查…" else "检查更新")
+                        }
+                        Text(
+                            "只有点这个按钮时才会联网检查，平时不会自动检查、也不会自己下载安装。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
                     }
                 }
             }
             item { Spacer(modifier = Modifier.padding(bottom = 24.dp)) }
         }
+    }
+    val newRelease = updateAvailable
+    if (newRelease != null) {
+        AlertDialog(
+            onDismissRequest = { updateAvailable = null },
+            title = { Text("有新版本") },
+            text = {
+                Text(
+                    "发现新版本 ${newRelease.first.removePrefix("v")}（你现在用的是 $versionName）。" +
+                        "点「打开下载页」会打开这个版本的下载页面，下载后需要你手动安装。"
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    updateAvailable = null
+                    if (newRelease.second.isNotBlank()) {
+                        onOpenReleaseUrl(newRelease.second)
+                    }
+                }) { Text("打开下载页") }
+            },
+            dismissButton = {
+                TextButton(onClick = { updateAvailable = null }) {
+                    Text("以后再说")
+                }
+            }
+        )
+    }
+    if (showUpToDate) {
+        AlertDialog(
+            onDismissRequest = { showUpToDate = false },
+            title = { Text("已是最新版本") },
+            text = { Text("你现在用的 $versionName 就是最新版，不用更新。") },
+            confirmButton = {
+                Button(onClick = { showUpToDate = false }) { Text("知道了") }
+            }
+        )
     }
     // Custom search engine editor: a name plus a URL template. The
     // template must contain %s (where the search words go) and start
