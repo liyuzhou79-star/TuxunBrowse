@@ -382,8 +382,11 @@ class BrowserTab(
     private val shouldUseWebView: (String) -> Boolean = { false },
     private val onCompatRedirect: (String) -> Unit = {},
     private val isAdBlockEnabled: () -> Boolean = { true },
-    private val onLinkContext: (String) -> Unit = {},
-    private val onImageContext: (String) -> Unit = {},
+    // Long-press context menu (v0.42.0): one callback carrying both
+    // the link URL and the image URL (either may be null) so a linked
+    // image produces ONE combined menu instead of two competing ones.
+    private val onPageContextMenu: (linkUrl: String?, imageUrl: String?) -> Unit =
+        { _, _ -> },
     private val textZoomProvider: () -> Int = { 100 },
     private val webDarkProvider: () -> Boolean = { false },
     // Whether third-party cookies are allowed in this tab's WebView
@@ -1130,20 +1133,57 @@ class BrowserTab(
             view.settings.userAgentString = DESKTOP_USER_AGENT
         }
         view.setOnLongClickListener { v ->
-            val hit = (v as WebView).hitTestResult
+            val wv = v as WebView
+            val hit = wv.hitTestResult
             val extra = hit.extra
             when {
                 hit.type == WebView.HitTestResult.IMAGE_TYPE &&
                     !extra.isNullOrBlank() -> {
-                    onImageContext(extra)
+                    onPageContextMenu(null, extra)
                     true
                 }
-                (hit.type == WebView.HitTestResult.SRC_ANCHOR_TYPE ||
-                    hit.type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) &&
+                // A linked image: HitTestResult's extra is the LINK
+                // href, not the image. Ask the WebView for the image
+                // URL via the official requestImageRef message; if it
+                // never answers, fall back to the link-only menu so
+                // the long-press never goes silent.
+                hit.type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE &&
                     !extra.isNullOrBlank() -> {
-                    onLinkContext(extra)
+                    var fired = false
+                    val handler = object :
+                        android.os.Handler(android.os.Looper.getMainLooper()) {
+                        override fun handleMessage(msg: Message) {
+                            if (fired) return
+                            fired = true
+                            val img = (msg.obj as? String)
+                                ?.takeIf { it.isNotBlank() }
+                            onPageContextMenu(extra, img)
+                        }
+                    }
+                    try {
+                        wv.requestImageRef(handler.obtainMessage())
+                    } catch (t: Throwable) {
+                        if (!fired) {
+                            fired = true
+                            onPageContextMenu(extra, null)
+                        }
+                    }
+                    handler.postDelayed({
+                        if (!fired) {
+                            fired = true
+                            onPageContextMenu(extra, null)
+                        }
+                    }, 300)
                     true
                 }
+                hit.type == WebView.HitTestResult.SRC_ANCHOR_TYPE &&
+                    !extra.isNullOrBlank() -> {
+                    onPageContextMenu(extra, null)
+                    true
+                }
+                // Anything else (notably long-press on plain text)
+                // is NOT consumed: the WebView's own text-selection
+                // action mode proceeds as the platform provides it.
                 else -> false
             }
         }
@@ -1691,14 +1731,40 @@ class BrowserTab(
                 if (!newTitle.isNullOrBlank()) title = newTitle
             }
 
+            // Long-press context menu. ContextElement's shape was
+            // verified against the GeckoView 132 AAR with javap:
+            // public final String linkUri / srcUri / title / altText
+            // and public final int type with TYPE_NONE=0,
+            // TYPE_IMAGE=1, TYPE_VIDEO=2, TYPE_AUDIO=3. Before
+            // v0.42.0 only linkUri was read, so a Gecko long-press on
+            // a bare image produced no menu at all.
             override fun onContextMenu(
                 s: GeckoSession,
                 screenX: Int,
                 screenY: Int,
                 element: GeckoSession.ContentDelegate.ContextElement
             ) {
-                val link = element.linkUri
-                if (!link.isNullOrBlank()) onLinkContext(link)
+                val link = element.linkUri?.takeIf { it.isNotBlank() }
+                val src = element.srcUri?.takeIf { it.isNotBlank() }
+                val image = if (
+                    element.type ==
+                    GeckoSession.ContentDelegate.ContextElement.TYPE_IMAGE
+                ) src else null
+                // A bare video/audio element has no link and no
+                // image; present its address through the link side of
+                // the combined menu (open / copy / share) rather than
+                // mislabeling it as an image.
+                val mediaAsLink = if (
+                    link == null && image == null && src != null &&
+                    (element.type ==
+                        GeckoSession.ContentDelegate.ContextElement.TYPE_VIDEO ||
+                        element.type ==
+                        GeckoSession.ContentDelegate.ContextElement.TYPE_AUDIO)
+                ) src else null
+                val effectiveLink = link ?: mediaAsLink
+                if (effectiveLink != null || image != null) {
+                    onPageContextMenu(effectiveLink, image)
+                }
             }
 
             override fun onFullScreen(s: GeckoSession, fullScreen: Boolean) {

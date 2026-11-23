@@ -151,6 +151,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.tuxunbrowse.android.data.Bookmark
@@ -298,6 +299,21 @@ private fun copyTextToClipboard(
     false
 }
 
+/**
+ * A long-press context menu waiting to be shown (v0.42.0). Carries
+ * the SOURCE tab's engine and incognito flag, captured when the
+ * long-press fired: "open in new tab" must open the same kind of tab
+ * (an incognito long-press must never spawn a normal tab), which the
+ * pre-0.42.0 menus got wrong — they always opened a normal tab on
+ * the main engine.
+ */
+private data class PageContextMenuState(
+    val linkUrl: String?,
+    val imageUrl: String?,
+    val engine: Engine,
+    val incognito: Boolean
+)
+
 /** A WebView SSL certificate error waiting for the user's decision. */
 private data class SslPromptState(
     val url: String,
@@ -345,8 +361,9 @@ fun BrowserApp(
     val compatSites = remember {
         mutableStateListOf<String>().apply { addAll(store.loadCompatSites()) }
     }
-    var linkMenuTarget by remember { mutableStateOf<String?>(null) }
-    var imageMenuTarget by remember { mutableStateOf<String?>(null) }
+    var pageContextMenu by remember {
+        mutableStateOf<PageContextMenuState?>(null)
+    }
     val recentClosedTabs = remember { mutableStateListOf<ClosedTabInfo>() }
     // The search engine as Compose state: the store is the source of
     // truth on disk, this mirror is what the address bar and the home
@@ -632,8 +649,15 @@ fun BrowserApp(
             },
             onCompatRedirect = { target -> compatRedirectHandler(target) },
             isAdBlockEnabled = { store.adBlockEnabled },
-            onLinkContext = { link -> linkMenuTarget = link },
-            onImageContext = { img -> imageMenuTarget = img },
+            onPageContextMenu = { link, image ->
+                val src = created
+                pageContextMenu = PageContextMenuState(
+                    linkUrl = link,
+                    imageUrl = image,
+                    engine = src?.engine ?: engine,
+                    incognito = src?.incognito ?: incognito
+                )
+            },
             textZoomProvider = { store.textZoomPercent },
             webDarkProvider = { store.webDarkMode },
             thirdPartyCookiesProvider = { store.allowThirdPartyCookies },
@@ -2330,160 +2354,233 @@ fun BrowserApp(
         )
     }
 
-    val linkTarget = linkMenuTarget
-    if (linkTarget != null) {
+    // Long-press context menu (v0.42.0): ONE combined dialog for
+    // link and/or image, fed by both engines. The address is shown
+    // (capped at 3 lines with an ellipsis, so a huge URL cannot blow
+    // up the layout) so the user sees exactly what would be opened.
+    // "Open in new tab" reuses the source tab's engine + incognito
+    // flag through the existing newTab path. Non-http(s) targets are
+    // never opened (v0.31.0 / v0.38.0 rule): they only get copy,
+    // with an honest note.
+    val ctxMenu = pageContextMenu
+    if (ctxMenu != null) {
+        val link = ctxMenu.linkUrl
+        val image = ctxMenu.imageUrl
+        val linkOpenable = link != null &&
+            (link.startsWith("http://") || link.startsWith("https://"))
+        val imageOpenable = image != null &&
+            (image.startsWith("http://") || image.startsWith("https://"))
         AlertDialog(
-            onDismissRequest = { linkMenuTarget = null },
-            title = { Text("链接") },
-            text = {
-                LazyColumn {
-                    item {
-                        Text(
-                            linkTarget,
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
+            onDismissRequest = { pageContextMenu = null },
+            title = {
+                Text(
+                    when {
+                        link != null && image != null -> "链接与图片"
+                        link != null -> "链接"
+                        else -> "图片"
                     }
-                    item {
-                        ListItem(
-                            headlineContent = { Text("在新标签页打开") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    linkMenuTarget = null
-                                    newTab(store.mainEngine, false, linkTarget)
-                                    screen = Screen.BROWSER
-                                }
-                        )
-                    }
-                    item {
-                        ListItem(
-                            headlineContent = { Text("复制链接") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    val ok = copyTextToClipboard(
-                                        context, "link", linkTarget
-                                    )
-                                    android.widget.Toast.makeText(
-                                        context,
-                                        if (ok) "链接已复制" else "复制失败，请重试",
-                                        android.widget.Toast.LENGTH_SHORT
-                                    ).show()
-                                    linkMenuTarget = null
-                                }
-                        )
-                    }
-                    item {
-                        ListItem(
-                            headlineContent = { Text("分享链接") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    linkMenuTarget = null
-                                    try {
-                                        val intent = android.content.Intent(
-                                            android.content.Intent.ACTION_SEND
-                                        )
-                                            .setType("text/plain")
-                                            .putExtra(
-                                                android.content.Intent.EXTRA_TEXT,
-                                                linkTarget
-                                            )
-                                        context.startActivity(
-                                            android.content.Intent.createChooser(
-                                                intent, "分享链接"
-                                            )
-                                        )
-                                    } catch (t: Throwable) {
-                                        android.widget.Toast.makeText(
-                                            context, "没有能分享链接的应用",
-                                            android.widget.Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
-                                }
-                        )
-                    }
-                }
+                )
             },
-            confirmButton = {
-                TextButton(onClick = { linkMenuTarget = null }) { Text("取消") }
-            }
-        )
-    }
-
-    val imageTarget = imageMenuTarget
-    if (imageTarget != null) {
-        AlertDialog(
-            onDismissRequest = { imageMenuTarget = null },
-            title = { Text("图片") },
             text = {
                 LazyColumn {
-                    item {
-                        Text(
-                            imageTarget,
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
-                    }
-                    item {
-                        ListItem(
-                            headlineContent = { Text("在新标签页打开图片") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    imageMenuTarget = null
-                                    newTab(store.mainEngine, false, imageTarget)
-                                    screen = Screen.BROWSER
-                                }
-                        )
-                    }
-                    item {
-                        ListItem(
-                            headlineContent = { Text("保存图片") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    imageMenuTarget = null
-                                    // Same incognito honesty as the
-                                    // download dispatch: this one calls
-                                    // the system downloader directly.
-                                    if (activeTab()?.incognito == true) {
+                    if (link != null) {
+                        item {
+                            Text(
+                                link,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+                        }
+                        if (linkOpenable) {
+                            item {
+                                ListItem(
+                                    headlineContent = {
+                                        Text("在新标签页打开")
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            pageContextMenu = null
+                                            newTab(
+                                                ctxMenu.engine,
+                                                ctxMenu.incognito,
+                                                link
+                                            )
+                                            screen = Screen.BROWSER
+                                        }
+                                )
+                            }
+                        } else {
+                            item {
+                                Text(
+                                    "这个链接不是普通网页地址，不能在新标签页打开，只能复制。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme
+                                        .onSurfaceVariant,
+                                    modifier = Modifier.padding(bottom = 8.dp)
+                                )
+                            }
+                        }
+                        item {
+                            ListItem(
+                                headlineContent = { Text("复制链接") },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        val ok = copyTextToClipboard(
+                                            context, "link", link
+                                        )
                                         android.widget.Toast.makeText(
                                             context,
-                                            "无痕提醒：下载记录会留在系统下载管理里，关掉无痕标签也不会自动删掉",
-                                            android.widget.Toast.LENGTH_LONG
+                                            if (ok) "链接已复制"
+                                            else "复制失败，请重试",
+                                            android.widget.Toast.LENGTH_SHORT
                                         ).show()
+                                        pageContextMenu = null
                                     }
-                                    startSystemDownload(
-                                        context, imageTarget, null, null, null,
-                                        referer = activeTab()?.url
-                                    )
-                                }
-                        )
+                            )
+                        }
+                        if (linkOpenable) {
+                            item {
+                                ListItem(
+                                    headlineContent = { Text("分享链接") },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            pageContextMenu = null
+                                            try {
+                                                val intent =
+                                                    android.content.Intent(
+                                                        android.content.Intent
+                                                            .ACTION_SEND
+                                                    )
+                                                        .setType("text/plain")
+                                                        .putExtra(
+                                                            android.content.Intent
+                                                                .EXTRA_TEXT,
+                                                            link
+                                                        )
+                                                context.startActivity(
+                                                    android.content.Intent
+                                                        .createChooser(
+                                                            intent, "分享链接"
+                                                        )
+                                                )
+                                            } catch (t: Throwable) {
+                                                android.widget.Toast.makeText(
+                                                    context,
+                                                    "没有能分享链接的应用",
+                                                    android.widget.Toast
+                                                        .LENGTH_SHORT
+                                                ).show()
+                                            }
+                                        }
+                                )
+                            }
+                        }
                     }
-                    item {
-                        ListItem(
-                            headlineContent = { Text("复制图片地址") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    val ok = copyTextToClipboard(
-                                        context, "image", imageTarget
-                                    )
-                                    android.widget.Toast.makeText(
-                                        context,
-                                        if (ok) "图片地址已复制" else "复制失败，请重试",
-                                        android.widget.Toast.LENGTH_SHORT
-                                    ).show()
-                                    imageMenuTarget = null
-                                }
-                        )
+                    if (link != null && image != null) {
+                        item { HorizontalDivider() }
+                    }
+                    if (image != null) {
+                        if (image != link) {
+                            item {
+                                Text(
+                                    image,
+                                    style = MaterialTheme.typography
+                                        .bodyMedium,
+                                    maxLines = 3,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier
+                                        .padding(vertical = 8.dp)
+                                )
+                            }
+                        }
+                        if (imageOpenable) {
+                            item {
+                                ListItem(
+                                    headlineContent = {
+                                        Text("在新标签页打开图片")
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            pageContextMenu = null
+                                            newTab(
+                                                ctxMenu.engine,
+                                                ctxMenu.incognito,
+                                                image
+                                            )
+                                            screen = Screen.BROWSER
+                                        }
+                                )
+                            }
+                            item {
+                                ListItem(
+                                    headlineContent = { Text("保存图片") },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            pageContextMenu = null
+                                            // Same incognito honesty as
+                                            // the download dispatch: this
+                                            // calls the system downloader
+                                            // directly.
+                                            if (ctxMenu.incognito) {
+                                                android.widget.Toast.makeText(
+                                                    context,
+                                                    "无痕提醒：下载记录会留在系统下载管理里，关掉无痕标签也不会自动删掉",
+                                                    android.widget.Toast
+                                                        .LENGTH_LONG
+                                                ).show()
+                                            }
+                                            startSystemDownload(
+                                                context, image, null, null,
+                                                null,
+                                                referer = activeTab()?.url
+                                            )
+                                        }
+                                )
+                            }
+                        } else {
+                            item {
+                                Text(
+                                    "这张图片是网页内嵌的数据，不能打开或保存，只能复制地址。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme
+                                        .onSurfaceVariant,
+                                    modifier = Modifier.padding(bottom = 8.dp)
+                                )
+                            }
+                        }
+                        item {
+                            ListItem(
+                                headlineContent = { Text("复制图片地址") },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        val ok = copyTextToClipboard(
+                                            context, "image", image
+                                        )
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            if (ok) "图片地址已复制"
+                                            else "复制失败，请重试",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                        pageContextMenu = null
+                                    }
+                            )
+                        }
                     }
                 }
             },
             confirmButton = {
-                TextButton(onClick = { imageMenuTarget = null }) { Text("取消") }
+                TextButton(onClick = { pageContextMenu = null }) {
+                    Text("取消")
+                }
             }
         )
     }
