@@ -1242,7 +1242,7 @@ class BrowserTab(
                             when {
                                 user == null -> prompt.dismiss()
                                 onlyPassword -> prompt.confirm(pass ?: "")
-                                else -> prompt.confirm(user, pass ?: "")
+                                else -> prompt.confirm(user ?: "", pass ?: "")
                             }
                         )
                     } catch (t: Throwable) {
