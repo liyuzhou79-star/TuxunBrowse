@@ -849,8 +849,8 @@ class BrowserTab(
                 if (u.startsWith("https://")) {
                     try {
                         val cert = wv.certificate
-                        certIssuedTo = certCommonName(cert?.getIssuedToDN())
-                        certIssuedBy = certCommonName(cert?.getIssuedByDN())
+                        certIssuedTo = certCommonName(cert?.getIssuedTo()?.getDName())
+                        certIssuedBy = certCommonName(cert?.getIssuedBy()?.getDName())
                     } catch (t: Throwable) {
                         certIssuedTo = ""
                         certIssuedBy = ""
