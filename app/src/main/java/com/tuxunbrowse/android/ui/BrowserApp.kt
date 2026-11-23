@@ -186,6 +186,7 @@ import com.tuxunbrowse.android.data.isValidCustomSearchTemplate
 import com.tuxunbrowse.android.data.hostOf
 import com.tuxunbrowse.android.data.hostMatchesSite
 import com.tuxunbrowse.android.data.isCompatHost
+import com.tuxunbrowse.android.data.isDesktopHost
 import com.tuxunbrowse.android.data.hasBlockedPageScheme
 import com.tuxunbrowse.android.data.isAllowedPageUrl
 import com.tuxunbrowse.android.data.MAX_COMBINED_SUGGESTIONS
@@ -395,6 +396,13 @@ fun BrowserApp(
     // loads), and the set is a handful of domain strings.
     val compatSites = remember {
         mutableStateListOf<String>().apply { addAll(store.loadCompatSites()) }
+    }
+    // Desktop-mode sites (v0.56.0) stay synchronous for the same
+    // reason: a tab created in the very first moments must already
+    // know whether its start host starts in desktop mode (newTab
+    // consults this list), and the set is a handful of host strings.
+    val desktopSites = remember {
+        mutableStateListOf<String>().apply { addAll(store.loadDesktopSites()) }
     }
     // One-time compat bypasses (v0.52.0): tab id -> the exact URL whose
     // first Gecko load must NOT be bounced back to WebView by the
@@ -942,8 +950,21 @@ fun BrowserApp(
         incognito: Boolean,
         url: String = HOME_URL,
         desktopMode: Boolean = false,
-        activate: Boolean = true
+        activate: Boolean = true,
+        applyDesktopMemory: Boolean = true
     ): BrowserTab {
+        // Desktop-mode memory (v0.56.0): desktop mode is a property
+        // of the tab, and the per-site list only decides how a NEW
+        // tab starts. A new tab opened on a remembered host starts
+        // in desktop mode; navigation inside an existing tab never
+        // changes that tab's mode, and incognito tabs neither read
+        // nor write the list. Callers carrying an explicit live
+        // value (a reopened closed tab's captured mode, a new
+        // window inheriting its opener's mode) pass
+        // applyDesktopMemory = false so the live value wins.
+        val initialDesktopMode = desktopMode ||
+            (applyDesktopMemory && !incognito &&
+                isDesktopHost(hostOf(url), desktopSites.toSet()))
         // The tab being switched away from gets its one switch-away
         // thumbnail capture (the other capture point is page finish).
         // Deferred: drawing the bitmap in the same frame the switch
@@ -955,7 +976,9 @@ fun BrowserApp(
         // like a restored tab under the v0.23.0 lazy contract, and
         // the activeTabId-keyed sleep pass (v0.41.0) does not run.
         if (activate) activeTab()?.captureThumbnailDeferred()
-        val tab = makeTab(effectiveEngine(engine, url), incognito, url, desktopMode)
+        val tab = makeTab(
+            effectiveEngine(engine, url), incognito, url, initialDesktopMode
+        )
         tabs.add(tab)
         if (activate) activeTabId = tab.id
         return tab
@@ -1005,7 +1028,13 @@ fun BrowserApp(
     // (same engine, same incognito flag as the page's tab) through the
     // usual tab-creation path and switch to it.
     newWindowHandler = { source, target ->
-        newTab(source.engine, source.incognito, target, source.desktopMode)
+        // The new window inherits the opener tab's desktop mode
+        // verbatim (the pre-v0.56.0 behaviour); the per-site list
+        // does not override a live value.
+        newTab(
+            source.engine, source.incognito, target, source.desktopMode,
+            applyDesktopMemory = false
+        )
         screen = Screen.BROWSER
     }
 
@@ -1058,6 +1087,30 @@ fun BrowserApp(
     fun removeCompatSite(domain: String) {
         store.removeCompatSite(domain)
         compatSites.remove(domain)
+    }
+
+    fun addDesktopSite(domain: String) {
+        store.addDesktopSite(domain)
+        if (domain !in desktopSites) desktopSites.add(domain)
+    }
+
+    fun removeDesktopSite(domain: String) {
+        store.removeDesktopSite(domain)
+        desktopSites.remove(domain)
+    }
+
+    /**
+     * Forget the desktop-mode memory covering [host]: every stored
+     * entry this host belongs to (the host itself may have been
+     * remembered through a parent domain) is removed.
+     */
+    fun removeDesktopMemoryForHost(host: String) {
+        desktopSites.filter { hostMatchesSite(host, it) }
+            .forEach { removeDesktopSite(it) }
+    }
+
+    fun clearDesktopSites() {
+        desktopSites.toList().forEach { removeDesktopSite(it) }
     }
 
     fun switchTabEngine(tab: BrowserTab, newEngine: Engine, rememberSite: Boolean) {
@@ -1150,7 +1203,12 @@ fun BrowserApp(
     /** Reopen one entry of the recently-closed stack and drop it. */
     fun reopenClosedTab(info: ClosedTabInfo) {
         recentClosedTabs.remove(info)
-        newTab(info.engine, false, info.url, info.desktopMode)
+        // The captured mode is a live value, like a saved session:
+        // it wins over the per-site list (v0.56.0).
+        newTab(
+            info.engine, false, info.url, info.desktopMode,
+            applyDesktopMemory = false
+        )
         screen = Screen.BROWSER
     }
 
@@ -1427,7 +1485,8 @@ fun BrowserApp(
                 disableJavaScript = store.disableJavaScript,
                 searchSuggestionsEnabled = store.searchSuggestionsEnabled
             ),
-            compatSites = store.loadCompatSites().sorted()
+            compatSites = store.loadCompatSites().sorted(),
+            desktopSites = store.loadDesktopSites().sorted()
         )
         val fileName = "tuxunbrowse-backup.json"
         try {
@@ -1566,7 +1625,17 @@ fun BrowserApp(
                 addedCompat++
             }
         }
-        if (data.settings.overwriteSummary().isNotEmpty() || addedCompat > 0) {
+        // Desktop-mode sites merge the same way (union, v0.56.0).
+        var addedDesktop = 0
+        data.desktopSites.forEach { domain ->
+            if (domain !in desktopSites) {
+                addDesktopSite(domain)
+                addedDesktop++
+            }
+        }
+        if (data.settings.overwriteSummary().isNotEmpty() ||
+            addedCompat > 0 || addedDesktop > 0
+        ) {
             // The store was just rewritten behind the settings
             // page's back: sync this level's search-engine mirror at
             // the source (same two-way sync the settings/home
@@ -1579,7 +1648,8 @@ fun BrowserApp(
         }
         return "书签 +$addedBookmarks 条、历史 +$addedHistory 条、" +
             "阅读列表 +$addedReading 条、快捷方式 +$addedDials 条" +
-            if (addedCompat > 0) "、兼容名单 +$addedCompat 个" else ""
+            (if (addedCompat > 0) "、兼容名单 +$addedCompat 个" else "") +
+            (if (addedDesktop > 0) "、桌面模式站点 +$addedDesktop 个" else "")
     }
 
     // Backup import: system file picker. The file is validated by
@@ -1637,6 +1707,12 @@ fun BrowserApp(
                             if (backupToConfirm.compatSites.isNotEmpty()) {
                                 "\n\n备份里的兼容名单 ${backupToConfirm.compatSites.size} 个网站" +
                                     "也会合并进来，现有的兼容名单不会被删掉。"
+                            } else {
+                                ""
+                            } +
+                            if (backupToConfirm.desktopSites.isNotEmpty()) {
+                                "\n\n备份里的桌面模式站点 ${backupToConfirm.desktopSites.size} 个网站" +
+                                    "也会合并进来，现有的桌面模式站点不会被删掉。"
                             } else {
                                 ""
                             } +
@@ -2311,6 +2387,22 @@ fun BrowserApp(
                 onToggleDesktopMode = { enabled ->
                     val tab = activeTab() ?: return@BrowserScreen
                     recreateTab(tab, tab.engine, enabled)
+                    // Toggle-is-memory (v0.56.0, normal tabs only):
+                    // switching desktop mode on for a site remembers
+                    // the site, switching it off forgets it, so the
+                    // next new tab on this site starts the same way.
+                    // Incognito toggles affect only their own tab and
+                    // are never written down.
+                    if (!tab.incognito) {
+                        val host = hostOf(tab.url)
+                        if (host != null) {
+                            if (enabled) {
+                                addDesktopSite(host)
+                            } else {
+                                removeDesktopMemoryForHost(host)
+                            }
+                        }
+                    }
                 },
                 onFind = { query, forward -> activeTab()?.findInPage(query, forward) },
                 onClearFind = { activeTab()?.clearFind() },
@@ -2597,6 +2689,8 @@ fun BrowserApp(
                 store.clearHistory()
             },
             onRemoveCompatSite = { removeCompatSite(it) },
+            onRemoveDesktopSite = { removeDesktopSite(it) },
+            onClearDesktopSites = { clearDesktopSites() },
             onOpenClearData = { screen = Screen.CLEAR_DATA },
             onExportBackup = { exportBackup() },
             onImportBackup = {
@@ -4875,7 +4969,16 @@ private fun BrowserScreen(
                             onClick = { showMenu = false; onToggleReaderMode() }
                         )
                         DropdownMenuItem(
-                            text = { Text("桌面版网站") },
+                            text = {
+                                Column {
+                                    Text("桌面版网站")
+                                    Text(
+                                        "打开后会记住这个网站，下次打开自动用桌面版",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            },
                             leadingIcon = {
                                 Icon(Icons.Filled.Language, contentDescription = null)
                             },
@@ -8247,6 +8350,8 @@ private fun SettingsScreen(
     onBack: () -> Unit,
     onClearHistory: () -> Unit,
     onRemoveCompatSite: (String) -> Unit,
+    onRemoveDesktopSite: (String) -> Unit = {},
+    onClearDesktopSites: () -> Unit = {},
     onOpenClearData: () -> Unit,
     onExportBackup: () -> Unit = {},
     onImportBackup: () -> Unit = {},
@@ -8305,6 +8410,8 @@ private fun SettingsScreen(
     // The two handlers are mutually exclusive by enabled.
     BackHandler(enabled = settingsPage == "home") { onBack() }
     var compatList by remember(refreshTick) { mutableStateOf(store.loadCompatSites().sorted()) }
+    var desktopList by remember(refreshTick) { mutableStateOf(store.loadDesktopSites().sorted()) }
+    var showClearDesktopConfirm by remember { mutableStateOf(false) }
     var showCleared by remember { mutableStateOf(false) }
     var defaultTick by remember { mutableStateOf(0) }
     val settingsContext = LocalContext.current
@@ -8654,6 +8761,41 @@ private fun SettingsScreen(
                         }
                     )
                     HorizontalDivider()
+                }
+            }
+            item {
+                Text("桌面模式站点", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "在某个网站打开「桌面版网站」后，这个网站会被记到这里，下次新打开它时自动用桌面版。关掉那个网站的桌面版开关，它就会从这里去掉。已经打开的标签页不会因为名单变化而改变。",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            if (desktopList.isEmpty()) {
+                item {
+                    Text(
+                        "还没有。在任意网站点右上角菜单打开「桌面版网站」，那个网站就会记到这里。",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            } else {
+                items(desktopList, key = { it }) { site ->
+                    ListItem(
+                        headlineContent = { Text(site) },
+                        trailingContent = {
+                            IconButton(onClick = {
+                                onRemoveDesktopSite(site)
+                                desktopList = desktopList - site
+                            }) {
+                                Icon(Icons.Filled.Delete, contentDescription = "删除桌面模式记忆")
+                            }
+                        }
+                    )
+                    HorizontalDivider()
+                }
+                item {
+                    TextButton(onClick = { showClearDesktopConfirm = true }) {
+                        Text("清空全部桌面模式站点")
+                    }
                 }
             }
             }
@@ -9273,6 +9415,30 @@ private fun SettingsScreen(
             dismissButton = {
                 TextButton(onClick = { updateAvailable = null }) {
                     Text("以后再说")
+                }
+            }
+        )
+    }
+    if (showClearDesktopConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearDesktopConfirm = false },
+            title = { Text("清空桌面模式站点？") },
+            text = {
+                Text(
+                    "会把记住的 ${desktopList.size} 个网站全部去掉，" +
+                        "它们下次打开时恢复用手机版显示。已经打开的标签页不受影响。"
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showClearDesktopConfirm = false
+                    onClearDesktopSites()
+                    desktopList = emptyList()
+                }) { Text("清空") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearDesktopConfirm = false }) {
+                    Text("取消")
                 }
             }
         )

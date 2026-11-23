@@ -376,9 +376,9 @@ fun hostOf(url: String): String? = try {
 /**
  * The project's one host-matching rule: [host] belongs to [site]
  * when it is the site itself or a subdomain of it. Every per-site
- * feature (compat memory, per-site data clearing, per-site history
- * deletion) goes through this so "this site" means the same thing
- * everywhere.
+ * feature (compat memory, desktop-mode memory, per-site data
+ * clearing, per-site history deletion) goes through this so
+ * "this site" means the same thing everywhere.
  */
 fun hostMatchesSite(host: String?, site: String): Boolean {
     if (host.isNullOrBlank() || site.isBlank()) return false
@@ -387,6 +387,12 @@ fun hostMatchesSite(host: String?, site: String): Boolean {
 
 /** True when [host] is a remembered compat site or a subdomain of one. */
 fun isCompatHost(host: String?, sites: Set<String>): Boolean {
+    if (host.isNullOrBlank()) return false
+    return sites.any { site -> hostMatchesSite(host, site) }
+}
+
+/** True when [host] is a remembered desktop-mode site or a subdomain of one. */
+fun isDesktopHost(host: String?, sites: Set<String>): Boolean {
     if (host.isNullOrBlank()) return false
     return sites.any { site -> hostMatchesSite(host, site) }
 }
@@ -625,6 +631,36 @@ class Store(context: Context) {
         prefs.edit().putString(KEY_COMPAT_SITES, arr.toString()).apply()
     }
 
+    // Desktop-mode sites (v0.56.0): hosts the user switched to the
+    // desktop site view on. Stored exactly like the compat list —
+    // a JSON array of plain host names — and matched with the same
+    // shared hostMatchesSite rule.
+    fun loadDesktopSites(): MutableSet<String> {
+        val raw = safeString(KEY_DESKTOP_SITES, null) ?: return mutableSetOf()
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).map { arr.getString(it) }.toMutableSet()
+        } catch (e: Exception) {
+            mutableSetOf()
+        }
+    }
+
+    fun addDesktopSite(domain: String) {
+        val sites = loadDesktopSites()
+        if (sites.add(domain)) saveDesktopSites(sites)
+    }
+
+    fun removeDesktopSite(domain: String) {
+        val sites = loadDesktopSites()
+        if (sites.remove(domain)) saveDesktopSites(sites)
+    }
+
+    private fun saveDesktopSites(sites: Set<String>) {
+        val arr = JSONArray()
+        sites.forEach { arr.put(it) }
+        prefs.edit().putString(KEY_DESKTOP_SITES, arr.toString()).apply()
+    }
+
     fun loadBookmarks(): MutableList<Bookmark> = readList(KEY_BOOKMARKS) {
         Bookmark(it.optString("title"), it.optString("url"), it.optBoolean("pinned"))
     }.toMutableList()
@@ -731,6 +767,7 @@ class Store(context: Context) {
         private const val KEY_DISABLE_JAVASCRIPT = "disable_javascript"
         private const val KEY_SEARCH_SUGGESTIONS = "search_suggestions"
         private const val KEY_COMPAT_SITES = "compat_sites"
+        private const val KEY_DESKTOP_SITES = "desktop_sites"
         private const val KEY_BOOKMARKS = "bookmarks"
         private const val KEY_HISTORY = "history"
         private const val KEY_READING_LIST = "reading_list"
@@ -840,7 +877,14 @@ data class BackupData(
      * the user marked on this device are never deleted by a restore.
      * Empty when the backup predates v0.51.0.
      */
-    val compatSites: List<String> = emptyList()
+    val compatSites: List<String> = emptyList(),
+    /**
+     * Per-site desktop-mode list (v0.56.0). Same treatment as the
+     * compat list: a user asset collected site by site, so it sits
+     * beside the lists and merges (union) on import. Empty when the
+     * backup predates v0.56.0.
+     */
+    val desktopSites: List<String> = emptyList()
 )
 
 /** Serialize a full backup (lists + main settings) to one JSON text. */
@@ -850,7 +894,8 @@ fun backupToJson(
     readingList: List<ReadingItem>,
     speedDials: List<SpeedDial>,
     settings: BackupSettings,
-    compatSites: List<String> = emptyList()
+    compatSites: List<String> = emptyList(),
+    desktopSites: List<String> = emptyList()
 ): String {
     val bookmarkArr = JSONArray()
     bookmarks.forEach {
@@ -903,6 +948,8 @@ fun backupToJson(
     }
     val compatArr = JSONArray()
     compatSites.forEach { compatArr.put(it) }
+    val desktopArr = JSONArray()
+    desktopSites.forEach { desktopArr.put(it) }
     return JSONObject()
         .put("format", BACKUP_FORMAT)
         .put("version", BACKUP_FORMAT_VERSION)
@@ -911,6 +958,7 @@ fun backupToJson(
         .put("readingList", readingArr)
         .put("speedDials", dialArr)
         .put("compatSites", compatArr)
+        .put("desktopSites", desktopArr)
         .put("settings", settingsObj)
         .toString(2)
 }
@@ -1058,7 +1106,26 @@ fun parseBackup(raw: String): BackupData? {
             }
         }.distinct()
     }
-    return BackupData(bookmarks, history, reading, dials, settings, compatSites)
+    // Desktop-mode sites (v0.56.0): same plain-host-name guard as
+    // the compat list above. Absent in older backups: empty list.
+    val desktopArr = obj.optJSONArray("desktopSites")
+    val desktopSites = if (desktopArr == null) {
+        emptyList()
+    } else {
+        val count = minOf(desktopArr.length(), MAX_IMPORT_ENTRIES)
+        (0 until count).mapNotNull { i ->
+            val host = desktopArr.optString(i).trim().lowercase()
+            host.takeIf {
+                it.isNotEmpty() && it.length <= 253 &&
+                    !it.contains("://") && !it.contains("/") &&
+                    !it.contains(":") && it.none { c -> c.isWhitespace() }
+            }
+        }.distinct()
+    }
+    return BackupData(
+        bookmarks, history, reading, dials, settings, compatSites,
+        desktopSites
+    )
 }
 
 /** Serialize bookmarks for export; the format is a plain JSON object. */
