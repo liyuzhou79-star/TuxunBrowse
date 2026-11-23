@@ -303,6 +303,21 @@ private fun geckoErrorReason(error: WebRequestError): String = when (error.code)
 
 private var nextTabId = 1
 
+/**
+ * Cap on simultaneously alive tab engines (v0.41.0, engine sleep).
+ * The lazy-creation contract (v0.23.0) means a tab only builds its
+ * engine when first shown — but once built, the engine used to stay
+ * alive for as long as the tab existed, so twenty visited tabs meant
+ * twenty WebViews/GeckoSessions in memory, which gets low-memory
+ * devices killed or janky. From this version, at most this many
+ * engines stay alive at once; past the cap, the least recently used
+ * non-active tabs are put to sleep (see BrowserTab.sleepEngine).
+ * Six is the balance point: enough that the tabs a user actually
+ * bounces between stay instant to switch back to, small enough that
+ * the worst-case engine memory stays bounded on modest hardware.
+ */
+const val ALIVE_ENGINE_LIMIT = 6
+
 private const val DESKTOP_USER_AGENT =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) " +
         "Chrome/120.0.0.0 Safari/537.36"
@@ -538,6 +553,40 @@ class BrowserTab(
      */
     val engineCreated: Boolean
         get() = webView != null || geckoView != null || geckoSession != null
+
+    /**
+     * Last time this tab was the active (visible) tab, in
+     * [System.currentTimeMillis] terms; set at construction and
+     * refreshed by [noteUsed] every time the tab becomes active.
+     * This is the LRU key for engine sleep (v0.41.0): when too many
+     * engines are alive, the non-active tabs with the oldest stamps
+     * sleep first. A tab the user just switched away from has a
+     * fresh stamp, so it naturally sits near the back of the sleep
+     * queue — it is never the first thing slept. Plain field, not
+     * Compose state: nothing renders from it, the sleep pass just
+     * reads it on the main thread.
+     */
+    var lastUsedAt: Long = System.currentTimeMillis()
+        private set
+
+    /** Mark this tab as just used (it became the active tab). */
+    fun noteUsed() {
+        lastUsedAt = System.currentTimeMillis()
+    }
+
+    /**
+     * True while a Gecko response-type download (v0.4.0) is still
+     * copying this tab's WebResponse body stream to disk on the
+     * background download executor. The stream belongs to the
+     * session's response: closing the session mid-copy could cut the
+     * download off, so the engine-sleep pass skips tabs with this
+     * flag set. Set in onExternalResponse before the copy starts,
+     * cleared by saveGeckoDownload's completion callback on every
+     * exit path. Volatile because the clear happens on the download
+     * thread while the sleep pass reads it on the main thread.
+     */
+    @Volatile
+    var geckoDownloadActive: Boolean = false
 
     val isHome: Boolean
         get() = url == HOME_URL
@@ -865,6 +914,77 @@ class BrowserTab(
         geckoSession?.close()
         geckoSession = null
         geckoView = null
+    }
+
+    /**
+     * Put this tab's engine to sleep (v0.41.0): destroy the engine
+     * objects exactly like [destroy] does (WebView stopLoading +
+     * destroy, GeckoSession close), but keep the tab itself — url,
+     * title, engine choice, desktop-mode and incognito flags are
+     * data on the tab and survive, and the thumbnail is kept too
+     * (it is just a bitmap the tab grid shows; it costs a fixed,
+     * already-capped amount of memory and the grid must not lose
+     * the preview of a tab the user may switch back to). The tab
+     * returns to the exact not-yet-created state of the v0.23.0
+     * lazy contract ([engineCreated] false), so switching back to
+     * it re-creates the engine through the same obtain*() path as a
+     * first visit and loads the then-current [url].
+     *
+     * The honest trade-off, same family as the v0.34.0 rebuild
+     * losses: everything that lived only inside the engine is gone
+     * — scroll position, form contents the user had typed, and the
+     * back/forward stack (the Gecko history snapshot is dropped
+     * here too, since it describes the dead session's stack).
+     * Page-level transient state (progress, find info, load error,
+     * reader mode, blocked count, certificate facts) is reset for
+     * the same reason: none of it describes the page that will be
+     * freshly loaded on return.
+     *
+     * Only ever called on non-active tabs by the app's sleep pass:
+     * the visible tab never sleeps, so no fullscreen or on-screen
+     * state can be torn down here. Incognito tabs sleep under the
+     * same rule — sleeping writes nothing anywhere, the tab's data
+     * stays in memory exactly as before, so the incognito contract
+     * (nothing persisted) is untouched.
+     */
+    fun sleepEngine() {
+        if (!engineCreated) return
+        customViewCallback = null
+        popupChild?.let {
+            try {
+                it.destroy()
+            } catch (t: Throwable) {
+                // Already gone; nothing to clean up.
+            }
+        }
+        popupChild = null
+        webView?.let {
+            try {
+                it.stopLoading()
+                it.destroy()
+            } catch (t: Throwable) {
+                // Already gone; nothing to clean up.
+            }
+        }
+        webView = null
+        try {
+            geckoSession?.close()
+        } catch (t: Throwable) {
+            // Already gone; nothing to clean up.
+        }
+        geckoSession = null
+        geckoView = null
+        progress = 100
+        canGoBack = false
+        canGoForward = false
+        readerActive = false
+        findInfo = ""
+        loadError = null
+        blockedCount = 0
+        certIssuedTo = ""
+        certIssuedBy = ""
+        geckoHistoryEntries = emptyList()
+        geckoHistoryIndex = -1
     }
 
     /**
@@ -1592,7 +1712,16 @@ class BrowserTab(
             // WebResponse carries uri/headers (WebMessage) plus a public
             // body InputStream that the app must consume itself.
             override fun onExternalResponse(s: GeckoSession, response: WebResponse) {
-                saveGeckoDownload(appContext, response)
+                // The body stream is copied on a background thread
+                // after this returns; flag the tab as download-busy
+                // until the copy finishes so the engine-sleep pass
+                // (v0.41.0) never closes this session mid-copy and
+                // cuts the download off. Cleared on every exit path
+                // of saveGeckoDownload via its completion callback.
+                geckoDownloadActive = true
+                saveGeckoDownload(appContext, response) {
+                    geckoDownloadActive = false
+                }
             }
         }
         // PromptDelegate, verified against the GeckoView 132 AAR with
@@ -1965,7 +2094,11 @@ private val geckoDownloadExecutor = java.util.concurrent.Executors.newSingleThre
  * it goes to the app's own download folder, which needs no permission
  * either.
  */
-fun saveGeckoDownload(context: Context, response: WebResponse) {
+fun saveGeckoDownload(
+    context: Context,
+    response: WebResponse,
+    onFinished: () -> Unit = {}
+) {
     val uri = response.uri
     val headers = response.headers
     fun header(name: String): String? = headers.entries
@@ -1977,10 +2110,12 @@ fun saveGeckoDownload(context: Context, response: WebResponse) {
     val body = response.body
     if (body == null) {
         Toast.makeText(context, "这个文件没有可下载的内容", Toast.LENGTH_LONG).show()
+        onFinished()
         return
     }
     Toast.makeText(context, "开始下载：$fileName", Toast.LENGTH_LONG).show()
-    geckoDownloadExecutor.execute {
+    try {
+        geckoDownloadExecutor.execute {
         var ok = false
         // The name the file actually lands under. MediaStore never
         // overwrites an existing file: on a name clash it saves
@@ -2071,6 +2206,14 @@ fun saveGeckoDownload(context: Context, response: WebResponse) {
                     // Best-effort cleanup.
                 }
             }
+            // The stream copy is over, one way or the other: the
+            // owning tab is no longer download-busy, so the engine
+            // sleep pass may treat it like any other tab again.
+            try {
+                onFinished()
+            } catch (t: Throwable) {
+                // The callback only clears a flag; never crash here.
+            }
         }
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             Toast.makeText(
@@ -2079,6 +2222,11 @@ fun saveGeckoDownload(context: Context, response: WebResponse) {
                 Toast.LENGTH_LONG
             ).show()
         }
+        }
+    } catch (t: Throwable) {
+        // The copy never even started (executor rejected it): the
+        // tab is not download-busy after all.
+        onFinished()
     }
 }
 

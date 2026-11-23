@@ -188,6 +188,7 @@ import com.tuxunbrowse.android.data.isAllowedPageUrl
 import com.tuxunbrowse.android.data.isUrlLikeInput
 import com.tuxunbrowse.android.data.matchSuggestions
 import com.tuxunbrowse.android.data.resolveInput
+import com.tuxunbrowse.android.engine.ALIVE_ENGINE_LIMIT
 import com.tuxunbrowse.android.engine.AdBlocker
 import com.tuxunbrowse.android.engine.BrowserTab
 import com.tuxunbrowse.android.engine.GeckoHolder
@@ -503,6 +504,37 @@ fun BrowserApp(
     }
 
     fun activeTab(): BrowserTab? = tabs.firstOrNull { it.id == activeTabId }
+
+    /**
+     * Engine sleep pass (v0.41.0): keep at most [ALIVE_ENGINE_LIMIT]
+     * tab engines alive. When the alive count is over the cap, the
+     * excess is slept away starting from the least recently used
+     * NON-ACTIVE tabs (see BrowserTab.lastUsedAt / sleepEngine).
+     * The active tab never sleeps, and a tab whose Gecko download
+     * stream is still being copied to disk is skipped for this pass
+     * (closing its session could cut the download off; it becomes
+     * eligible again on the next pass after the copy finishes). If
+     * downloads keep the count over the cap for now, that is fine —
+     * the pass runs again on every tab switch. Incognito tabs are
+     * treated exactly like normal ones: sleeping only destroys the
+     * in-memory engine, nothing is written anywhere. Sleeping is
+     * silent in the UI on purpose — no badge on the tab cards; a
+     * slept tab simply reloads its page when switched back to.
+     */
+    fun enforceEngineSleepLimit() {
+        val alive = tabs.filter { it.engineCreated }
+        if (alive.size <= ALIVE_ENGINE_LIMIT) return
+        val excess = alive.size - ALIVE_ENGINE_LIMIT
+        val candidates = alive
+            .filter { it.id != activeTabId && !it.geckoDownloadActive }
+            .sortedBy { it.lastUsedAt }
+        var slept = 0
+        for (candidate in candidates) {
+            if (slept >= excess) break
+            candidate.sleepEngine()
+            slept++
+        }
+    }
 
     // Gecko tabs report remembered compat sites through this handler; it is
     // wired up below once the tab-replacement helper exists.
@@ -1652,7 +1684,16 @@ fun BrowserApp(
     // created by TabContent, so first-switch tabs are covered too.
     // (Before this, tab switches never touched setActive at all.)
     LaunchedEffect(activeTabId) {
+        // Stamp the newly active tab as most recently used BEFORE
+        // the sleep pass reads the stamps (v0.41.0).
+        activeTab()?.noteUsed()
         tabs.forEach { it.applyEngineActiveState(it.id == activeTabId) }
+        // Engine sleep pass (v0.41.0): keyed on activeTabId, so it
+        // runs after every tab creation and every tab switch — by
+        // the time this effect runs, the newly active tab's engine
+        // has been created by TabContent during composition, so the
+        // alive count it sees is the real one.
+        enforceEngineSleepLimit()
     }
 
     webPermissionHandler = { request ->
