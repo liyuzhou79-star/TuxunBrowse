@@ -1,5 +1,16 @@
 package com.tuxunbrowse.android.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -12,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -95,6 +107,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
@@ -799,7 +812,29 @@ fun BrowserApp(
         fullscreenView = null
     }
 
-    when (screen) {
+    // Page transitions follow Material 3 motion: a short fade
+    // everywhere, plus a slight horizontal slide between the
+    // Compose-only sub-pages. Going to or from the browser itself is
+    // fade-only — sliding a native web view (above all Gecko's
+    // surface) would look broken. Durations stay in the 180–250 ms
+    // range with the standard FastOutSlowIn easing.
+    AnimatedContent(
+        targetState = screen,
+        transitionSpec = {
+            if (initialState == Screen.BROWSER || targetState == Screen.BROWSER) {
+                fadeIn(tween(220, easing = FastOutSlowInEasing)) togetherWith
+                    fadeOut(tween(180, easing = FastOutSlowInEasing))
+            } else {
+                (fadeIn(tween(250, easing = FastOutSlowInEasing)) +
+                    slideInHorizontally(
+                        tween(250, easing = FastOutSlowInEasing)
+                    ) { it / 10 }) togetherWith
+                    fadeOut(tween(200, easing = FastOutSlowInEasing))
+            }
+        },
+        label = "screenTransition"
+    ) { targetScreen ->
+        when (targetScreen) {
         Screen.PICKER -> EnginePickerScreen(
             title = "选择浏览器内核",
             subtitle = "TuxunBrowse 有两个内核，打开网页的方式不同。这个选择以后随时能在设置里改。",
@@ -844,7 +879,6 @@ fun BrowserApp(
                     activeTab()?.load(resolveInput(text, store.searchEngine))
                 },
                 bookmarks = bookmarks,
-                history = history,
                 searchEngine = store.searchEngine,
                 onOpenSuggestion = { url -> openUrl(url) },
                 onGoHome = { activeTab()?.load(HOME_URL) },
@@ -903,7 +937,6 @@ fun BrowserApp(
                 homeContent = {
                     HomeContent(
                         bookmarks = bookmarks,
-                        history = history,
                         searchEngine = store.searchEngine,
                         onSearchUrl = { url -> openUrl(url) },
                         onOpenBookmark = { openUrl(it.url) },
@@ -918,9 +951,7 @@ fun BrowserApp(
                                 store.saveBookmarks(bookmarks)
                             }
                         },
-                        onOpenHistoryItem = { openUrl(it.url) },
-                        onOpenAllBookmarks = { screen = Screen.BOOKMARKS },
-                        onOpenAllHistory = { screen = Screen.HISTORY }
+                        onOpenAllBookmarks = { screen = Screen.BOOKMARKS }
                     )
                 }
             )
@@ -1010,6 +1041,7 @@ fun BrowserApp(
         Screen.DOWNLOADS -> DownloadsScreen(
             onBack = { screen = Screen.BROWSER }
         )
+        }
     }
 
     val linkTarget = linkMenuTarget
@@ -1221,15 +1253,12 @@ fun BrowserApp(
 @Composable
 private fun HomeContent(
     bookmarks: List<Bookmark>,
-    history: List<HistoryItem>,
     searchEngine: SearchEngine,
     onSearchUrl: (String) -> Unit,
     onOpenBookmark: (Bookmark) -> Unit,
     onDeleteBookmark: (Bookmark) -> Unit,
     onTogglePinBookmark: (Bookmark) -> Unit,
-    onOpenHistoryItem: (HistoryItem) -> Unit,
-    onOpenAllBookmarks: () -> Unit,
-    onOpenAllHistory: () -> Unit
+    onOpenAllBookmarks: () -> Unit
 ) {
     var query by remember { mutableStateOf("") }
     var pendingDelete by remember { mutableStateOf<Bookmark?>(null) }
@@ -1306,12 +1335,24 @@ private fun HomeContent(
         contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 16.dp)
     ) {
         item(span = { GridItemSpan(maxLineSpan) }) {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("TuxunBrowse", style = MaterialTheme.typography.headlineMedium)
-                Text(
-                    "搜点什么，或者从下面接着上次的看。",
-                    style = MaterialTheme.typography.bodyMedium
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(
+                    Icons.Filled.Language,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(40.dp)
                 )
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("TuxunBrowse", style = MaterialTheme.typography.headlineMedium)
+                    Text(
+                        "输入网址或搜索，开始上网。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
         item(span = { GridItemSpan(maxLineSpan) }) {
@@ -1333,26 +1374,21 @@ private fun HomeContent(
                 )
             )
         }
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("常用书签", style = MaterialTheme.typography.titleMedium)
-                TextButton(onClick = onOpenAllBookmarks) { Text("全部书签") }
-            }
-        }
-        if (bookmarks.isEmpty()) {
+        // The bookmarks block only exists when there really are
+        // bookmarks: no header, no grey empty-state card with a long
+        // explanation. History is not shown on the home page at all —
+        // it lives on the History page.
+        if (bookmarks.isNotEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }) {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        "还没有书签。在网页右上角点星星存下来的页面，会变成这里的快捷入口。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(16.dp)
-                    )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("常用书签", style = MaterialTheme.typography.titleMedium)
+                    TextButton(onClick = onOpenAllBookmarks) { Text("全部书签") }
                 }
             }
-        } else {
             gridItems(
                 bookmarks.sortedByDescending { it.pinned }.take(8),
                 key = { it.url }
@@ -1379,43 +1415,6 @@ private fun HomeContent(
                             null
                         }
                     )
-                }
-            }
-        }
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("最近历史", style = MaterialTheme.typography.titleMedium)
-                TextButton(onClick = onOpenAllHistory) { Text("全部历史") }
-            }
-        }
-        if (history.isEmpty()) {
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                Text(
-                    "还没有历史记录。浏览过的网页会按时间出现在这里，无痕标签打开的不会出现。",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            }
-        } else {
-            gridItems(
-                history.take(6),
-                key = { it.time.toString() + it.url },
-                span = { GridItemSpan(maxLineSpan) }
-            ) { item ->
-                Column {
-                    ListItem(
-                        headlineContent = { Text(item.title, maxLines = 1) },
-                        supportingContent = { Text(item.url, maxLines = 1) },
-                        leadingContent = {
-                            Icon(Icons.Filled.History, contentDescription = null)
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onOpenHistoryItem(item) }
-                    )
-                    HorizontalDivider()
                 }
             }
         }
@@ -1505,8 +1504,6 @@ private fun EngineCard(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
 /**
  * The app's own load-failure page, shown when a tab's page could not
  * be loaded at the network level (offline, unknown host, refused
@@ -1531,7 +1528,9 @@ private fun LoadErrorContent(
             Icons.Filled.Error,
             contentDescription = "加载失败",
             tint = MaterialTheme.colorScheme.error,
-            modifier = Modifier.padding(bottom = 16.dp)
+            modifier = Modifier
+                .size(56.dp)
+                .padding(bottom = 16.dp)
         )
         Text(
             "网页打不开",
@@ -1569,6 +1568,8 @@ private fun LoadErrorContent(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
 private fun BrowserScreen(
     tabs: List<BrowserTab>,
     activeTab: BrowserTab?,
@@ -1586,7 +1587,6 @@ private fun BrowserScreen(
     onToggleBookmark: () -> Unit,
     onNavigate: (String) -> Unit,
     bookmarks: List<Bookmark>,
-    history: List<HistoryItem>,
     searchEngine: SearchEngine,
     onOpenSuggestion: (String) -> Unit,
     onGoHome: () -> Unit,
@@ -1910,7 +1910,13 @@ private fun BrowserScreen(
                         .weight(1f)
                         .onFocusChanged { addressFocused = it.isFocused },
                     singleLine = true,
-                    placeholder = { Text("输入网址或搜索") },
+                    placeholder = {
+                        // Never wrap: a wrapped placeholder in a
+                        // squeezed field renders one character per
+                        // line (the vertical-text bug from the user's
+                        // screenshot).
+                        Text("输入网址或搜索", maxLines = 1, softWrap = false)
+                    },
                     leadingIcon = {
                         when {
                             activeTab == null || activeTab.isHome ->
@@ -1927,28 +1933,52 @@ private fun BrowserScreen(
                     )
                 )
                 if (activeTab != null) {
-                    AssistChip(
-                        onClick = { showEngineSwitch = true },
-                        label = {
-                            Text(if (activeTab.engine == Engine.GECKO) "火狐" else "WebView")
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Filled.SwapHoriz, contentDescription = "切换内核")
-                        }
-                    )
+                    // A narrow icon button, not a labelled chip: the
+                    // chip's text ate the address field's width on
+                    // narrow screens and squeezed its placeholder into
+                    // a vertical strip. The switch dialog still shows
+                    // which engine is current.
+                    IconButton(onClick = { showEngineSwitch = true }) {
+                        Icon(
+                            Icons.Filled.SwapHoriz,
+                            contentDescription = "切换内核（现在是" +
+                                if (activeTab.engine == Engine.GECKO) "火狐）" else "WebView）"
+                        )
+                    }
                 }
                 IconButton(onClick = { activeTab?.reload() }) {
                     Icon(Icons.Filled.Refresh, contentDescription = "刷新")
                 }
             }
-            if (activeTab != null && activeTab.progress in 1..99) {
+            // Loading progress: the bar fades/slides in and out and
+            // its value animates smoothly instead of jumping in steps.
+            val rawProgress = activeTab?.progress ?: 100
+            val animatedProgress by animateFloatAsState(
+                targetValue = rawProgress / 100f,
+                animationSpec = tween(200, easing = FastOutSlowInEasing),
+                label = "loadProgress"
+            )
+            AnimatedVisibility(
+                visible = activeTab != null && rawProgress in 1..99,
+                enter = fadeIn(tween(200, easing = FastOutSlowInEasing)) +
+                    expandVertically(tween(200, easing = FastOutSlowInEasing)),
+                exit = fadeOut(tween(200, easing = FastOutSlowInEasing)) +
+                    shrinkVertically(tween(200, easing = FastOutSlowInEasing))
+            ) {
                 LinearProgressIndicator(
-                    progress = { activeTab.progress / 100f },
+                    progress = { animatedProgress },
                     modifier = Modifier.fillMaxWidth()
                 )
             }
             val clip = clipUrl
-            if (clip != null && !clipDismissed && clip != activeTab?.url) {
+            AnimatedVisibility(
+                visible = clip != null && !clipDismissed && clip != activeTab?.url,
+                enter = fadeIn(tween(220, easing = FastOutSlowInEasing)) +
+                    expandVertically(tween(220, easing = FastOutSlowInEasing)),
+                exit = fadeOut(tween(180, easing = FastOutSlowInEasing)) +
+                    shrinkVertically(tween(180, easing = FastOutSlowInEasing))
+            ) {
+            if (clip != null) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1972,19 +2002,32 @@ private fun BrowserScreen(
                     }
                 }
             }
+            }
+            // Suggestions are bookmarks only (plus the search tail
+            // below): history stays on the History page and is no
+            // longer mixed into the address bar. matchSuggestions
+            // itself is unchanged — it is simply handed no history.
             val suggestions = if (addressFocused && addressText.isNotBlank()) {
-                matchSuggestions(addressText, bookmarks, history)
+                matchSuggestions(addressText, bookmarks, emptyList())
             } else {
                 emptyList()
             }
             // Trailing "just search this" row: shown whenever the typed
             // text is not already a URL (a URL would only duplicate the
-            // Go action), and shown even when there are no bookmark or
-            // history matches, so the list is never a dead end.
+            // Go action), and shown even when there are no bookmark
+            // matches, so the list is never a dead end.
             val trimmedAddress = addressText.trim()
             val showSearchTail = addressFocused && trimmedAddress.isNotEmpty() &&
                 !isUrlLikeInput(trimmedAddress)
-            if (suggestions.isNotEmpty() || showSearchTail) {
+            // The suggestion card unfolds under the address bar when
+            // it gains focus and folds away again afterwards.
+            AnimatedVisibility(
+                visible = suggestions.isNotEmpty() || showSearchTail,
+                enter = fadeIn(tween(220, easing = FastOutSlowInEasing)) +
+                    expandVertically(tween(220, easing = FastOutSlowInEasing)),
+                exit = fadeOut(tween(180, easing = FastOutSlowInEasing)) +
+                    shrinkVertically(tween(180, easing = FastOutSlowInEasing))
+            ) {
                 ElevatedCard(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2042,7 +2085,13 @@ private fun BrowserScreen(
                     }
                 }
             }
-            if (showFindBar && activeTab != null && !activeTab.isHome) {
+            AnimatedVisibility(
+                visible = showFindBar && activeTab != null && !activeTab.isHome,
+                enter = fadeIn(tween(220, easing = FastOutSlowInEasing)) +
+                    expandVertically(tween(220, easing = FastOutSlowInEasing)),
+                exit = fadeOut(tween(180, easing = FastOutSlowInEasing)) +
+                    shrinkVertically(tween(180, easing = FastOutSlowInEasing))
+            ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2060,11 +2109,11 @@ private fun BrowserScreen(
                             onSearch = { onFind(findQuery, true) }
                         )
                     )
-                    if (activeTab.engine == Engine.WEBVIEW &&
-                        activeTab.findInfo.isNotEmpty()
+                    if (activeTab?.engine == Engine.WEBVIEW &&
+                        !activeTab?.findInfo.isNullOrEmpty()
                     ) {
                         Text(
-                            activeTab.findInfo,
+                            activeTab?.findInfo.orEmpty(),
                             style = MaterialTheme.typography.bodyMedium,
                             modifier = Modifier.padding(horizontal = 4.dp)
                         )
@@ -2088,22 +2137,38 @@ private fun BrowserScreen(
                 }
             }
             }
-            if (activeTab != null) {
-                if (activeTab.isHome) {
-                    homeContent()
-                } else if (activeTab.loadError != null) {
-                    // The page failed to load at the network level:
-                    // show the app's own error page instead of the
-                    // engine's blank/default one. It disappears on its
-                    // own once a load succeeds (both engines clear the
-                    // state when a new load starts).
-                    LoadErrorContent(
-                        error = activeTab.loadError!!,
-                        onReload = onReloadPage,
-                        onGoHome = onGoHome
-                    )
-                } else {
-                    TabContent(tab = activeTab, modifier = Modifier.fillMaxSize())
+            // Tab content crossfades on every switch: changing tabs,
+            // creating or closing one, home <-> web page, and the
+            // error page appearing or clearing. Fade only (no slide):
+            // the content is a native web view whose surface does not
+            // travel well. Keyed by tab id, and the content is looked
+            // up by that id so the outgoing and incoming sides each
+            // show their own tab during the transition.
+            AnimatedContent(
+                targetState = activeTab?.id,
+                transitionSpec = {
+                    fadeIn(tween(220, easing = FastOutSlowInEasing)) togetherWith
+                        fadeOut(tween(180, easing = FastOutSlowInEasing))
+                },
+                label = "tabContentTransition",
+                modifier = Modifier.fillMaxSize()
+            ) { targetTabId ->
+                val tab = tabs.firstOrNull { it.id == targetTabId }
+                when {
+                    tab == null -> Box(modifier = Modifier.fillMaxSize())
+                    tab.isHome -> homeContent()
+                    tab.loadError != null ->
+                        // The page failed to load at the network level:
+                        // show the app's own error page instead of the
+                        // engine's blank/default one. It disappears on
+                        // its own once a load succeeds (both engines
+                        // clear the state when a new load starts).
+                        LoadErrorContent(
+                            error = tab.loadError!!,
+                            onReload = onReloadPage,
+                            onGoHome = onGoHome
+                        )
+                    else -> TabContent(tab = tab, modifier = Modifier.fillMaxSize())
                 }
             }
         }
@@ -2337,6 +2402,34 @@ private fun BrowserScreen(
     }
 }
 
+/**
+ * Shared empty state: one large muted icon and one short line,
+ * centred — never a bare paragraph of text on a plain background.
+ */
+@Composable
+private fun EmptyState(icon: ImageVector, text: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .size(48.dp)
+                .padding(bottom = 12.dp)
+        )
+        Text(
+            text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun BookmarksScreen(
@@ -2433,10 +2526,9 @@ private fun BookmarksScreen(
         ) {
             if (bookmarks.isEmpty()) {
                 item {
-                    Text(
-                        "还没有书签。在网页右上角点星星就能把当前页存到这里，首页上也会出现它的快捷入口。",
-                        style = MaterialTheme.typography.bodyLarge,
-                        modifier = Modifier.padding(16.dp)
+                    EmptyState(
+                        Icons.Filled.Bookmark,
+                        "还没有书签，点网页右上角的星星就能存一个。"
                     )
                 }
             } else {
@@ -2456,11 +2548,7 @@ private fun BookmarksScreen(
                 }
                 if (visibleBookmarks.isEmpty()) {
                     item {
-                        Text(
-                            "没有找到和「$bookmarkQuery」相关的书签。",
-                            style = MaterialTheme.typography.bodyLarge,
-                            modifier = Modifier.padding(16.dp)
-                        )
+                        EmptyState(Icons.Filled.Search, "没有找到相关的书签。")
                     }
                 }
             }
@@ -2575,19 +2663,11 @@ private fun HistoryScreen(
             }
             if (history.isEmpty()) {
                 item {
-                    Text(
-                        "还没有历史记录。浏览过的网页会按时间列在这里，无痕标签打开的网页不会出现。",
-                        style = MaterialTheme.typography.bodyLarge,
-                        modifier = Modifier.padding(16.dp)
-                    )
+                    EmptyState(Icons.Filled.History, "还没有历史记录。")
                 }
             } else if (filtered.isEmpty()) {
                 item {
-                    Text(
-                        "没有找到和「$query」相关的历史记录。",
-                        style = MaterialTheme.typography.bodyLarge,
-                        modifier = Modifier.padding(16.dp)
-                    )
+                    EmptyState(Icons.Filled.Search, "没有找到相关的历史记录。")
                 }
             }
             groups.forEach { (bucket, bucketItems) ->
@@ -2783,11 +2863,7 @@ private fun DownloadsScreen(onBack: () -> Unit) {
         ) {
             if (entries.isEmpty()) {
                 item {
-                    Text(
-                        "还没有下载记录。在网页里点到下载链接时，文件会交给系统下载，进度和结果会列在这里。",
-                        style = MaterialTheme.typography.bodyLarge,
-                        modifier = Modifier.padding(16.dp)
-                    )
+                    EmptyState(Icons.Filled.Download, "还没有下载记录。")
                 }
             }
             items(entries, key = { it.id }) { entry ->
@@ -2939,7 +3015,7 @@ private fun ClearDataScreen(
             item {
                 ListItem(
                     headlineContent = { Text("历史记录") },
-                    supportingContent = { Text("应用里记下的浏览历史，首页的最近历史也会一起没。") },
+                    supportingContent = { Text("应用里记下的浏览历史会全部清掉。") },
                     trailingContent = {
                         Switch(
                             checked = clearHistorySel,
@@ -3415,7 +3491,7 @@ private fun SettingsScreen(
                         Text("关于 TuxunBrowse", style = MaterialTheme.typography.titleMedium)
                         Text(
                             "版本 $versionName。免费开源的双内核浏览器：火狐 GeckoView 与系统 WebView 由用户自选，" +
-                                "首页是应用自己的页面（搜索框、常用书签、最近历史），不拿任何网站的页面冒充首页。" +
+                                "首页是应用自己的页面（搜索框、常用书签快捷入口），不拿任何网站的页面冒充首页。" +
                                 "两个内核的登录状态互不相通，这是双内核的固有代价。",
                             style = MaterialTheme.typography.bodyMedium
                         )
