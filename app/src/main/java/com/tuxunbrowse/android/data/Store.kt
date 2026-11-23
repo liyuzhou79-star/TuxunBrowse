@@ -14,10 +14,40 @@ enum class Engine(val id: String, val label: String) {
     }
 }
 
+enum class SearchEngine(val id: String, val label: String, val template: String) {
+    BAIDU("baidu", "百度", "https://www.baidu.com/s?wd=%s"),
+    BING("bing", "必应", "https://www.bing.com/search?q=%s"),
+    GOOGLE("google", "Google", "https://www.google.com/search?q=%s"),
+    DUCKDUCKGO("duckduckgo", "DuckDuckGo", "https://duckduckgo.com/?q=%s");
+
+    fun searchUrl(query: String): String =
+        template.format(java.net.URLEncoder.encode(query, "UTF-8"))
+
+    companion object {
+        fun fromId(id: String?): SearchEngine =
+            entries.firstOrNull { it.id == id } ?: BAIDU
+    }
+}
+
 data class Bookmark(val title: String, val url: String)
 data class HistoryItem(val title: String, val url: String, val time: Long)
 
-/** Local persistence: engine choices, bookmarks and history in SharedPreferences. */
+/** Internal URL of the native home page. Never handed to a web engine. */
+const val HOME_URL = "tuxun://home"
+
+fun hostOf(url: String): String? = try {
+    java.net.URI(url).host?.lowercase()
+} catch (e: Exception) {
+    null
+}
+
+/** True when [host] is a remembered compat site or a subdomain of one. */
+fun isCompatHost(host: String?, sites: Set<String>): Boolean {
+    if (host.isNullOrBlank()) return false
+    return sites.any { site -> host == site || host.endsWith(".$site") }
+}
+
+/** Local persistence: engine choices, search engine, compat sites, bookmarks, history. */
 class Store(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("tuxunbrowse", Context.MODE_PRIVATE)
@@ -35,6 +65,36 @@ class Store(context: Context) {
 
     val incognitoEngineChosen: Boolean
         get() = prefs.contains(KEY_INCOGNITO_ENGINE)
+
+    var searchEngine: SearchEngine
+        get() = SearchEngine.fromId(prefs.getString(KEY_SEARCH_ENGINE, null))
+        set(value) = prefs.edit().putString(KEY_SEARCH_ENGINE, value.id).apply()
+
+    fun loadCompatSites(): MutableSet<String> {
+        val raw = prefs.getString(KEY_COMPAT_SITES, null) ?: return mutableSetOf()
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).map { arr.getString(it) }.toMutableSet()
+        } catch (e: Exception) {
+            mutableSetOf()
+        }
+    }
+
+    fun addCompatSite(domain: String) {
+        val sites = loadCompatSites()
+        if (sites.add(domain)) saveCompatSites(sites)
+    }
+
+    fun removeCompatSite(domain: String) {
+        val sites = loadCompatSites()
+        if (sites.remove(domain)) saveCompatSites(sites)
+    }
+
+    private fun saveCompatSites(sites: Set<String>) {
+        val arr = JSONArray()
+        sites.forEach { arr.put(it) }
+        prefs.edit().putString(KEY_COMPAT_SITES, arr.toString()).apply()
+    }
 
     fun loadBookmarks(): MutableList<Bookmark> = readList(KEY_BOOKMARKS) {
         Bookmark(it.optString("title"), it.optString("url"))
@@ -73,15 +133,17 @@ class Store(context: Context) {
     companion object {
         private const val KEY_MAIN_ENGINE = "main_engine"
         private const val KEY_INCOGNITO_ENGINE = "incognito_engine"
+        private const val KEY_SEARCH_ENGINE = "search_engine"
+        private const val KEY_COMPAT_SITES = "compat_sites"
         private const val KEY_BOOKMARKS = "bookmarks"
         private const val KEY_HISTORY = "history"
     }
 }
 
 /** Turn whatever the user typed into a URL: full URL, bare host, or a search. */
-fun resolveInput(input: String): String {
+fun resolveInput(input: String, searchEngine: SearchEngine = SearchEngine.BAIDU): String {
     val text = input.trim()
-    if (text.isEmpty()) return "about:blank"
+    if (text.isEmpty()) return HOME_URL
     if (text.startsWith("http://") || text.startsWith("https://") ||
         text.startsWith("about:") || text.startsWith("file:")
     ) return text
@@ -90,6 +152,6 @@ fun resolveInput(input: String): String {
     return if (looksLikeHost) {
         "https://$text"
     } else {
-        "https://duckduckgo.com/?q=" + java.net.URLEncoder.encode(text, "UTF-8")
+        searchEngine.searchUrl(text)
     }
 }

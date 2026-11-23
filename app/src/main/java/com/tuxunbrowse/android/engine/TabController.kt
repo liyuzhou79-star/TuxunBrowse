@@ -20,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.runtime.Composable
 import com.tuxunbrowse.android.data.Engine
+import com.tuxunbrowse.android.data.HOME_URL
 import org.mozilla.geckoview.AllowOrDeny
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
@@ -53,7 +54,9 @@ class BrowserTab(
     val engine: Engine,
     val incognito: Boolean,
     startUrl: String,
-    private val onVisit: (title: String, url: String) -> Unit
+    private val onVisit: (title: String, url: String) -> Unit,
+    private val shouldUseWebView: (String) -> Boolean = { false },
+    private val onCompatRedirect: (String) -> Unit = {}
 ) {
     val id: Int = nextTabId++
     var url by mutableStateOf(startUrl)
@@ -66,8 +69,14 @@ class BrowserTab(
     var geckoSession: GeckoSession? = null
     var geckoView: GeckoView? = null
 
+    val isHome: Boolean
+        get() = url == HOME_URL
+
     fun load(target: String) {
         url = target
+        // The native home page is rendered by the app itself; the web
+        // engines must never try to load its internal URL.
+        if (target == HOME_URL) return
         when (engine) {
             Engine.WEBVIEW -> webView?.loadUrl(target)
             Engine.GECKO -> geckoSession?.loadUri(target)
@@ -143,7 +152,7 @@ class BrowserTab(
             }
         )
         webView = view
-        if (url.isNotBlank()) view.loadUrl(url)
+        if (url.isNotBlank() && url != HOME_URL) view.loadUrl(url)
         return view
     }
 
@@ -178,7 +187,17 @@ class BrowserTab(
             override fun onLoadRequest(
                 s: GeckoSession,
                 request: GeckoSession.NavigationDelegate.LoadRequest
-            ): GeckoResult<AllowOrDeny>? = null
+            ): GeckoResult<AllowOrDeny>? {
+                // Per-site compatibility memory: a site the user moved to
+                // WebView once is handed over to a WebView tab whenever a
+                // Gecko tab tries to navigate to it.
+                val target = request.uri
+                if (target.startsWith("http") && shouldUseWebView(target)) {
+                    onCompatRedirect(target)
+                    return GeckoResult.fromValue(AllowOrDeny.DENY)
+                }
+                return null
+            }
         }
         session.progressDelegate = object : GeckoSession.ProgressDelegate {
             override fun onProgressChange(s: GeckoSession, p: Int) {
@@ -205,7 +224,7 @@ class BrowserTab(
         )
         view.setSession(session)
         geckoView = view
-        if (url.isNotBlank()) session.loadUri(url)
+        if (url.isNotBlank() && url != HOME_URL) session.loadUri(url)
         return view
     }
 }

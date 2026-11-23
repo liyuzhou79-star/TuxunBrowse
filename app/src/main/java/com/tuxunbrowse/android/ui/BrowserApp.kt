@@ -4,10 +4,15 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -19,12 +24,15 @@ import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -36,6 +44,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -48,6 +57,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -66,14 +76,17 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.tuxunbrowse.android.data.Bookmark
 import com.tuxunbrowse.android.data.Engine
+import com.tuxunbrowse.android.data.HOME_URL
 import com.tuxunbrowse.android.data.HistoryItem
+import com.tuxunbrowse.android.data.SearchEngine
 import com.tuxunbrowse.android.data.Store
+import com.tuxunbrowse.android.data.hostOf
+import com.tuxunbrowse.android.data.isCompatHost
 import com.tuxunbrowse.android.data.resolveInput
 import com.tuxunbrowse.android.engine.BrowserTab
 import com.tuxunbrowse.android.engine.TabContent
 
 private enum class Screen { PICKER, BROWSER, BOOKMARKS, HISTORY, SETTINGS }
-private const val HOME_URL = "https://duckduckgo.com/"
 
 @Composable
 fun BrowserApp() {
@@ -86,6 +99,9 @@ fun BrowserApp() {
     var activeTabId by remember { mutableStateOf(-1) }
     val bookmarks = remember { mutableStateListOf<Bookmark>().apply { addAll(store.loadBookmarks()) } }
     val history = remember { mutableStateListOf<HistoryItem>().apply { addAll(store.loadHistory()) } }
+    val compatSites = remember {
+        mutableStateListOf<String>().apply { addAll(store.loadCompatSites()) }
+    }
 
     fun recordVisit(title: String, url: String) {
         if (history.firstOrNull()?.url == url) return
@@ -98,14 +114,75 @@ fun BrowserApp() {
         store.saveHistory(history)
     }
 
+    fun activeTab(): BrowserTab? = tabs.firstOrNull { it.id == activeTabId }
+
+    // Gecko tabs report remembered compat sites through this handler; it is
+    // wired up below once the tab-replacement helper exists.
+    var compatRedirectHandler: (String) -> Unit = {}
+
+    fun makeTab(engine: Engine, incognito: Boolean, url: String): BrowserTab =
+        BrowserTab(
+            engine = engine,
+            incognito = incognito,
+            startUrl = url,
+            onVisit = { t, u -> recordVisit(t, u) },
+            shouldUseWebView = { target ->
+                engine == Engine.GECKO && isCompatHost(hostOf(target), compatSites.toSet())
+            },
+            onCompatRedirect = { target -> compatRedirectHandler(target) }
+        )
+
+    fun effectiveEngine(engine: Engine, url: String): Engine =
+        if (engine == Engine.GECKO && url.startsWith("http") &&
+            isCompatHost(hostOf(url), compatSites.toSet())
+        ) Engine.WEBVIEW else engine
+
     fun newTab(engine: Engine, incognito: Boolean, url: String = HOME_URL): BrowserTab {
-        val tab = BrowserTab(engine, incognito, url) { t, u -> recordVisit(t, u) }
+        val tab = makeTab(effectiveEngine(engine, url), incognito, url)
         tabs.add(tab)
         activeTabId = tab.id
         return tab
     }
 
-    fun activeTab(): BrowserTab? = tabs.firstOrNull { it.id == activeTabId }
+    fun replaceTabEngine(tab: BrowserTab, newEngine: Engine): BrowserTab {
+        val idx = tabs.indexOf(tab)
+        if (idx < 0 || tab.engine == newEngine) return tab
+        val replacement = makeTab(newEngine, tab.incognito, tab.url)
+        tabs[idx] = replacement
+        tab.destroy()
+        if (activeTabId == tab.id) activeTabId = replacement.id
+        return replacement
+    }
+
+    compatRedirectHandler = { target ->
+        val tab = activeTab()
+        if (tab != null && tab.engine == Engine.GECKO) {
+            val replacement = replaceTabEngine(tab, Engine.WEBVIEW)
+            if (replacement.url != target) replacement.load(target)
+        }
+    }
+
+    fun addCompatSite(domain: String) {
+        store.addCompatSite(domain)
+        if (domain !in compatSites) compatSites.add(domain)
+    }
+
+    fun removeCompatSite(domain: String) {
+        store.removeCompatSite(domain)
+        compatSites.remove(domain)
+    }
+
+    fun switchTabEngine(tab: BrowserTab, newEngine: Engine, rememberSite: Boolean) {
+        if (tab.engine == newEngine) return
+        val host = hostOf(tab.url)
+        if (rememberSite && host != null) {
+            when (newEngine) {
+                Engine.WEBVIEW -> addCompatSite(host)
+                Engine.GECKO -> removeCompatSite(host)
+            }
+        }
+        replaceTabEngine(tab, newEngine)
+    }
 
     fun closeTab(tab: BrowserTab) {
         val idx = tabs.indexOf(tab)
@@ -131,7 +208,12 @@ fun BrowserApp() {
     }
 
     fun openUrl(url: String) {
-        val tab = activeTab() ?: newTab(store.mainEngine, false, url)
+        var tab = activeTab() ?: newTab(store.mainEngine, false, url)
+        if (tab.engine == Engine.GECKO &&
+            effectiveEngine(Engine.GECKO, url) == Engine.WEBVIEW
+        ) {
+            tab = replaceTabEngine(tab, Engine.WEBVIEW)
+        }
         if (tab.url != url) tab.load(url)
         screen = Screen.BROWSER
     }
@@ -149,30 +231,56 @@ fun BrowserApp() {
             }
         )
 
-        Screen.BROWSER -> BrowserScreen(
-            tabs = tabs,
-            activeTab = activeTab(),
-            isBookmarked = activeTab()?.let { t -> bookmarks.any { it.url == t.url } } ?: false,
-            onSelectTab = { activeTabId = it.id },
-            onCloseTab = { closeTab(it) },
-            onNewTab = { newTab(store.mainEngine, false) },
-            onNewIncognitoTab = { engine -> newTab(engine, true) },
-            incognitoEngine = store.incognitoEngine,
-            onIncognitoEngineChosen = { store.incognitoEngine = it },
-            onToggleBookmark = {
-                val tab = activeTab() ?: return@BrowserScreen
-                val existing = bookmarks.firstOrNull { it.url == tab.url }
-                if (existing != null) {
-                    bookmarks.remove(existing)
-                } else if (tab.url.startsWith("http")) {
-                    bookmarks.add(0, Bookmark(tab.title.ifBlank { tab.url }, tab.url))
+        Screen.BROWSER -> {
+            val current = activeTab()
+            BrowserScreen(
+                tabs = tabs,
+                activeTab = current,
+                isBookmarked = current?.let { t -> bookmarks.any { it.url == t.url } } ?: false,
+                currentHostIsCompat = current?.let {
+                    isCompatHost(hostOf(it.url), compatSites.toSet())
+                } ?: false,
+                onSelectTab = { activeTabId = it.id },
+                onCloseTab = { closeTab(it) },
+                onNewTab = { newTab(store.mainEngine, false) },
+                onNewIncognitoTab = { engine -> newTab(engine, true) },
+                incognitoEngine = store.incognitoEngine,
+                onIncognitoEngineChosen = { store.incognitoEngine = it },
+                onToggleBookmark = {
+                    val tab = activeTab() ?: return@BrowserScreen
+                    val existing = bookmarks.firstOrNull { it.url == tab.url }
+                    if (existing != null) {
+                        bookmarks.remove(existing)
+                    } else if (tab.url.startsWith("http")) {
+                        bookmarks.add(0, Bookmark(tab.title.ifBlank { tab.url }, tab.url))
+                    }
+                    store.saveBookmarks(bookmarks)
+                },
+                onNavigate = { text ->
+                    activeTab()?.load(resolveInput(text, store.searchEngine))
+                },
+                onGoHome = { activeTab()?.load(HOME_URL) },
+                onSwitchEngine = { engine, rememberSite ->
+                    val tab = activeTab() ?: return@BrowserScreen
+                    switchTabEngine(tab, engine, rememberSite)
+                },
+                onOpenBookmarks = { screen = Screen.BOOKMARKS },
+                onOpenHistory = { screen = Screen.HISTORY },
+                onOpenSettings = { screen = Screen.SETTINGS },
+                homeContent = {
+                    HomeContent(
+                        bookmarks = bookmarks,
+                        history = history,
+                        searchEngine = store.searchEngine,
+                        onSearchUrl = { url -> openUrl(url) },
+                        onOpenBookmark = { openUrl(it.url) },
+                        onOpenHistoryItem = { openUrl(it.url) },
+                        onOpenAllBookmarks = { screen = Screen.BOOKMARKS },
+                        onOpenAllHistory = { screen = Screen.HISTORY }
+                    )
                 }
-                store.saveBookmarks(bookmarks)
-            },
-            onOpenBookmarks = { screen = Screen.BOOKMARKS },
-            onOpenHistory = { screen = Screen.HISTORY },
-            onOpenSettings = { screen = Screen.SETTINGS }
-        )
+            )
+        }
 
         Screen.BOOKMARKS -> BookmarksScreen(
             bookmarks = bookmarks,
@@ -200,8 +308,140 @@ fun BrowserApp() {
             onClearHistory = {
                 history.clear()
                 store.clearHistory()
-            }
+            },
+            onRemoveCompatSite = { removeCompatSite(it) }
         )
+    }
+}
+
+/**
+ * The app's own home page: a native Material 3 screen with a big search
+ * box, a bookmark shortcut grid and recent history. It never loads an
+ * external start page.
+ */
+@Composable
+private fun HomeContent(
+    bookmarks: List<Bookmark>,
+    history: List<HistoryItem>,
+    searchEngine: SearchEngine,
+    onSearchUrl: (String) -> Unit,
+    onOpenBookmark: (Bookmark) -> Unit,
+    onOpenHistoryItem: (HistoryItem) -> Unit,
+    onOpenAllBookmarks: () -> Unit,
+    onOpenAllHistory: () -> Unit
+) {
+    var query by remember { mutableStateOf("") }
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(2),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 16.dp)
+    ) {
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("TuxunBrowse", style = MaterialTheme.typography.headlineMedium)
+                Text(
+                    "搜点什么，或者从下面接着上次的看。",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                placeholder = { Text("用${searchEngine.label}搜索，或输入网址") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(
+                    onSearch = {
+                        if (query.isNotBlank()) onSearchUrl(resolveInput(query, searchEngine))
+                    },
+                    onGo = {
+                        if (query.isNotBlank()) onSearchUrl(resolveInput(query, searchEngine))
+                    }
+                )
+            )
+        }
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("常用书签", style = MaterialTheme.typography.titleMedium)
+                TextButton(onClick = onOpenAllBookmarks) { Text("全部书签") }
+            }
+        }
+        if (bookmarks.isEmpty()) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        "还没有书签。在网页右上角点星星存下来的页面，会变成这里的快捷入口。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(16.dp)
+                    )
+                }
+            }
+        } else {
+            gridItems(bookmarks.take(8), key = { it.url }) { bookmark ->
+                ElevatedCard(
+                    onClick = { onOpenBookmark(bookmark) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    ListItem(
+                        headlineContent = { Text(bookmark.title, maxLines = 2) },
+                        supportingContent = {
+                            Text(hostOf(bookmark.url) ?: bookmark.url, maxLines = 1)
+                        },
+                        leadingContent = {
+                            Icon(Icons.Filled.Bookmark, contentDescription = null)
+                        }
+                    )
+                }
+            }
+        }
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("最近历史", style = MaterialTheme.typography.titleMedium)
+                TextButton(onClick = onOpenAllHistory) { Text("全部历史") }
+            }
+        }
+        if (history.isEmpty()) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Text(
+                    "还没有历史记录。浏览过的网页会按时间出现在这里，无痕标签打开的不会出现。",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        } else {
+            gridItems(
+                history.take(6),
+                key = { it.time.toString() + it.url },
+                span = { GridItemSpan(maxLineSpan) }
+            ) { item ->
+                Column {
+                    ListItem(
+                        headlineContent = { Text(item.title, maxLines = 1) },
+                        supportingContent = { Text(item.url, maxLines = 1) },
+                        leadingContent = {
+                            Icon(Icons.Filled.History, contentDescription = null)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onOpenHistoryItem(item) }
+                    )
+                    HorizontalDivider()
+                }
+            }
+        }
     }
 }
 
@@ -251,7 +491,7 @@ private fun EnginePickerScreen(
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        text = "两个内核的登录状态互不相通：在一个内核里登录过的网站，换到另一个内核打开需要重新登录。某个网站在火狐内核下显示不正常时，可以新建一个 WebView 标签打开它。",
+                        text = "两个内核的登录状态互不相通：在一个内核里登录过的网站，换到另一个内核打开需要重新登录。某个网站在火狐内核下显示不正常时，可以点地址栏旁边的内核按钮把当前标签切到 WebView，还能记住这个网站以后都用 WebView 打开。",
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.padding(16.dp)
                     )
@@ -294,6 +534,7 @@ private fun BrowserScreen(
     tabs: List<BrowserTab>,
     activeTab: BrowserTab?,
     isBookmarked: Boolean,
+    currentHostIsCompat: Boolean,
     onSelectTab: (BrowserTab) -> Unit,
     onCloseTab: (BrowserTab) -> Unit,
     onNewTab: () -> Unit,
@@ -301,17 +542,26 @@ private fun BrowserScreen(
     incognitoEngine: Engine,
     onIncognitoEngineChosen: (Engine) -> Unit,
     onToggleBookmark: () -> Unit,
+    onNavigate: (String) -> Unit,
+    onGoHome: () -> Unit,
+    onSwitchEngine: (Engine, Boolean) -> Unit,
     onOpenBookmarks: () -> Unit,
     onOpenHistory: () -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    homeContent: @Composable () -> Unit
 ) {
     var showTabs by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showIncognitoPicker by remember { mutableStateOf(false) }
-    var addressText by remember(activeTab?.id) { mutableStateOf(activeTab?.url ?: "") }
+    var showEngineSwitch by remember { mutableStateOf(false) }
+    var addressText by remember(activeTab?.id) {
+        mutableStateOf(activeTab?.takeUnless { it.isHome }?.url ?: "")
+    }
     var addressFocused by remember { mutableStateOf(false) }
     LaunchedEffect(activeTab?.url) {
-        if (!addressFocused && activeTab != null) addressText = activeTab.url
+        if (!addressFocused && activeTab != null) {
+            addressText = if (activeTab.isHome) "" else activeTab.url
+        }
     }
 
     Scaffold(
@@ -319,7 +569,10 @@ private fun BrowserScreen(
             TopAppBar(
                 title = {
                     Text(
-                        text = activeTab?.title?.ifBlank { "TuxunBrowse" } ?: "TuxunBrowse",
+                        text = when {
+                            activeTab == null || activeTab.isHome -> "TuxunBrowse"
+                            else -> activeTab.title.ifBlank { "TuxunBrowse" }
+                        },
                         maxLines = 1
                     )
                 },
@@ -343,6 +596,11 @@ private fun BrowserScreen(
                             text = { Text("新建无痕标签页") },
                             leadingIcon = { Icon(Icons.Filled.VisibilityOff, contentDescription = null) },
                             onClick = { showMenu = false; showIncognitoPicker = true }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("回到首页") },
+                            leadingIcon = { Icon(Icons.Filled.Home, contentDescription = null) },
+                            onClick = { showMenu = false; onGoHome() }
                         )
                         DropdownMenuItem(
                             text = { Text("书签") },
@@ -425,9 +683,20 @@ private fun BrowserScreen(
                     placeholder = { Text("输入网址或搜索") },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                     keyboardActions = KeyboardActions(
-                        onGo = { activeTab?.load(resolveInput(addressText)) }
+                        onGo = { onNavigate(addressText) }
                     )
                 )
+                if (activeTab != null) {
+                    AssistChip(
+                        onClick = { showEngineSwitch = true },
+                        label = {
+                            Text(if (activeTab.engine == Engine.GECKO) "火狐" else "WebView")
+                        },
+                        leadingIcon = {
+                            Icon(Icons.Filled.SwapHoriz, contentDescription = "切换内核")
+                        }
+                    )
+                }
                 IconButton(onClick = { activeTab?.reload() }) {
                     Icon(Icons.Filled.Refresh, contentDescription = "刷新")
                 }
@@ -439,7 +708,11 @@ private fun BrowserScreen(
                 )
             }
             if (activeTab != null) {
-                TabContent(tab = activeTab, modifier = Modifier.fillMaxSize())
+                if (activeTab.isHome) {
+                    homeContent()
+                } else {
+                    TabContent(tab = activeTab, modifier = Modifier.fillMaxSize())
+                }
             }
         }
     }
@@ -467,9 +740,14 @@ private fun BrowserScreen(
                     ) {
                         ListItem(
                             headlineContent = {
-                                Text(tab.title.ifBlank { "新标签页" }, maxLines = 1)
+                                Text(
+                                    if (tab.isHome) "首页" else tab.title.ifBlank { "新标签页" },
+                                    maxLines = 1
+                                )
                             },
-                            supportingContent = { Text(tab.url, maxLines = 2) },
+                            supportingContent = {
+                                Text(if (tab.isHome) "TuxunBrowse 首页" else tab.url, maxLines = 2)
+                            },
                             trailingContent = {
                                 Row {
                                     AssistChip(
@@ -499,6 +777,76 @@ private fun BrowserScreen(
                 }
             }
         }
+    }
+
+    if (showEngineSwitch && activeTab != null) {
+        var picked by remember { mutableStateOf(activeTab.engine) }
+        var rememberSite by remember { mutableStateOf(true) }
+        val currentHost = hostOf(activeTab.url)
+        AlertDialog(
+            onDismissRequest = { showEngineSwitch = false },
+            title = { Text("这个标签用哪个内核？") },
+            text = {
+                LazyColumn {
+                    item {
+                        Text("切换后这个标签会用新内核重新打开当前页面，登录状态和原来那个内核不互通。")
+                    }
+                    items(Engine.entries) { engine ->
+                        ListItem(
+                            headlineContent = { Text(engine.label) },
+                            leadingContent = {
+                                RadioButton(
+                                    selected = picked == engine,
+                                    onClick = { picked = engine }
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    if (currentHost != null && picked == Engine.WEBVIEW &&
+                        activeTab.engine == Engine.GECKO
+                    ) {
+                        item {
+                            ListItem(
+                                headlineContent = { Text("这个网站以后都用 WebView 打开") },
+                                supportingContent = { Text(currentHost) },
+                                trailingContent = {
+                                    Switch(
+                                        checked = rememberSite,
+                                        onCheckedChange = { rememberSite = it }
+                                    )
+                                }
+                            )
+                        }
+                    }
+                    if (currentHost != null && picked == Engine.GECKO && currentHostIsCompat) {
+                        item {
+                            ListItem(
+                                headlineContent = { Text("取消这个网站的自动兼容记忆") },
+                                supportingContent = { Text(currentHost) },
+                                trailingContent = {
+                                    Switch(
+                                        checked = rememberSite,
+                                        onCheckedChange = { rememberSite = it }
+                                    )
+                                }
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showEngineSwitch = false
+                    onSwitchEngine(picked, rememberSite)
+                }) {
+                    Text("切换")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEngineSwitch = false }) { Text("取消") }
+            }
+        )
     }
 
     if (showIncognitoPicker) {
@@ -569,7 +917,7 @@ private fun BookmarksScreen(
             if (bookmarks.isEmpty()) {
                 item {
                     Text(
-                        "还没有书签。在网页右上角点星星就能把当前页存到这里。",
+                        "还没有书签。在网页右上角点星星就能把当前页存到这里，首页上也会出现它的快捷入口。",
                         style = MaterialTheme.typography.bodyLarge,
                         modifier = Modifier.padding(16.dp)
                     )
@@ -589,7 +937,7 @@ private fun BookmarksScreen(
                         .fillMaxWidth()
                         .clickable { onOpen(bookmark) }
                 )
-                androidx.compose.material3.HorizontalDivider()
+                HorizontalDivider()
             }
         }
     }
@@ -650,7 +998,7 @@ private fun HistoryScreen(
                         .fillMaxWidth()
                         .clickable { onOpen(item) }
                 )
-                androidx.compose.material3.HorizontalDivider()
+                HorizontalDivider()
             }
         }
     }
@@ -661,10 +1009,13 @@ private fun HistoryScreen(
 private fun SettingsScreen(
     store: Store,
     onBack: () -> Unit,
-    onClearHistory: () -> Unit
+    onClearHistory: () -> Unit,
+    onRemoveCompatSite: (String) -> Unit
 ) {
     var mainEngine by remember { mutableStateOf(store.mainEngine) }
     var incognitoEngine by remember { mutableStateOf(store.incognitoEngine) }
+    var searchEngine by remember { mutableStateOf(store.searchEngine) }
+    var compatList by remember { mutableStateOf(store.loadCompatSites().sorted()) }
     var showCleared by remember { mutableStateOf(false) }
     Scaffold(
         topBar = {
@@ -688,7 +1039,7 @@ private fun SettingsScreen(
             item {
                 Text("主内核", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "新建的普通标签页用这个内核打开。已经打开的标签不会中途换内核。",
+                    "新建的普通标签页用这个内核打开。已经打开的标签不会中途换内核，要换就点地址栏旁边的内核按钮。",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -744,6 +1095,65 @@ private fun SettingsScreen(
                 }
             }
             item {
+                Text("搜索引擎", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "在地址栏和首页搜索框里输入的词，用这个搜索引擎去搜。默认百度，国内能直接打开。",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            items(SearchEngine.entries) { engine ->
+                ElevatedCard(
+                    onClick = {
+                        searchEngine = engine
+                        store.searchEngine = engine
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    ListItem(
+                        headlineContent = { Text(engine.label) },
+                        trailingContent = {
+                            RadioButton(
+                                selected = searchEngine == engine,
+                                onClick = {
+                                    searchEngine = engine
+                                    store.searchEngine = engine
+                                }
+                            )
+                        }
+                    )
+                }
+            }
+            item {
+                Text("兼容模式记住的网站", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "这些网站在火狐内核下打开时会自动改用 WebView。删掉某个网站，它就恢复成用你选的主内核打开。",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            if (compatList.isEmpty()) {
+                item {
+                    Text(
+                        "还没有。在火狐标签里打开某个网站觉得不对劲时，点地址栏旁边的「火狐」按钮切到 WebView 并勾选记住，就会记到这里。",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            } else {
+                items(compatList, key = { it }) { site ->
+                    ListItem(
+                        headlineContent = { Text(site) },
+                        trailingContent = {
+                            IconButton(onClick = {
+                                onRemoveCompatSite(site)
+                                compatList = compatList - site
+                            }) {
+                                Icon(Icons.Filled.Delete, contentDescription = "删除兼容记忆")
+                            }
+                        }
+                    )
+                    HorizontalDivider()
+                }
+            }
+            item {
                 Text("数据", style = MaterialTheme.typography.titleMedium)
             }
             item {
@@ -762,13 +1172,15 @@ private fun SettingsScreen(
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text("关于 TuxunBrowse", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "版本 0.1.0。免费开源的双内核浏览器：火狐 GeckoView 与系统 WebView 由用户自选，" +
-                                "没有信息流，没有推送，没有广告。两个内核的登录状态互不相通，这是双内核的固有代价。",
+                            "版本 0.2.0。免费开源的双内核浏览器：火狐 GeckoView 与系统 WebView 由用户自选，" +
+                                "首页是应用自己的页面（搜索框、常用书签、最近历史），不拿任何网站的页面冒充首页。" +
+                                "两个内核的登录状态互不相通，这是双内核的固有代价。",
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }
                 }
             }
+            item { Spacer(modifier = Modifier.padding(bottom = 24.dp)) }
         }
     }
 }
