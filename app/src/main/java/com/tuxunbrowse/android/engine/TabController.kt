@@ -207,6 +207,46 @@ class GeckoSelectionMenu(
     }
 }
 
+/**
+ * One pending Gecko clipboard-read permission answer (v0.45.0).
+ * Wraps the GeckoResult<AllowOrDeny> handed back from
+ * SelectionActionDelegate.onShowClipboardPermissionRequest, whose
+ * shape was verified against the GeckoView 132 AAR with javap: the
+ * second parameter is a ClipboardPermission object with public final
+ * uri (String, read from the message bundle's "uri" key — the JS
+ * request itself only carries screenPoint, so it can be blank),
+ * type (int, hard-wired to PERMISSION_CLIPBOARD_READ = 1 by the
+ * bundle constructor) and screenPoint (Point). There is NO clipboard
+ * content or "text available" field — the app never sees what is on
+ * the clipboard, it only answers allow/deny. AllowOrDeny is an enum
+ * with exactly ALLOW / DENY; GeckoResult answers asynchronously via
+ * complete(value) (completeExceptionally also exists but a plain
+ * DENY value is the honest refusal). The interface's default
+ * implementation returns GeckoResult.deny() — before v0.45.0 the
+ * request was silently denied with no prompt at all. Invoking this
+ * answer more than once is a no-op, so every exit path (allow, deny,
+ * dismiss, tab death) can call it without coordination.
+ */
+private class ClipboardPermissionAnswer(
+    private val result: GeckoResult<AllowOrDeny>,
+    private val onAnswered: (ClipboardPermissionAnswer) -> Unit
+) : (Boolean) -> Unit {
+    private var done = false
+
+    override fun invoke(allow: Boolean) {
+        if (done) return
+        done = true
+        onAnswered(this)
+        try {
+            result.complete(
+                if (allow) AllowOrDeny.ALLOW else AllowOrDeny.DENY
+            )
+        } catch (t: Throwable) {
+            // Already answered on the Gecko side; never crash.
+        }
+    }
+}
+
 /** Plain-language description of a WebView SSL error's primary problem. */
 /**
  * Pull the common name (CN) out of an X.500 distinguished name such
@@ -450,6 +490,24 @@ class BrowserTab(
     // whose selection has already gone away on its own.
     private val onGeckoSelectionShow: (GeckoSelectionMenu) -> Unit = {},
     private val onGeckoSelectionHide: () -> Unit = {},
+    // Gecko clipboard-read permission (v0.45.0): a page asking to
+    // read the clipboard (navigator.clipboard.readText and friends,
+    // routed by Gecko through SelectionActionDelegate's clipboard
+    // callbacks). The app shows its own prompt and answers through
+    // the (Boolean) -> Unit callback — true only for an explicit
+    // user "allow". The default answers deny at once so a page is
+    // never left waiting. The dismiss callback means the engine
+    // tore the request context down (the shipped
+    // GeckoViewClipboardPermission JS sends it on pointerdown /
+    // page teardown); the app then answers deny as well. The gone
+    // callback fires when THIS tab answered its pending requests
+    // itself because its engine was destroyed or slept, so the app
+    // can drop a prompt whose answer already went out.
+    private val onGeckoClipboardPermissionRequest: (
+        String, (Boolean) -> Unit
+    ) -> Unit = { _, respond -> respond(false) },
+    private val onGeckoClipboardPermissionDismiss: () -> Unit = {},
+    private val onGeckoClipboardPermissionGone: () -> Unit = {},
     private val textZoomProvider: () -> Int = { 100 },
     private val webDarkProvider: () -> Boolean = { false },
     // Whether third-party cookies are allowed in this tab's WebView
@@ -957,7 +1015,34 @@ class BrowserTab(
         ThumbnailCache.onThumbnailUsed(this)
     }
 
+    /**
+     * Pending clipboard-read permission answers for this tab
+     * (v0.45.0). A GeckoResult left unanswered hangs the requesting
+     * page script forever, so [destroy] and [sleepEngine] drain this
+     * list with "deny" before the session goes away — the page gets
+     * a clean refusal instead of a frozen promise, whatever the app
+     * side was doing.
+     */
+    private val pendingClipboardAnswers =
+        mutableListOf<ClipboardPermissionAnswer>()
+
+    /** Answer every pending clipboard-read request with "deny". */
+    fun denyPendingClipboardRequests() {
+        if (pendingClipboardAnswers.isEmpty()) return
+        val pending = pendingClipboardAnswers.toList()
+        pendingClipboardAnswers.clear()
+        pending.forEach { answer ->
+            try {
+                answer(false)
+            } catch (t: Throwable) {
+                // One bad answer must not stop the others.
+            }
+        }
+        onGeckoClipboardPermissionGone()
+    }
+
     fun destroy() {
+        denyPendingClipboardRequests()
         // Release the thumbnail with the tab; the reference is simply
         // dropped (not recycled — the grid may still hold a frame of
         // it) and the GC reclaims the pixels.
@@ -1015,6 +1100,7 @@ class BrowserTab(
      */
     fun sleepEngine() {
         if (!engineCreated) return
+        denyPendingClipboardRequests()
         customViewCallback = null
         popupChild?.let {
             try {
@@ -1857,12 +1943,26 @@ class BrowserTab(
         // GeckoView 132 AAR with javap: GeckoSession has
         // setSelectionActionDelegate(SelectionActionDelegate); the
         // interface's methods all have default implementations, and
-        // onShowActionRequest's parameters are @NonNull. Only show
-        // and hide are overridden — the clipboard-permission request
-        // (clipboard READ, i.e. paste) keeps Gecko's default
-        // behaviour, unchanged from before this delegate existed.
+        // onShowActionRequest's parameters are @NonNull.
         // Before v0.43.0 no delegate was set at all, so a Gecko
         // long-press selection produced no menu whatsoever.
+        // v0.45.0 adds the two clipboard callbacks, re-verified
+        // against the same AAR (javap + the omni.ja modules shipped
+        // inside it): onShowClipboardPermissionRequest(session,
+        // ClipboardPermission) returns GeckoResult<AllowOrDeny>
+        // (@Nullable return, both parameters @NonNull, @UiThread);
+        // its default implementation is GeckoResult.deny(), i.e.
+        // before this version a page's clipboard-read request was
+        // refused silently with no prompt. The engine's own JS
+        // (GeckoViewClipboardPermission.sys.mjs, confirmUserPaste)
+        // keeps only ONE pending request and rejects a concurrent
+        // second one itself, and sends the dismiss message when the
+        // request context goes away (pointerdown / teardown) — the
+        // Java layer does NOT auto-complete our result on dismiss,
+        // so the dismiss override below answers deny through the
+        // app, and destroy()/sleepEngine() drain any leftover
+        // pending answers the same way. The result is never left
+        // hanging: a hanging GeckoResult freezes the page's script.
         session.selectionActionDelegate =
             object : GeckoSession.SelectionActionDelegate {
                 override fun onShowActionRequest(
@@ -1874,6 +1974,28 @@ class BrowserTab(
 
                 override fun onHideAction(s: GeckoSession, reason: Int) {
                     onGeckoSelectionHide()
+                }
+
+                override fun onShowClipboardPermissionRequest(
+                    s: GeckoSession,
+                    perm: GeckoSession.SelectionActionDelegate
+                        .ClipboardPermission
+                ): GeckoResult<AllowOrDeny> {
+                    val result = GeckoResult<AllowOrDeny>()
+                    val answer = ClipboardPermissionAnswer(result) {
+                        pendingClipboardAnswers.remove(it)
+                    }
+                    pendingClipboardAnswers.add(answer)
+                    onGeckoClipboardPermissionRequest(
+                        perm.uri.orEmpty(), answer
+                    )
+                    return result
+                }
+
+                override fun onDismissClipboardPermissionRequest(
+                    s: GeckoSession
+                ) {
+                    onGeckoClipboardPermissionDismiss()
                 }
             }
         // PromptDelegate, verified against the GeckoView 132 AAR with

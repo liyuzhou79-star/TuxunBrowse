@@ -328,6 +328,22 @@ private data class GeckoSelectionMenuState(
     val menu: GeckoSelectionMenu
 )
 
+/**
+ * A Gecko page's clipboard-read permission request waiting for the
+ * user's decision (v0.45.0). Carries the SOURCE tab's id and the
+ * requesting page's URI (falling back to the tab's current URL when
+ * Gecko's permission object carries none), plus the one-shot answer
+ * callback into the tab layer — true only for an explicit "allow".
+ * Nothing about the clipboard's contents is ever carried here: the
+ * permission object has no content field, and the app never reads
+ * the clipboard for this flow.
+ */
+private data class GeckoClipboardPermissionState(
+    val tabId: Int,
+    val uri: String,
+    val respond: (Boolean) -> Unit
+)
+
 /** A WebView SSL certificate error waiting for the user's decision. */
 private data class SslPromptState(
     val url: String,
@@ -380,6 +396,18 @@ fun BrowserApp(
     }
     var geckoSelectionMenu by remember {
         mutableStateOf<GeckoSelectionMenuState?>(null)
+    }
+    // Clipboard-read permission prompt (v0.45.0): at most one request
+    // is shown; further requests from the same active tab queue up
+    // behind it. Requests from a background tab are denied on the
+    // spot — a prompt naming a site the user is not looking at would
+    // be a trap, not a question. Nothing is remembered per site:
+    // every request asks again.
+    var geckoClipboardPermission by remember {
+        mutableStateOf<GeckoClipboardPermissionState?>(null)
+    }
+    val geckoClipboardQueue = remember {
+        mutableStateListOf<GeckoClipboardPermissionState>()
     }
     val recentClosedTabs = remember { mutableStateListOf<ClosedTabInfo>() }
     // The search engine as Compose state: the store is the source of
@@ -645,6 +673,68 @@ fun BrowserApp(
         BrowserTab, GeckoSession, String
     ) -> Unit = { _, _, _ -> }
 
+    // Clipboard-read permission plumbing (v0.45.0). Every path that
+    // is not an explicit user "allow" answers deny — dismiss,
+    // tab switch, tab close/recreate/sleep, engine dismiss — so the
+    // GeckoResult in the tab layer is never left hanging (a hanging
+    // result freezes the requesting page's script). The tab layer
+    // additionally drains pending answers itself on destroy/sleep
+    // and reports through the "gone" callback, which lands here.
+    fun promoteNextClipboardPermission() {
+        if (geckoClipboardPermission != null) return
+        while (geckoClipboardQueue.isNotEmpty()) {
+            val next = geckoClipboardQueue.removeAt(0)
+            if (tabs.any { it.id == next.tabId } &&
+                next.tabId == activeTabId
+            ) {
+                geckoClipboardPermission = next
+                return
+            }
+            next.respond(false)
+        }
+    }
+
+    fun answerClipboardPermission(allow: Boolean) {
+        val current = geckoClipboardPermission ?: return
+        geckoClipboardPermission = null
+        current.respond(allow)
+        promoteNextClipboardPermission()
+    }
+
+    fun denyClipboardPermissionsForTab(tabId: Int) {
+        val queued = geckoClipboardQueue.filter { it.tabId == tabId }
+        if (queued.isNotEmpty()) {
+            geckoClipboardQueue.removeAll(queued)
+            queued.forEach { it.respond(false) }
+        }
+        if (geckoClipboardPermission?.tabId == tabId) {
+            answerClipboardPermission(false)
+        }
+    }
+
+    fun handleClipboardPermissionRequest(
+        tabId: Int,
+        uri: String,
+        respond: (Boolean) -> Unit
+    ) {
+        val tab = tabs.firstOrNull { it.id == tabId }
+        if (tab == null || tabId != activeTabId) {
+            // Background (or already gone) tab: no prompt, clean deny.
+            respond(false)
+            return
+        }
+        val state = GeckoClipboardPermissionState(
+            tabId = tabId,
+            uri = uri.ifBlank { tab.url },
+            respond = respond
+        )
+        if (geckoClipboardPermission == null) {
+            geckoClipboardPermission = state
+        } else {
+            geckoClipboardQueue.add(state)
+        }
+    }
+
     fun makeTab(
         engine: Engine,
         incognito: Boolean,
@@ -689,6 +779,26 @@ fun BrowserApp(
                 val src = created
                 if (src != null && geckoSelectionMenu?.tabId == src.id) {
                     geckoSelectionMenu = null
+                }
+            },
+            onGeckoClipboardPermissionRequest = { uri, respond ->
+                val src = created
+                if (src != null) {
+                    handleClipboardPermissionRequest(src.id, uri, respond)
+                } else {
+                    respond(false)
+                }
+            },
+            onGeckoClipboardPermissionDismiss = {
+                val src = created
+                if (src != null) {
+                    denyClipboardPermissionsForTab(src.id)
+                }
+            },
+            onGeckoClipboardPermissionGone = {
+                val src = created
+                if (src != null) {
+                    denyClipboardPermissionsForTab(src.id)
                 }
             },
             textZoomProvider = { store.textZoomPercent },
@@ -824,6 +934,9 @@ fun BrowserApp(
         val idx = tabs.indexOf(tab)
         if (idx < 0) return tab
         if (!force && tab.engine == newEngine && tab.desktopMode == desktopMode) return tab
+        // The old tab's pending clipboard-read request is answered
+        // deny before its engine goes away (v0.45.0).
+        denyClipboardPermissionsForTab(tab.id)
         val replacement = makeTab(newEngine, tab.incognito, tab.url, desktopMode)
         tabs[idx] = replacement
         tab.destroy()
@@ -945,6 +1058,9 @@ fun BrowserApp(
     fun closeTab(tab: BrowserTab) {
         val idx = tabs.indexOf(tab)
         val wasIncognito = tab.incognito
+        // A clipboard-read request from this tab dies with it:
+        // answer deny first so the page never hangs (v0.45.0).
+        denyClipboardPermissionsForTab(tab.id)
         pushClosedTab(tab)
         tab.destroy()
         tabs.remove(tab)
@@ -970,6 +1086,9 @@ fun BrowserApp(
     }
 
     fun closeAllTabs() {
+        // Pending clipboard-read requests are answered deny before
+        // every engine goes away (v0.45.0).
+        tabs.toList().forEach { denyClipboardPermissionsForTab(it.id) }
         val hadIncognito = tabs.any { it.incognito }
         // Every normal tab goes onto the recently-closed stack
         // (incognito tabs are skipped inside pushClosedTab).
@@ -1751,6 +1870,17 @@ fun BrowserApp(
         // has been created by TabContent during composition, so the
         // alive count it sees is the real one.
         enforceEngineSleepLimit()
+    }
+
+    // Clipboard-read prompt lifetime (v0.45.0): switching away from
+    // the requesting tab answers its pending request with deny — the
+    // prompt must never outlive the page context it belongs to, and
+    // the page must never be left hanging either.
+    LaunchedEffect(activeTabId) {
+        val current = geckoClipboardPermission
+        if (current != null && current.tabId != activeTabId) {
+            answerClipboardPermission(false)
+        }
     }
 
     webPermissionHandler = { request ->
@@ -2710,6 +2840,38 @@ fun BrowserApp(
                         }
                     }
                     if (menu.isAvailable(
+                            GeckoSession.SelectionActionDelegate.ACTION_PASTE
+                        )
+                    ) {
+                        item {
+                            ListItem(
+                                headlineContent = { Text("粘贴") },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        // Paste (v0.45.0): Gecko only
+                                        // lists ACTION_PASTE when the
+                                        // selection is editable AND the
+                                        // clipboard holds matching data
+                                        // (SelectionActionDelegateChild
+                                        // predicate, verified in the
+                                        // AAR's shipped JS). Executing
+                                        // it runs the engine's own
+                                        // cmd_paste; if that paste
+                                        // itself asks for clipboard-read
+                                        // confirmation, the request comes
+                                        // back through the clipboard
+                                        // permission prompt below.
+                                        menu.execute(
+                                            GeckoSession.SelectionActionDelegate
+                                                .ACTION_PASTE
+                                        )
+                                        closeSelectionMenu()
+                                    }
+                            )
+                        }
+                    }
+                    if (menu.isAvailable(
                             GeckoSession.SelectionActionDelegate.ACTION_DELETE
                         )
                     ) {
@@ -2821,6 +2983,61 @@ fun BrowserApp(
             confirmButton = {
                 TextButton(onClick = { closeSelectionMenu() }) {
                     Text("取消")
+                }
+            }
+        )
+    }
+
+    // Clipboard-read permission prompt for Gecko pages (v0.45.0).
+    // Before this version the engine's default answer was a silent
+    // deny: a site calling navigator.clipboard.readText() simply
+    // failed and the user never knew it had asked. Now the user is
+    // asked, in plain words, with the site's name up front. Only an
+    // explicit tap on "允许" answers allow; every other exit —
+    // "拒绝", tapping outside, Back, tab switch/close/sleep, the
+    // engine's own dismiss — answers deny (see the plumbing above),
+    // so the page is never left hanging. The decision is NOT
+    // remembered: the next request asks again. Incognito tabs are
+    // asked exactly the same way — going incognito is not a reason
+    // to hand a site the clipboard silently, nor to refuse it
+    // silently either. The clipboard's contents are never read by
+    // the app for this flow, never logged and never stored.
+    val clipPerm = geckoClipboardPermission
+    if (clipPerm != null) {
+        val clipHost = hostOf(clipPerm.uri)?.takeIf { it.isNotBlank() }
+            ?: clipPerm.uri
+        AlertDialog(
+            onDismissRequest = { answerClipboardPermission(false) },
+            title = { Text("网站想读取剪贴板") },
+            text = {
+                LazyColumn {
+                    item {
+                        Text(
+                            "「$clipHost」想读取你的剪贴板内容。" +
+                                "允许后，这个网站就能看到你最近复制的文字，" +
+                                "比如你刚复制的链接、验证码或者其他内容。"
+                        )
+                    }
+                    item {
+                        Text(
+                            "只在这个网站确实需要你粘贴东西、而且你信任它时，才点「允许」。" +
+                                "这次允许只对这一次有效，下次它想读还会再问你。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme
+                                .onSurfaceVariant,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = { answerClipboardPermission(true) }) {
+                    Text("允许")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { answerClipboardPermission(false) }) {
+                    Text("拒绝")
                 }
             }
         )
