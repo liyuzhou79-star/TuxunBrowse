@@ -2502,7 +2502,14 @@ fun BrowserApp(
             onEdit = { old, newTitle, newUrl ->
                 val idx = bookmarks.indexOf(old)
                 if (idx >= 0) {
-                    bookmarks[idx] = Bookmark(newTitle, newUrl)
+                    // Field-level update via copy() (v0.55.0 audit):
+                    // rebuilding Bookmark(newTitle, newUrl) here used
+                    // to reset every non-edited field to its default —
+                    // a pinned bookmark silently lost its pin when the
+                    // user only renamed it. Title and URL are the only
+                    // edited fields; everything else (pinned) carries
+                    // over from the old entry.
+                    bookmarks[idx] = old.copy(title = newTitle, url = newUrl)
                     store.saveBookmarks(bookmarks)
                 }
             },
