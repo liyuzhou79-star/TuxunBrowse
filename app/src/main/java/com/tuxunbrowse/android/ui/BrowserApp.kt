@@ -914,16 +914,23 @@ fun BrowserApp(
         engine: Engine,
         incognito: Boolean,
         url: String = HOME_URL,
-        desktopMode: Boolean = false
+        desktopMode: Boolean = false,
+        activate: Boolean = true
     ): BrowserTab {
         // The tab being switched away from gets its one switch-away
         // thumbnail capture (the other capture point is page finish).
         // Deferred: drawing the bitmap in the same frame the switch
         // crossfade starts could stall the transition's first frame.
-        activeTab()?.captureThumbnailDeferred()
+        // A background tab (activate = false, v0.48.0) switches away
+        // from nothing, so there is no capture and no active change:
+        // the new tab stays uncreated-engine (TabContent composes
+        // only the active tab) until the user selects it, exactly
+        // like a restored tab under the v0.23.0 lazy contract, and
+        // the activeTabId-keyed sleep pass (v0.41.0) does not run.
+        if (activate) activeTab()?.captureThumbnailDeferred()
         val tab = makeTab(effectiveEngine(engine, url), incognito, url, desktopMode)
         tabs.add(tab)
-        activeTabId = tab.id
+        if (activate) activeTabId = tab.id
         return tab
     }
 
@@ -2540,7 +2547,9 @@ fun BrowserApp(
     // (capped at 3 lines with an ellipsis, so a huge URL cannot blow
     // up the layout) so the user sees exactly what would be opened.
     // "Open in new tab" reuses the source tab's engine + incognito
-    // flag through the existing newTab path. Non-http(s) targets are
+    // flag through the existing newTab path, in the BACKGROUND
+    // (v0.48.0): the user stays on the current page. Non-http(s)
+    // targets are
     // never opened (v0.31.0 / v0.38.0 rule): they only get copy,
     // with an honest note.
     val ctxMenu = pageContextMenu
@@ -2583,13 +2592,26 @@ fun BrowserApp(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clickable {
+                                            // Background open (v0.48.0):
+                                            // a long-press "open in new
+                                            // tab" means "keep this for
+                                            // later" — the user stays on
+                                            // the current page and gets a
+                                            // toast instead of being
+                                            // switched away.
                                             pageContextMenu = null
                                             newTab(
                                                 ctxMenu.engine,
                                                 ctxMenu.incognito,
-                                                link
+                                                link,
+                                                activate = false
                                             )
-                                            screen = Screen.BROWSER
+                                            android.widget.Toast.makeText(
+                                                context,
+                                                "已在后台打开新标签",
+                                                android.widget.Toast
+                                                    .LENGTH_SHORT
+                                            ).show()
                                         }
                                 )
                             }
@@ -2688,13 +2710,22 @@ fun BrowserApp(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clickable {
+                                            // Background open, same
+                                            // rule as the link item
+                                            // above (v0.48.0).
                                             pageContextMenu = null
                                             newTab(
                                                 ctxMenu.engine,
                                                 ctxMenu.incognito,
-                                                image
+                                                image,
+                                                activate = false
                                             )
-                                            screen = Screen.BROWSER
+                                            android.widget.Toast.makeText(
+                                                context,
+                                                "已在后台打开新标签",
+                                                android.widget.Toast
+                                                    .LENGTH_SHORT
+                                            ).show()
                                         }
                                 )
                             }
@@ -2883,6 +2914,43 @@ fun BrowserApp(
                                         menu.execute(
                                             GeckoSession.SelectionActionDelegate
                                                 .ACTION_PASTE
+                                        )
+                                        closeSelectionMenu()
+                                    }
+                            )
+                        }
+                    }
+                    if (menu.isAvailable(
+                            GeckoSession.SelectionActionDelegate
+                                .ACTION_PASTE_AS_PLAIN_TEXT
+                        )
+                    ) {
+                        item {
+                            ListItem(
+                                headlineContent = { Text("粘贴为纯文本") },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        // Paste as plain text (v0.48.0):
+                                        // Gecko only lists
+                                        // ACTION_PASTE_AS_PLAIN_TEXT when
+                                        // the selection is in an HTML-
+                                        // editable area AND the clipboard
+                                        // holds text/html (predicate read
+                                        // from the AAR's shipped
+                                        // SelectionActionDelegateChild JS;
+                                        // the id's constant value
+                                        // "org.mozilla.geckoview
+                                        // .PASTE_AS_PLAIN_TEXT" was
+                                        // re-verified in the 132 AAR
+                                        // class constant pool). Executing
+                                        // it runs the engine's own
+                                        // _performPasteAsPlainText, so
+                                        // rich formatting is stripped by
+                                        // the engine, not by the app.
+                                        menu.execute(
+                                            GeckoSession.SelectionActionDelegate
+                                                .ACTION_PASTE_AS_PLAIN_TEXT
                                         )
                                         closeSelectionMenu()
                                     }
