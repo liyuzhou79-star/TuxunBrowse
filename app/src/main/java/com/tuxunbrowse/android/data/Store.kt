@@ -18,10 +18,17 @@ enum class SearchEngine(val id: String, val label: String, val template: String)
     BAIDU("baidu", "百度", "https://www.baidu.com/s?wd=%s"),
     BING("bing", "必应", "https://www.bing.com/search?q=%s"),
     GOOGLE("google", "Google", "https://www.google.com/search?q=%s"),
-    DUCKDUCKGO("duckduckgo", "DuckDuckGo", "https://duckduckgo.com/?q=%s");
+    DUCKDUCKGO("duckduckgo", "DuckDuckGo", "https://duckduckgo.com/?q=%s"),
 
-    fun searchUrl(query: String): String =
-        template.format(java.net.URLEncoder.encode(query, "UTF-8"))
+    /** User-supplied engine; its real template lives in the Store. */
+    CUSTOM("custom", "自定义", "");
+
+    fun searchUrl(query: String): String {
+        // CUSTOM has no built-in template (the user's own is applied
+        // by resolveInput); never format an empty template.
+        val effective = template.ifBlank { BAIDU.template }
+        return effective.format(java.net.URLEncoder.encode(query, "UTF-8"))
+    }
 
     companion object {
         fun fromId(id: String?): SearchEngine =
@@ -137,6 +144,16 @@ class Store(context: Context) {
     var searchEngine: SearchEngine
         get() = SearchEngine.fromId(prefs.getString(KEY_SEARCH_ENGINE, null))
         set(value) = prefs.edit().putString(KEY_SEARCH_ENGINE, value.id).apply()
+
+    /** Display name of the user's custom search engine (CUSTOM only). */
+    var customSearchName: String
+        get() = prefs.getString(KEY_CUSTOM_SEARCH_NAME, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_CUSTOM_SEARCH_NAME, value).apply()
+
+    /** URL template of the custom search engine; must contain %s. */
+    var customSearchTemplate: String
+        get() = prefs.getString(KEY_CUSTOM_SEARCH_TEMPLATE, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_CUSTOM_SEARCH_TEMPLATE, value).apply()
 
     var adBlockEnabled: Boolean
         get() = prefs.getBoolean(KEY_AD_BLOCK, true)
@@ -281,6 +298,8 @@ class Store(context: Context) {
         private const val KEY_MAIN_ENGINE = "main_engine"
         private const val KEY_INCOGNITO_ENGINE = "incognito_engine"
         private const val KEY_SEARCH_ENGINE = "search_engine"
+        private const val KEY_CUSTOM_SEARCH_NAME = "custom_search_name"
+        private const val KEY_CUSTOM_SEARCH_TEMPLATE = "custom_search_template"
         private const val KEY_AD_BLOCK = "ad_block"
         private const val KEY_COMPAT_SITES = "compat_sites"
         private const val KEY_BOOKMARKS = "bookmarks"
@@ -334,8 +353,70 @@ fun bookmarksFromJson(raw: String): List<Bookmark> {
     }
 }
 
+/** A custom search template is usable only with %s over http(s). */
+fun isValidCustomSearchTemplate(template: String): Boolean {
+    val t = template.trim()
+    return t.contains("%s") &&
+        (t.startsWith("http://") || t.startsWith("https://"))
+}
+
+/** Build a search URL from a custom template (%s = encoded query). */
+private fun customSearchUrl(template: String, query: String): String =
+    template.trim().replace(
+        "%s", java.net.URLEncoder.encode(query, "UTF-8")
+    )
+
+/** Decode the handful of HTML entities bookmark titles commonly carry. */
+private fun decodeHtmlEntities(text: String): String {
+    var out = text
+    // &amp; must be decoded last so "&amp;lt;" stays the literal "&lt;".
+    out = out.replace("&lt;", "<")
+    out = out.replace("&gt;", ">")
+    out = out.replace("&quot;", "\"")
+    out = out.replace("&apos;", "'")
+    out = out.replace("&#39;", "'")
+    out = out.replace("&nbsp;", " ")
+    out = out.replace("&amp;", "&")
+    return out
+}
+
+private val HTML_BOOKMARK_REGEX = Regex(
+    "<A\\s[^>]*?HREF\\s*=\\s*\"([^\"]*)\"[^>]*>(.*?)</A>",
+    setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+)
+
+/**
+ * Parse a standard Netscape bookmark file (the HTML format every
+ * desktop browser exports): `<DT><A HREF="...">title</A>` entries.
+ * Returns the bookmarks found plus how many link entries were
+ * skipped because their address was blank or not http/https/file.
+ * De-duplication against existing bookmarks is the caller's job.
+ */
+fun bookmarksFromHtml(raw: String): Pair<List<Bookmark>, Int> {
+    val out = mutableListOf<Bookmark>()
+    var skipped = 0
+    for (match in HTML_BOOKMARK_REGEX.findAll(raw)) {
+        val href = decodeHtmlEntities(match.groupValues[1].trim())
+        val scheme = href.substringBefore("://", "").lowercase()
+        val isFile = href.startsWith("file:", ignoreCase = true)
+        if (href.isBlank() || (!isFile && scheme != "http" && scheme != "https")) {
+            skipped++
+            continue
+        }
+        val title = decodeHtmlEntities(
+            match.groupValues[2].replace(Regex("<[^>]+>"), "").trim()
+        )
+        out.add(Bookmark(title.ifBlank { href }, href))
+    }
+    return out to skipped
+}
+
 /** Turn whatever the user typed into a URL: full URL, bare host, or a search. */
-fun resolveInput(input: String, searchEngine: SearchEngine = SearchEngine.BAIDU): String {
+fun resolveInput(
+    input: String,
+    searchEngine: SearchEngine = SearchEngine.BAIDU,
+    customTemplate: String = ""
+): String {
     val text = input.trim()
     if (text.isEmpty()) return HOME_URL
     if (text.startsWith("http://") || text.startsWith("https://") ||
@@ -345,6 +426,14 @@ fun resolveInput(input: String, searchEngine: SearchEngine = SearchEngine.BAIDU)
         (text.contains(".") || text.startsWith("localhost"))
     return if (looksLikeHost) {
         "https://$text"
+    } else if (searchEngine == SearchEngine.CUSTOM) {
+        // A missing or invalid custom template falls back to Baidu
+        // rather than producing a broken URL.
+        if (isValidCustomSearchTemplate(customTemplate)) {
+            customSearchUrl(customTemplate, text)
+        } else {
+            SearchEngine.BAIDU.searchUrl(text)
+        }
     } else {
         searchEngine.searchUrl(text)
     }

@@ -11,7 +11,9 @@ import android.os.Message
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
+import android.webkit.HttpAuthHandler
 import android.webkit.PermissionRequest
+import android.webkit.SslErrorHandler
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -130,6 +132,35 @@ object GeckoHolder {
 
 /** Kinds of JavaScript dialogs a Gecko page can raise. */
 enum class GeckoJsPromptKind { ALERT, CONFIRM, TEXT }
+
+/**
+ * One HTTP Basic-auth challenge, normalised across both engines so
+ * the app can answer it with a single dialog. Credentials travel
+ * only through the answer callback — they are never stored, logged
+ * or written anywhere. [message] is Gecko's own prompt text (it
+ * carries the realm wording); WebView supplies [host] and [realm]
+ * separately and leaves [message] empty. [onlyPassword] is set when
+ * the site already knows the user name (Gecko's ONLY_PASSWORD flag).
+ */
+data class HttpAuthRequestInfo(
+    val host: String,
+    val realm: String,
+    val message: String,
+    val prefillUsername: String,
+    val onlyPassword: Boolean
+)
+
+/** Plain-language description of a WebView SSL error's primary problem. */
+private fun sslErrorDescription(primaryError: Int): String = when (primaryError) {
+    android.net.http.SslError.SSL_EXPIRED -> "这个网站的证书已经过期了"
+    android.net.http.SslError.SSL_NOTYETVALID -> "这个网站的证书还没到生效时间"
+    android.net.http.SslError.SSL_IDMISMATCH ->
+        "证书上的网站名和你正在打开的网站对不上"
+    android.net.http.SslError.SSL_UNTRUSTED -> "这个证书不是受信任的机构签发的"
+    android.net.http.SslError.SSL_DATE_INVALID -> "这个证书的日期不对"
+    android.net.http.SslError.SSL_INVALID -> "这个证书本身无效"
+    else -> "这个网站的证书有问题"
+}
 
 /**
  * A network-level load failure for one tab (offline, unknown host,
@@ -305,6 +336,19 @@ class BrowserTab(
     ) -> Unit = { _, _, _, callback -> callback.reject() },
     private val onNewWindowRequest: (String) -> Unit = {},
     private val onGeckoNewSession: (GeckoSession, String) -> Unit = { _, _ -> },
+    // HTTP Basic-auth challenge (both engines, one shared dialog on
+    // the app side). The answer callback gets (username, password),
+    // or (null, null) for "cancel". The default cancels so a page is
+    // never left waiting. Credentials are never persisted anywhere.
+    private val onHttpAuth: (
+        HttpAuthRequestInfo, (String?, String?) -> Unit
+    ) -> Unit = { _, respond -> respond(null, null) },
+    // WebView SSL certificate error: the app asks the user; the
+    // answer is true only for "proceed this once". The default
+    // refuses, matching the platform's safe behaviour.
+    private val onSslError: (
+        String, String, (Boolean) -> Unit
+    ) -> Unit = { _, _, respond -> respond(false) },
     private val onUrlDownload: (
         String, String?, String?, String?
     ) -> Unit = { _, _, _, _ -> }
@@ -676,6 +720,66 @@ class BrowserTab(
                     detail = "错误码 ${error.errorCode}" +
                         if (description.isNotBlank()) "：$description" else ""
                 )
+            }
+
+            override fun onReceivedHttpAuthRequest(
+                wv: WebView,
+                handler: HttpAuthHandler,
+                host: String,
+                realm: String
+            ) {
+                // The site asks for a user name and password (Basic
+                // auth: router admin pages, intranet sites, ...). The
+                // platform default would cancel the load outright;
+                // instead the app shows its own dialog and answers the
+                // handler exactly once. Credentials go straight to the
+                // handler — never stored, never logged.
+                onHttpAuth(
+                    HttpAuthRequestInfo(
+                        host = host,
+                        realm = realm,
+                        message = "",
+                        prefillUsername = "",
+                        onlyPassword = false
+                    )
+                ) { user, pass ->
+                    try {
+                        if (user != null) {
+                            handler.proceed(user, pass ?: "")
+                        } else {
+                            handler.cancel()
+                        }
+                    } catch (t: Throwable) {
+                        // The handler may already be answered (tab
+                        // closed meanwhile); nothing left to do.
+                    }
+                }
+            }
+
+            override fun onReceivedSslError(
+                wv: WebView,
+                handler: SslErrorHandler,
+                error: android.net.http.SslError
+            ) {
+                // The certificate is broken. Never proceed silently:
+                // the app explains the problem and lets the user
+                // choose. "Proceed" applies to this load only and is
+                // not remembered. The default (no app answer) refuses.
+                val failedUrl = error.url ?: url
+                onSslError(
+                    failedUrl,
+                    sslErrorDescription(error.primaryError)
+                ) { proceed ->
+                    try {
+                        if (proceed) {
+                            handler.proceed()
+                        } else {
+                            handler.cancel()
+                        }
+                    } catch (t: Throwable) {
+                        // Already answered; nothing left to do.
+                    }
+                }
             }
 
             override fun onRenderProcessGone(
@@ -1100,6 +1204,54 @@ class BrowserTab(
                         )
                     } catch (t: Throwable) {
                         // Already answered; nothing left to do.
+                    }
+                }
+                return result
+            }
+
+            override fun onAuthPrompt(
+                s: GeckoSession,
+                prompt: PromptDelegate.AuthPrompt
+            ): GeckoResult<PromptDelegate.PromptResponse> {
+                // HTTP Basic-auth challenge. Verified against the
+                // GeckoView 132 AAR with javap: AuthPrompt has public
+                // final message + authOptions; AuthOptions has public
+                // final flags/uri/level/username/password; the Flags
+                // constants are HOST=1, PROXY=2, ONLY_PASSWORD=8,
+                // PREVIOUS_FAILED=16 (raw class bytes read for
+                // ONLY_PASSWORD). confirm(String) answers with a
+                // password only, confirm(String, String) with user
+                // name + password, and dismiss() cancels. The app
+                // shows the same dialog as the WebView side; the
+                // credentials are never stored or logged.
+                val result = GeckoResult<PromptDelegate.PromptResponse>()
+                val options = prompt.authOptions
+                val onlyPassword = options.flags and
+                    PromptDelegate.AuthPrompt.AuthOptions.Flags.ONLY_PASSWORD != 0
+                onHttpAuth(
+                    HttpAuthRequestInfo(
+                        host = hostOf(options.uri) ?: options.uri,
+                        realm = "",
+                        message = prompt.message ?: "",
+                        prefillUsername = options.username ?: "",
+                        onlyPassword = onlyPassword
+                    )
+                ) { user, pass ->
+                    try {
+                        result.complete(
+                            when {
+                                user == null -> prompt.dismiss()
+                                onlyPassword -> prompt.confirm(pass ?: "")
+                                else -> prompt.confirm(user, pass ?: "")
+                            }
+                        )
+                    } catch (t: Throwable) {
+                        // Already answered; nothing left to do.
+                        try {
+                            result.complete(prompt.dismiss())
+                        } catch (t2: Throwable) {
+                            // Already answered; nothing left to do.
+                        }
                     }
                 }
                 return result

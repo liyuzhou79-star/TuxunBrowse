@@ -124,6 +124,8 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.tuxunbrowse.android.data.Bookmark
 import com.tuxunbrowse.android.data.DownloadMode
@@ -136,8 +138,10 @@ import com.tuxunbrowse.android.data.ReadingItem
 import com.tuxunbrowse.android.data.SavedTab
 import com.tuxunbrowse.android.data.SearchEngine
 import com.tuxunbrowse.android.data.Store
+import com.tuxunbrowse.android.data.bookmarksFromHtml
 import com.tuxunbrowse.android.data.bookmarksFromJson
 import com.tuxunbrowse.android.data.bookmarksToJson
+import com.tuxunbrowse.android.data.isValidCustomSearchTemplate
 import com.tuxunbrowse.android.data.hostOf
 import com.tuxunbrowse.android.data.isCompatHost
 import com.tuxunbrowse.android.data.isUrlLikeInput
@@ -151,6 +155,7 @@ import com.tuxunbrowse.android.engine.SniffKind
 import com.tuxunbrowse.android.engine.SniffedResource
 import com.tuxunbrowse.android.engine.TabLoadError
 import com.tuxunbrowse.android.engine.GeckoJsPromptKind
+import com.tuxunbrowse.android.engine.HttpAuthRequestInfo
 import com.tuxunbrowse.android.engine.TabContent
 import com.tuxunbrowse.android.engine.savePageScreenshot
 import com.tuxunbrowse.android.engine.sharePageScreenshot
@@ -182,6 +187,23 @@ private data class JsPromptState(
     val respond: (Boolean, String?) -> Unit
 )
 
+/**
+ * An HTTP Basic-auth challenge waiting for the user. The credentials
+ * typed into the dialog exist only in the dialog's own state and in
+ * this answer callback — they are never stored or logged.
+ */
+private data class AuthPromptState(
+    val info: HttpAuthRequestInfo,
+    val respond: (String?, String?) -> Unit
+)
+
+/** A WebView SSL certificate error waiting for the user's decision. */
+private data class SslPromptState(
+    val url: String,
+    val description: String,
+    val respond: (Boolean) -> Unit
+)
+
 @Composable
 fun BrowserApp(
     initialUrl: String? = null,
@@ -209,6 +231,8 @@ fun BrowserApp(
     var fullscreenView by remember { mutableStateOf<android.view.View?>(null) }
     var geckoFullscreen by remember { mutableStateOf(false) }
     var jsPromptRequest by remember { mutableStateOf<JsPromptState?>(null) }
+    var authPromptRequest by remember { mutableStateOf<AuthPromptState?>(null) }
+    var sslPromptRequest by remember { mutableStateOf<SslPromptState?>(null) }
     // The tab whose page resources the sniffer screen is showing.
     var sniffTabId by remember { mutableStateOf(-1) }
     // The tab waiting on the screenshot save/share dialog.
@@ -333,6 +357,19 @@ fun BrowserApp(
         GeckoJsPromptKind, String, String, (Boolean, String?) -> Unit
     ) -> Unit = { _, _, _, respond -> respond(false, null) }
 
+    // HTTP Basic-auth challenges from both engines land here; wired
+    // up below next to the JS prompt handler. The default cancels so
+    // a page is never left waiting.
+    var httpAuthHandler: (
+        HttpAuthRequestInfo, (String?, String?) -> Unit
+    ) -> Unit = { _, respond -> respond(null, null) }
+
+    // WebView SSL certificate errors land here; wired up below. The
+    // default refuses, matching the platform's safe behaviour.
+    var sslErrorHandler: (
+        String, String, (Boolean) -> Unit
+    ) -> Unit = { _, _, respond -> respond(false) }
+
     // Web pages asking for the camera/microphone (WebView side) land
     // here; wired up below next to the system-permission launcher. The
     // default denies so a page is never left waiting.
@@ -403,6 +440,10 @@ fun BrowserApp(
             },
             onGeckoJsPrompt = { kind, message, defaultValue, respond ->
                 geckoJsPromptHandler(kind, message, defaultValue, respond)
+            },
+            onHttpAuth = { info, respond -> httpAuthHandler(info, respond) },
+            onSslError = { failedUrl, description, respond ->
+                sslErrorHandler(failedUrl, description, respond)
             },
             onGeckoAndroidPermissions = { perms, callback ->
                 geckoAndroidPermHandler(perms, callback)
@@ -679,8 +720,11 @@ fun BrowserApp(
         }
     }
 
-    // Bookmark import: system file picker, JSON files only, merged in
-    // with duplicates (same URL) skipped.
+    // Bookmark import: system file picker. Two formats are accepted —
+    // this app's own JSON export, and the standard Netscape HTML file
+    // every desktop browser exports — told apart by sniffing the
+    // content, not the file name. Merged in with duplicates (same
+    // URL, against existing bookmarks and within the file) skipped.
     val importBookmarksLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -688,19 +732,37 @@ fun BrowserApp(
         try {
             val raw = context.contentResolver.openInputStream(uri)
                 ?.bufferedReader()?.readText() ?: ""
-            val imported = bookmarksFromJson(raw)
+            val head = raw.trimStart()
+            val isHtml = head.startsWith("<!DOCTYPE NETSCAPE", ignoreCase = true) ||
+                head.startsWith("<DL", ignoreCase = true)
+            var skipped = 0
+            val parsed = if (isHtml) {
+                val (list, bad) = bookmarksFromHtml(raw)
+                skipped += bad
+                list
+            } else {
+                bookmarksFromJson(raw)
+            }
+            // De-duplicate within the file itself as well.
+            val imported = parsed.distinctBy { it.url }
+            skipped += parsed.size - imported.size
             var added = 0
             imported.forEach { bm ->
                 if (bookmarks.none { it.url == bm.url }) {
                     bookmarks.add(bm)
                     added++
+                } else {
+                    skipped++
                 }
             }
             if (added > 0) store.saveBookmarks(bookmarks)
             android.widget.Toast.makeText(
                 context,
-                if (imported.isEmpty()) "这个文件里没有可导入的书签"
-                else "已导入 $added 条书签（重复的自动跳过）",
+                if (imported.isEmpty() && skipped == 0) {
+                    "这个文件里没有可导入的书签"
+                } else {
+                    "导入了 $added 条书签，跳过 $skipped 条（重复或不支持的）"
+                },
                 android.widget.Toast.LENGTH_LONG
             ).show()
         } catch (t: Throwable) {
@@ -754,10 +816,40 @@ fun BrowserApp(
     // while a dialog is up is cancelled at once rather than queued, so
     // no page waits forever and no answer callback leaks.
     geckoJsPromptHandler = { kind, message, defaultValue, respond ->
-        if (jsPromptRequest != null) {
+        if (jsPromptRequest != null || authPromptRequest != null ||
+            sslPromptRequest != null
+        ) {
             respond(false, null)
         } else {
             jsPromptRequest = JsPromptState(kind, message, defaultValue, respond)
+        }
+    }
+
+    // HTTP Basic-auth challenges (both engines): one dialog at a time,
+    // sharing the stage with the JS prompt and SSL dialogs — a
+    // challenge that arrives while any of them is up is cancelled at
+    // once rather than stacked or queued. The credentials the user
+    // types live only in the dialog state and this callback.
+    httpAuthHandler = { info, respond ->
+        if (authPromptRequest != null || jsPromptRequest != null ||
+            sslPromptRequest != null
+        ) {
+            respond(null, null)
+        } else {
+            authPromptRequest = AuthPromptState(info, respond)
+        }
+    }
+
+    // WebView SSL errors: same one-dialog rule. A second error while
+    // one is already waiting is refused (cancelled) at once instead
+    // of stacking another dialog.
+    sslErrorHandler = { failedUrl, description, respond ->
+        if (sslPromptRequest != null || authPromptRequest != null ||
+            jsPromptRequest != null
+        ) {
+            respond(false)
+        } else {
+            sslPromptRequest = SslPromptState(failedUrl, description, respond)
         }
     }
 
@@ -1048,10 +1140,13 @@ fun BrowserApp(
                     store.saveBookmarks(bookmarks)
                 },
                 onNavigate = { text ->
-                    activeTab()?.load(resolveInput(text, store.searchEngine))
+                    activeTab()?.load(
+                        resolveInput(text, store.searchEngine, store.customSearchTemplate)
+                    )
                 },
                 bookmarks = bookmarks,
                 searchEngine = store.searchEngine,
+                customSearchName = store.customSearchName,
                 onOpenSuggestion = { url -> openUrl(url) },
                 onGoHome = { activeTab()?.load(HOME_URL) },
                 onReloadPage = { activeTab()?.reload() },
@@ -1181,6 +1276,8 @@ fun BrowserApp(
                     HomeContent(
                         bookmarks = bookmarks,
                         searchEngine = store.searchEngine,
+                        customSearchName = store.customSearchName,
+                        customSearchTemplate = store.customSearchTemplate,
                         onSearchUrl = { url -> openUrl(url) },
                         onOpenBookmark = { openUrl(it.url) },
                         onDeleteBookmark = {
@@ -1217,7 +1314,9 @@ fun BrowserApp(
             },
             onExport = { exportBookmarks() },
             onImport = {
-                importBookmarksLauncher.launch(arrayOf("application/json", "text/plain"))
+                importBookmarksLauncher.launch(
+                    arrayOf("application/json", "text/plain", "text/html")
+                )
             }
         )
 
@@ -1554,6 +1653,135 @@ fun BrowserApp(
         )
     }
 
+    // HTTP Basic-auth dialog (both engines share this one). The user
+    // name and password exist only in this dialog's state and the
+    // answer callback — nothing is saved to disk, history or logs.
+    val authPrompt = authPromptRequest
+    if (authPrompt != null) {
+        val info = authPrompt.info
+        var authUser by remember(authPrompt) {
+            mutableStateOf(info.prefillUsername)
+        }
+        var authPass by remember(authPrompt) { mutableStateOf("") }
+        fun answerAuth(user: String?, pass: String?) {
+            authPromptRequest = null
+            authPrompt.respond(user, pass)
+        }
+        AlertDialog(
+            onDismissRequest = { answerAuth(null, null) },
+            title = { Text("这个网站需要登录") },
+            text = {
+                LazyColumn {
+                    item {
+                        Text(
+                            when {
+                                info.message.isNotBlank() -> info.message
+                                info.realm.isNotBlank() ->
+                                    "网站 ${info.host}（${info.realm}）" +
+                                        "需要账号密码才能打开。"
+                                else ->
+                                    "网站 ${info.host} 需要账号密码才能打开。"
+                            }
+                        )
+                    }
+                    if (!info.onlyPassword) {
+                        item {
+                            OutlinedTextField(
+                                value = authUser,
+                                onValueChange = { authUser = it },
+                                label = { Text("用户名") },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp),
+                                singleLine = true
+                            )
+                        }
+                    }
+                    item {
+                        OutlinedTextField(
+                            value = authPass,
+                            onValueChange = { authPass = it },
+                            label = { Text("密码") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp),
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Password
+                            )
+                        )
+                    }
+                    item {
+                        Text(
+                            "账号密码只会发给这个网站，本应用不会保存。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    answerAuth(
+                        if (info.onlyPassword) info.prefillUsername else authUser,
+                        authPass
+                    )
+                }) {
+                    Text("登录")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { answerAuth(null, null) }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
+    // SSL certificate error dialog (WebView tabs). "返回" is the
+    // primary, safe choice; proceeding applies to this one load only
+    // and is never remembered.
+    val sslPrompt = sslPromptRequest
+    if (sslPrompt != null) {
+        fun answerSsl(proceed: Boolean) {
+            sslPromptRequest = null
+            sslPrompt.respond(proceed)
+        }
+        AlertDialog(
+            onDismissRequest = { answerSsl(false) },
+            title = { Text("这个网站的证书有问题") },
+            text = {
+                LazyColumn {
+                    item { Text(sslPrompt.description + "。") }
+                    item {
+                        Text(
+                            "网址：${sslPrompt.url}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
+                    item {
+                        Text(
+                            "证书有问题的网站可能不安全，输在里面的账号密码" +
+                                "有被别人看走的风险。就算这次选了继续，" +
+                                "也只对这一次打开有效，下次还会再问。",
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = { answerSsl(false) }) { Text("返回") }
+            },
+            dismissButton = {
+                TextButton(onClick = { answerSsl(true) }) { Text("仍然继续") }
+            }
+        )
+    }
+
     // Page screenshot (WebView tabs only — Gecko tabs are told
     // honestly at the menu entry that it is not supported there).
     // Two kinds: the visible screen, or a full-page long capture
@@ -1682,6 +1910,8 @@ fun BrowserApp(
 private fun HomeContent(
     bookmarks: List<Bookmark>,
     searchEngine: SearchEngine,
+    customSearchName: String = "",
+    customSearchTemplate: String = "",
     onSearchUrl: (String) -> Unit,
     onOpenBookmark: (Bookmark) -> Unit,
     onDeleteBookmark: (Bookmark) -> Unit,
@@ -1789,15 +2019,33 @@ private fun HomeContent(
                 onValueChange = { query = it },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                placeholder = { Text("用${searchEngine.label}搜索，或输入网址") },
+                placeholder = {
+                    Text(
+                        "用${
+                            if (searchEngine == SearchEngine.CUSTOM) {
+                                customSearchName.ifBlank { "自定义" }
+                            } else {
+                                searchEngine.label
+                            }
+                        }搜索，或输入网址"
+                    )
+                },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(
                     onSearch = {
-                        if (query.isNotBlank()) onSearchUrl(resolveInput(query, searchEngine))
+                        if (query.isNotBlank()) {
+                            onSearchUrl(
+                                resolveInput(query, searchEngine, customSearchTemplate)
+                            )
+                        }
                     },
                     onGo = {
-                        if (query.isNotBlank()) onSearchUrl(resolveInput(query, searchEngine))
+                        if (query.isNotBlank()) {
+                            onSearchUrl(
+                                resolveInput(query, searchEngine, customSearchTemplate)
+                            )
+                        }
                     }
                 )
             )
@@ -2018,6 +2266,7 @@ private fun BrowserScreen(
     onNavigate: (String) -> Unit,
     bookmarks: List<Bookmark>,
     searchEngine: SearchEngine,
+    customSearchName: String = "",
     onOpenSuggestion: (String) -> Unit,
     onGoHome: () -> Unit,
     onReloadPage: () -> Unit,
@@ -2580,7 +2829,13 @@ private fun BrowserScreen(
                                 ListItem(
                                     headlineContent = {
                                         Text(
-                                            "用${searchEngine.label}搜索「$trimmedAddress」",
+                                            "用${
+                                                if (searchEngine == SearchEngine.CUSTOM) {
+                                                    customSearchName.ifBlank { "自定义" }
+                                                } else {
+                                                    searchEngine.label
+                                                }
+                                            }搜索「$trimmedAddress」",
                                             maxLines = 1
                                         )
                                     },
@@ -3998,6 +4253,10 @@ private fun SettingsScreen(
     var mainEngine by remember { mutableStateOf(store.mainEngine) }
     var incognitoEngine by remember { mutableStateOf(store.incognitoEngine) }
     var searchEngine by remember { mutableStateOf(store.searchEngine) }
+    var showCustomSearchDialog by remember { mutableStateOf(false) }
+    var customSearchName by remember { mutableStateOf(store.customSearchName) }
+    var customSearchTemplate by remember { mutableStateOf(store.customSearchTemplate) }
+    var customSearchError by remember { mutableStateOf<String?>(null) }
     var adBlock by remember { mutableStateOf(store.adBlockEnabled) }
     var textZoom by remember { mutableStateOf(store.textZoomPercent) }
     var webDark by remember { mutableStateOf(store.webDarkMode) }
@@ -4117,22 +4376,62 @@ private fun SettingsScreen(
             items(SearchEngine.entries) { engine ->
                 ElevatedCard(
                     onClick = {
-                        searchEngine = engine
-                        store.searchEngine = engine
+                        if (engine == SearchEngine.CUSTOM) {
+                            // Picking "custom" opens the editor; the
+                            // engine only becomes active once a valid
+                            // name + template are saved there.
+                            customSearchName = store.customSearchName
+                            customSearchTemplate = store.customSearchTemplate
+                            customSearchError = null
+                            showCustomSearchDialog = true
+                        } else {
+                            searchEngine = engine
+                            store.searchEngine = engine
+                        }
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     ListItem(
                         headlineContent = { Text(engine.label) },
+                        supportingContent = if (engine == SearchEngine.CUSTOM &&
+                            store.customSearchName.isNotBlank()
+                        ) {
+                            { Text(store.customSearchName) }
+                        } else {
+                            null
+                        },
                         trailingContent = {
                             RadioButton(
                                 selected = searchEngine == engine,
                                 onClick = {
-                                    searchEngine = engine
-                                    store.searchEngine = engine
+                                    if (engine == SearchEngine.CUSTOM) {
+                                        customSearchName = store.customSearchName
+                                        customSearchTemplate = store.customSearchTemplate
+                                        customSearchError = null
+                                        showCustomSearchDialog = true
+                                    } else {
+                                        searchEngine = engine
+                                        store.searchEngine = engine
+                                    }
                                 }
                             )
                         }
+                    )
+                }
+            }
+            if (searchEngine == SearchEngine.CUSTOM) {
+                item {
+                    Text(
+                        if (isValidCustomSearchTemplate(store.customSearchTemplate)) {
+                            "正在用自定义搜索引擎「" +
+                                store.customSearchName.ifBlank { "自定义" } +
+                                "」。点上面的「自定义」可以修改。"
+                        } else {
+                            "自定义搜索引擎还没填好：先点上面的「自定义」填写，" +
+                                "没填好之前搜索会先用百度。"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -4441,5 +4740,90 @@ private fun SettingsScreen(
             }
             item { Spacer(modifier = Modifier.padding(bottom = 24.dp)) }
         }
+    }
+    // Custom search engine editor: a name plus a URL template. The
+    // template must contain %s (where the search words go) and start
+    // with http:// or https://; anything else is explained in plain
+    // language and not saved.
+    if (showCustomSearchDialog) {
+        AlertDialog(
+            onDismissRequest = { showCustomSearchDialog = false },
+            title = { Text("自定义搜索引擎") },
+            text = {
+                LazyColumn {
+                    item {
+                        OutlinedTextField(
+                            value = customSearchName,
+                            onValueChange = { customSearchName = it },
+                            label = { Text("名称") },
+                            placeholder = { Text("比如：我的搜索") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                    }
+                    item {
+                        OutlinedTextField(
+                            value = customSearchTemplate,
+                            onValueChange = { customSearchTemplate = it },
+                            label = { Text("网址模板") },
+                            placeholder = {
+                                Text("比如：https://example.com/search?q=%s")
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp),
+                            singleLine = true
+                        )
+                    }
+                    item {
+                        Text(
+                            "模板里必须有 %s，它会被换成你要搜的词；" +
+                                "网址要以 http:// 或 https:// 开头。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
+                    val error = customSearchError
+                    if (error != null) {
+                        item {
+                            Text(
+                                error,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.padding(top = 8.dp)
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    val template = customSearchTemplate.trim()
+                    customSearchError = when {
+                        !template.contains("%s") ->
+                            "模板里没有 %s，搜的时候没地方放要搜的词，请补上。"
+                        !template.startsWith("http://") &&
+                            !template.startsWith("https://") ->
+                            "网址要以 http:// 或 https:// 开头，请改一下。"
+                        else -> null
+                    }
+                    if (customSearchError == null) {
+                        store.customSearchName = customSearchName.trim()
+                        store.customSearchTemplate = template
+                        searchEngine = SearchEngine.CUSTOM
+                        store.searchEngine = SearchEngine.CUSTOM
+                        showCustomSearchDialog = false
+                    }
+                }) {
+                    Text("保存")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCustomSearchDialog = false }) {
+                    Text("取消")
+                }
+            }
+        )
     }
 }
