@@ -49,7 +49,9 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.FindInPage
+import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Movie
@@ -120,12 +122,14 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.tuxunbrowse.android.data.Bookmark
 import com.tuxunbrowse.android.data.Engine
 import com.tuxunbrowse.android.data.HOME_URL
 import com.tuxunbrowse.android.data.HistoryItem
+import com.tuxunbrowse.android.data.ReadingItem
 import com.tuxunbrowse.android.data.SavedTab
 import com.tuxunbrowse.android.data.SearchEngine
 import com.tuxunbrowse.android.data.Store
@@ -136,8 +140,10 @@ import com.tuxunbrowse.android.data.isCompatHost
 import com.tuxunbrowse.android.data.isUrlLikeInput
 import com.tuxunbrowse.android.data.matchSuggestions
 import com.tuxunbrowse.android.data.resolveInput
+import com.tuxunbrowse.android.engine.AdBlocker
 import com.tuxunbrowse.android.engine.BrowserTab
 import com.tuxunbrowse.android.engine.GeckoHolder
+import com.tuxunbrowse.android.engine.MAX_FULL_PAGE_HEIGHT_PX
 import com.tuxunbrowse.android.engine.SniffKind
 import com.tuxunbrowse.android.engine.SniffedResource
 import com.tuxunbrowse.android.engine.TabLoadError
@@ -149,7 +155,7 @@ import com.tuxunbrowse.android.engine.startSystemDownload
 import kotlinx.coroutines.flow.collect
 import org.mozilla.geckoview.GeckoSession
 
-private enum class Screen { PICKER, BROWSER, BOOKMARKS, HISTORY, SETTINGS, DOWNLOADS, CLEAR_DATA, SNIFF }
+private enum class Screen { PICKER, BROWSER, BOOKMARKS, HISTORY, SETTINGS, DOWNLOADS, CLEAR_DATA, SNIFF, READING_LIST }
 
 private data class ClosedTabInfo(
     val engine: Engine,
@@ -180,6 +186,9 @@ fun BrowserApp(
     var activeTabId by remember { mutableStateOf(-1) }
     val bookmarks = remember { mutableStateListOf<Bookmark>().apply { addAll(store.loadBookmarks()) } }
     val history = remember { mutableStateListOf<HistoryItem>().apply { addAll(store.loadHistory()) } }
+    val readingList = remember {
+        mutableStateListOf<ReadingItem>().apply { addAll(store.loadReadingList()) }
+    }
     val compatSites = remember {
         mutableStateListOf<String>().apply { addAll(store.loadCompatSites()) }
     }
@@ -995,6 +1004,44 @@ fun BrowserApp(
                 onOpenBookmarks = { screen = Screen.BOOKMARKS },
                 onOpenHistory = { screen = Screen.HISTORY },
                 onOpenSettings = { screen = Screen.SETTINGS },
+                adBlockEnabled = store.adBlockEnabled,
+                onAddToReadingList = {
+                    val tab = activeTab() ?: return@BrowserScreen
+                    when {
+                        tab.isHome || !tab.url.startsWith("http") ->
+                            android.widget.Toast.makeText(
+                                context, "先打开一个网页再加入阅读列表",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        readingList.any { it.url == tab.url } ->
+                            android.widget.Toast.makeText(
+                                context, "这篇文章已经在阅读列表里了",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        else -> {
+                            readingList.add(
+                                0,
+                                ReadingItem(
+                                    tab.title.ifBlank { tab.url },
+                                    tab.url,
+                                    System.currentTimeMillis(),
+                                    false
+                                )
+                            )
+                            // Cap the list at 200 entries; the oldest
+                            // ones fall off the end.
+                            while (readingList.size > 200) {
+                                readingList.removeAt(readingList.lastIndex)
+                            }
+                            store.saveReadingList(readingList)
+                            android.widget.Toast.makeText(
+                                context, "已加入阅读列表",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                },
+                onOpenReadingList = { screen = Screen.READING_LIST },
                 homeContent = {
                     HomeContent(
                         bookmarks = bookmarks,
@@ -1108,6 +1155,30 @@ fun BrowserApp(
             onBack = { screen = Screen.BROWSER },
             onDownload = { res ->
                 startSystemDownload(context, res.url, null, null, null)
+            }
+        )
+
+        Screen.READING_LIST -> ReadingListScreen(
+            items = readingList,
+            onBack = { screen = Screen.BROWSER },
+            onOpen = { item ->
+                // Opening an entry marks it read, then follows the
+                // usual openUrl path (current tab, default engine
+                // rules and compat memory included).
+                val idx = readingList.indexOf(item)
+                if (idx >= 0 && !readingList[idx].read) {
+                    readingList[idx] = readingList[idx].copy(read = true)
+                    store.saveReadingList(readingList)
+                }
+                openUrl(item.url)
+            },
+            onDelete = {
+                readingList.remove(it)
+                store.saveReadingList(readingList)
+            },
+            onClearRead = {
+                readingList.removeAll { it.read }
+                store.saveReadingList(readingList)
             }
         )
         }
@@ -1314,54 +1385,115 @@ fun BrowserApp(
 
     // Page screenshot (WebView tabs only — Gecko tabs are told
     // honestly at the menu entry that it is not supported there).
-    // Visible area only, and the dialog says so: this is a shot of
-    // the current screen, not a full-page capture.
+    // Two kinds: the visible screen, or a full-page long capture
+    // capped at MAX_FULL_PAGE_HEIGHT_PX — the dialog says what the
+    // cap means, and a truncated capture is reported after saving.
     val shotTab = screenshotTab
     if (shotTab != null) {
+        var fullPage by remember(shotTab) { mutableStateOf(false) }
+        fun shotToast(message: String) {
+            android.widget.Toast.makeText(
+                context, message, android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
+        fun runShot(share: Boolean) {
+            screenshotTab = null
+            if (!fullPage) {
+                val bmp = shotTab.captureVisibleBitmap()
+                when {
+                    bmp == null -> shotToast("截图失败，请重试")
+                    share -> sharePageScreenshot(context, bmp)
+                    else -> savePageScreenshot(context, bmp) { where ->
+                        shotToast(
+                            if (where != null) {
+                                "截图已保存到$where"
+                            } else {
+                                "保存失败，请重试"
+                            }
+                        )
+                    }
+                }
+                return
+            }
+            val result = shotTab.captureFullPageBitmap()
+            val bmp = result.bitmap
+            when {
+                result.outOfMemory -> shotToast(
+                    "这个页面太长太大，手机内存不够截成长图，可以改用当前屏幕截图"
+                )
+                bmp == null -> shotToast("截图失败，请重试")
+                share -> {
+                    sharePageScreenshot(context, bmp)
+                    if (result.truncated) {
+                        shotToast("页面太长，只截了前半部分")
+                    }
+                }
+                else -> savePageScreenshot(context, bmp) { where ->
+                    shotToast(
+                        when {
+                            where == null -> "保存失败，请重试"
+                            result.truncated ->
+                                "页面太长，只截了前半部分，已保存到$where"
+                            else -> "长截图已保存到$where"
+                        }
+                    )
+                }
+            }
+        }
         AlertDialog(
             onDismissRequest = { screenshotTab = null },
             title = { Text("网页截图") },
             text = {
-                Text("截的是当前屏幕截图：只截现在屏幕里能看到的这一屏，不是整页长截图。截图可以存到相册，也可以直接分享。")
+                LazyColumn {
+                    item {
+                        Text("选一种截图方式，截好后可以存到相册，也可以直接分享。")
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("当前屏幕截图") },
+                            supportingContent = {
+                                Text("只截现在屏幕里能看到的这一屏")
+                            },
+                            leadingContent = {
+                                RadioButton(
+                                    selected = !fullPage,
+                                    onClick = { fullPage = false }
+                                )
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { fullPage = false }
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("整页长截图") },
+                            supportingContent = {
+                                Text(
+                                    "把整个网页从上到下截成一张长图，最长 " +
+                                        "$MAX_FULL_PAGE_HEIGHT_PX 像素；" +
+                                        "页面更长时只截前半部分，截完会提醒你"
+                                )
+                            },
+                            leadingContent = {
+                                RadioButton(
+                                    selected = fullPage,
+                                    onClick = { fullPage = true }
+                                )
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { fullPage = true }
+                        )
+                    }
+                }
             },
             confirmButton = {
-                Button(onClick = {
-                    screenshotTab = null
-                    val bmp = shotTab.captureVisibleBitmap()
-                    if (bmp == null) {
-                        android.widget.Toast.makeText(
-                            context, "截图失败，请重试",
-                            android.widget.Toast.LENGTH_SHORT
-                        ).show()
-                    } else {
-                        savePageScreenshot(context, bmp) { where ->
-                            android.widget.Toast.makeText(
-                                context,
-                                if (where != null) {
-                                    "截图已保存到$where"
-                                } else {
-                                    "保存失败，请重试"
-                                },
-                                android.widget.Toast.LENGTH_LONG
-                            ).show()
-                        }
-                    }
-                }) { Text("保存到相册") }
+                Button(onClick = { runShot(share = false) }) { Text("保存到相册") }
             },
             dismissButton = {
                 Row {
-                    TextButton(onClick = {
-                        screenshotTab = null
-                        val bmp = shotTab.captureVisibleBitmap()
-                        if (bmp == null) {
-                            android.widget.Toast.makeText(
-                                context, "截图失败，请重试",
-                                android.widget.Toast.LENGTH_SHORT
-                            ).show()
-                        } else {
-                            sharePageScreenshot(context, bmp)
-                        }
-                    }) { Text("分享截图") }
+                    TextButton(onClick = { runShot(share = true) }) { Text("分享截图") }
                     TextButton(onClick = { screenshotTab = null }) { Text("取消") }
                 }
             }
@@ -1733,10 +1865,14 @@ private fun BrowserScreen(
     onOpenBookmarks: () -> Unit,
     onOpenHistory: () -> Unit,
     onOpenSettings: () -> Unit,
+    adBlockEnabled: Boolean,
+    onAddToReadingList: () -> Unit,
+    onOpenReadingList: () -> Unit,
     homeContent: @Composable () -> Unit
 ) {
     val context = LocalContext.current
     var showTabs by remember { mutableStateOf(false) }
+    var tabQuery by remember { mutableStateOf("") }
     var showMenu by remember { mutableStateOf(false) }
     var showIncognitoPicker by remember { mutableStateOf(false) }
     var showEngineSwitch by remember { mutableStateOf(false) }
@@ -1834,6 +1970,26 @@ private fun BrowserScreen(
                         Icon(Icons.Filled.MoreVert, contentDescription = "菜单")
                     }
                     DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                        // Ad-block status for this page. WebView tabs
+                        // count the requests they blocked; GeckoView
+                        // gives no such count, so its line shows the
+                        // switch state only — no invented number.
+                        Text(
+                            text = when {
+                                !adBlockEnabled -> "广告拦截已关"
+                                activeTab?.engine == Engine.GECKO ->
+                                    "广告拦截已开"
+                                activeTab != null && activeTab.blockedCount > 0 ->
+                                    "本页已拦截 ${activeTab.blockedCount} 个"
+                                else -> "广告拦截已开"
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(
+                                horizontal = 12.dp, vertical = 8.dp
+                            )
+                        )
+                        HorizontalDivider()
                         DropdownMenuItem(
                             text = { Text("新建标签页") },
                             leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
@@ -1980,6 +2136,29 @@ private fun BrowserScreen(
                             leadingIcon = { Icon(Icons.Filled.History, contentDescription = null) },
                             onClick = { showMenu = false; onOpenHistory() }
                         )
+                        // Incognito tabs never write anything to disk,
+                        // so they do not offer "add to reading list".
+                        if (activeTab != null && !activeTab.incognito &&
+                            !activeTab.isHome
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("加入阅读列表") },
+                                leadingIcon = {
+                                    Icon(Icons.Filled.MenuBook, contentDescription = null)
+                                },
+                                onClick = { showMenu = false; onAddToReadingList() }
+                            )
+                        }
+                        DropdownMenuItem(
+                            text = { Text("阅读列表") },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Filled.FormatListBulleted,
+                                    contentDescription = null
+                                )
+                            },
+                            onClick = { showMenu = false; onOpenReadingList() }
+                        )
                         DropdownMenuItem(
                             text = { Text("设置") },
                             leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
@@ -1995,7 +2174,7 @@ private fun BrowserScreen(
             NavigationBar {
                 NavigationBarItem(
                     selected = false,
-                    onClick = { onTabsOpened(); showTabs = true },
+                    onClick = { onTabsOpened(); tabQuery = ""; showTabs = true },
                     icon = { Icon(Icons.Filled.Tab, contentDescription = null) },
                     label = { Text("标签页 ${tabs.size}") }
                 )
@@ -2316,6 +2495,14 @@ private fun BrowserScreen(
         }
     }
 
+    val visibleTabs = if (tabQuery.isBlank()) {
+        tabs
+    } else {
+        tabs.filter {
+            it.title.contains(tabQuery, ignoreCase = true) ||
+                it.url.contains(tabQuery, ignoreCase = true)
+        }
+    }
     val sheetState = rememberModalBottomSheetState()
     if (showTabs) {
         ModalBottomSheet(
@@ -2335,7 +2522,24 @@ private fun BrowserScreen(
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     Text("标签页", style = MaterialTheme.typography.titleLarge)
                 }
-                gridItems(tabs, key = { it.id }) { tab ->
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    OutlinedTextField(
+                        value = tabQuery,
+                        onValueChange = { tabQuery = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        placeholder = { Text("搜索标签页（标题或网址）") },
+                        leadingIcon = {
+                            Icon(Icons.Filled.Search, contentDescription = null)
+                        }
+                    )
+                }
+                if (visibleTabs.isEmpty()) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        EmptyState(Icons.Filled.Search, "没有找到相关的标签页。")
+                    }
+                }
+                gridItems(visibleTabs, key = { it.id }) { tab ->
                     val isActive = tab.id == activeTab?.id
                     ElevatedCard(
                         onClick = { onSelectTab(tab); showTabs = false },
@@ -2883,6 +3087,120 @@ private fun HistoryScreen(
                                 Icon(
                                     Icons.Filled.Delete,
                                     contentDescription = "删除这条历史"
+                                )
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onOpen(item) }
+                    )
+                    HorizontalDivider()
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Reading list ("read it later"): pages saved from the browser menu,
+ * newest first. Unread entries stand out with a bold title and a dot;
+ * opening one marks it read. Stored locally like bookmarks — engine
+ * agnostic, entries open through the usual openUrl path.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ReadingListScreen(
+    items: List<ReadingItem>,
+    onBack: () -> Unit,
+    onOpen: (ReadingItem) -> Unit,
+    onDelete: (ReadingItem) -> Unit,
+    onClearRead: () -> Unit
+) {
+    val timeFormat = remember {
+        java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+    }
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("阅读列表") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "返回"
+                        )
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            if (items.isEmpty()) {
+                item {
+                    EmptyState(
+                        Icons.Filled.MenuBook,
+                        "阅读列表还是空的。打开网页后，在菜单里点「加入阅读列表」就能存进来稍后看。"
+                    )
+                }
+            } else {
+                if (items.any { it.read }) {
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            TextButton(onClick = onClearRead) {
+                                Text("清除已读")
+                            }
+                        }
+                    }
+                }
+                items(items, key = { it.url }) { item ->
+                    ListItem(
+                        headlineContent = {
+                            Text(
+                                item.title,
+                                fontWeight = if (item.read) {
+                                    FontWeight.Normal
+                                } else {
+                                    FontWeight.Bold
+                                }
+                            )
+                        },
+                        supportingContent = {
+                            Column {
+                                Text(item.url)
+                                Text(
+                                    "加入于 " +
+                                        timeFormat.format(java.util.Date(item.time))
+                                )
+                            }
+                        },
+                        leadingContent = {
+                            if (item.read) {
+                                Icon(
+                                    Icons.Filled.MenuBook,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            } else {
+                                Icon(
+                                    Icons.Filled.FiberManualRecord,
+                                    contentDescription = "未读",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
+                        },
+                        trailingContent = {
+                            IconButton(onClick = { onDelete(item) }) {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    contentDescription = "从阅读列表删除"
                                 )
                             }
                         },
@@ -3660,6 +3978,15 @@ private fun SettingsScreen(
                             }
                         )
                     }
+                )
+            }
+            item {
+                Text(
+                    "内置拦截名单共 ${AdBlocker.blockedHostCount} 个广告/跟踪域名。" +
+                        "WebView 标签按这份名单拦截，菜单顶部会显示本页拦下了几个；" +
+                        "火狐标签用内核自带的跟踪保护，没有个数统计。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             item {

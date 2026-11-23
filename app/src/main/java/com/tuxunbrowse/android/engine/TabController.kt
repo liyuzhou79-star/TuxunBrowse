@@ -147,6 +147,19 @@ data class TabLoadError(
 /** Resource groups the page sniffer reports, in display order. */
 enum class SniffKind { FILE, IMAGE, MEDIA }
 
+/**
+ * Tallest full-page screenshot, in pixels. A page taller than this
+ * is captured only up to the cap and the UI says so honestly.
+ */
+const val MAX_FULL_PAGE_HEIGHT_PX = 12000
+
+/** Outcome of a full-page capture attempt. */
+data class FullPageCapture(
+    val bitmap: Bitmap?,
+    val truncated: Boolean,
+    val outOfMemory: Boolean
+)
+
 /** One downloadable resource link found on the current page. */
 data class SniffedResource(
     val url: String,
@@ -304,6 +317,16 @@ class BrowserTab(
     /** Find-in-page match counter text ("2 / 9"); WebView only. */
     var findInfo by mutableStateOf("")
 
+    /**
+     * How many ad/tracker requests this tab's current page has had
+     * blocked so far (WebView only — GeckoView exposes no per-request
+     * count, so Gecko tabs keep this at zero and the UI shows no
+     * number for them). Reset whenever a new page starts loading.
+     * shouldInterceptRequest runs on a background thread, so the
+     * increments are posted to the WebView's (main) thread.
+     */
+    var blockedCount by mutableIntStateOf(0)
+
     /** Latest network-level load failure, or null when the page is fine. */
     var loadError by mutableStateOf<TabLoadError?>(null)
 
@@ -348,6 +371,7 @@ class BrowserTab(
 
     fun load(target: String) {
         loadError = null
+        blockedCount = 0
         url = target
         // The native home page is rendered by the app itself; the web
         // engines must never try to load its internal URL.
@@ -457,6 +481,33 @@ class BrowserTab(
             bmp
         } catch (t: Throwable) {
             null
+        }
+    }
+
+    /**
+     * Draw the whole page into one tall bitmap (WebView only): the
+     * full content height (contentHeight × scale), capped at
+     * [MAX_FULL_PAGE_HEIGHT_PX] so a very long page cannot exhaust
+     * memory — when the cap bites, [FullPageCapture.truncated] says
+     * so and the UI tells the user only the first part was captured.
+     * An out-of-memory failure is reported, never thrown.
+     */
+    fun captureFullPageBitmap(): FullPageCapture {
+        val view = webView ?: return FullPageCapture(null, false, false)
+        return try {
+            val width = view.width
+            if (width <= 0) return FullPageCapture(null, false, false)
+            val fullHeight = (view.contentHeight * view.scale).toInt()
+            if (fullHeight <= 0) return FullPageCapture(null, false, false)
+            val truncated = fullHeight > MAX_FULL_PAGE_HEIGHT_PX
+            val height = fullHeight.coerceAtMost(MAX_FULL_PAGE_HEIGHT_PX)
+            val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            view.draw(Canvas(bmp))
+            FullPageCapture(bmp, truncated, false)
+        } catch (oom: OutOfMemoryError) {
+            FullPageCapture(null, false, true)
+        } catch (t: Throwable) {
+            FullPageCapture(null, false, false)
         }
     }
 
@@ -579,6 +630,9 @@ class BrowserTab(
             ): android.webkit.WebResourceResponse? {
                 val target = request.url?.toString() ?: return null
                 return if (isAdBlockEnabled() && AdBlocker.isAdRequest(target)) {
+                    // Count it on the main thread: this callback runs
+                    // on a background thread, the counter is UI state.
+                    wv.post { blockedCount++ }
                     android.webkit.WebResourceResponse(
                         "text/plain", "utf-8",
                         java.io.ByteArrayInputStream(ByteArray(0))
@@ -596,6 +650,8 @@ class BrowserTab(
                 super.onPageStarted(wv, startedUrl, favicon)
                 // A fresh load is under way; any earlier failure is over.
                 loadError = null
+                // The blocked-request counter belongs to one page.
+                blockedCount = 0
             }
 
             override fun onReceivedError(

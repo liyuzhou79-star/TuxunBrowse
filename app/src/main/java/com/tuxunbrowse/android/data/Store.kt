@@ -32,6 +32,14 @@ enum class SearchEngine(val id: String, val label: String, val template: String)
 data class Bookmark(val title: String, val url: String, val pinned: Boolean = false)
 data class HistoryItem(val title: String, val url: String, val time: Long)
 
+/** One "read it later" entry: a saved page, with its read/unread state. */
+data class ReadingItem(
+    val title: String,
+    val url: String,
+    val time: Long,
+    val read: Boolean = false
+)
+
 /** One address-bar suggestion row, from a bookmark or a history entry. */
 data class Suggestion(val title: String, val url: String, val bookmarked: Boolean)
 
@@ -166,6 +174,23 @@ class Store(context: Context) {
 
     fun clearHistory() = prefs.edit().remove(KEY_HISTORY).apply()
 
+    fun loadReadingList(): MutableList<ReadingItem> = readList(KEY_READING_LIST) {
+        ReadingItem(
+            it.optString("title"),
+            it.optString("url"),
+            it.optLong("time"),
+            it.optBoolean("read")
+        )
+    }.toMutableList()
+
+    fun saveReadingList(list: List<ReadingItem>) = writeList(KEY_READING_LIST, list) {
+        JSONObject()
+            .put("title", it.title)
+            .put("url", it.url)
+            .put("time", it.time)
+            .put("read", it.read)
+    }
+
     fun saveTabs(list: List<SavedTab>, activeIndex: Int) {
         val arr = JSONArray()
         list.forEach {
@@ -223,6 +248,7 @@ class Store(context: Context) {
         private const val KEY_COMPAT_SITES = "compat_sites"
         private const val KEY_BOOKMARKS = "bookmarks"
         private const val KEY_HISTORY = "history"
+        private const val KEY_READING_LIST = "reading_list"
         private const val KEY_TABS = "saved_tabs"
         private const val KEY_TEXT_ZOOM = "text_zoom"
         private const val KEY_WEB_DARK = "web_dark"

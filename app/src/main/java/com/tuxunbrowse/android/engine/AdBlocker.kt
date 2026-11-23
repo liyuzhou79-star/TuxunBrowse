@@ -32,6 +32,10 @@ object AdBlocker {
         "tanx.com", "mmstat.com", "cnzz.com", "gdt.qq.com", "mi.gdt.qq.com"
     )
 
+    /** How many hosts the built-in list carries (read by the settings page). */
+    val blockedHostCount: Int
+        get() = blockedHosts.size
+
     fun isAdRequest(url: String): Boolean {
         val host = hostOf(url) ?: return false
         return blockedHosts.any { blocked -> host == blocked || host.endsWith(".$blocked") }
