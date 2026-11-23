@@ -693,6 +693,14 @@ class BrowserTab(
     }
 
     private fun doCaptureThumbnail(view: WebView) {
+        // Incognito tabs never capture a thumbnail (v0.27.0 privacy
+        // audit): a preview bitmap of a private page sitting in the
+        // in-memory cache — and shown in the tab grid to anyone
+        // holding the phone — is a leak, even though it never touches
+        // disk. This is the single choke point behind both capture
+        // entry points (page finish and switch-away, deferred or
+        // not), so the guard lives here and nowhere else is needed.
+        if (incognito) return
         try {
             val w = view.width
             val h = view.height

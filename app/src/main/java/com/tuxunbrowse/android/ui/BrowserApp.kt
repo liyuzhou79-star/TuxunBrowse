@@ -375,15 +375,40 @@ fun BrowserApp(
      * the app saves those itself. [systemFallback] is the caller's
      * existing system-download call, unchanged.
      */
-    fun downloadWithMode(url: String, filenameHint: String?, systemFallback: () -> Unit) {
+    fun downloadWithMode(
+        url: String,
+        filenameHint: String?,
+        fromIncognito: Boolean = false,
+        systemFallback: () -> Unit
+    ) {
         if (url.isBlank()) return
+        // Incognito honesty (v0.27.0): a system download is recorded
+        // by the system's DownloadManager and stays visible in the
+        // system download list (and this app's Downloads page) after
+        // the incognito tab is gone. That is the user's own action,
+        // not a silent leak — but it must be said once, at the moment
+        // the system download actually starts. Wrapping the fallback
+        // means the reminder fires only when a system download really
+        // happens (never for TuxunDown shares, never in normal tabs).
+        val effectiveFallback: () -> Unit = if (fromIncognito) {
+            {
+                android.widget.Toast.makeText(
+                    context,
+                    "无痕提醒：下载记录会留在系统下载管理里，关掉无痕标签也不会自动删掉",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+                systemFallback()
+            }
+        } else {
+            systemFallback
+        }
         when (store.downloadMode) {
-            DownloadMode.SYSTEM -> systemFallback()
-            DownloadMode.TUXUNDOWN -> tuxunDownOrFallback(url, systemFallback)
+            DownloadMode.SYSTEM -> effectiveFallback()
+            DownloadMode.TUXUNDOWN -> tuxunDownOrFallback(url, effectiveFallback)
             DownloadMode.ASK -> askDownload = AskDownloadRequest(
                 message = filenameHint?.takeIf { it.isNotBlank() } ?: url,
-                onSystem = systemFallback,
-                onTuxunDown = { tuxunDownOrFallback(url, systemFallback) }
+                onSystem = effectiveFallback,
+                onTuxunDown = { tuxunDownOrFallback(url, effectiveFallback) }
             )
         }
     }
@@ -393,17 +418,35 @@ fun BrowserApp(
      * never asks or shares per item — the whole batch is one share
      * with one link per line, and ask mode asks exactly once.
      */
-    fun downloadBatchWithMode(urls: List<String>, systemFallback: () -> Unit) {
+    fun downloadBatchWithMode(
+        urls: List<String>,
+        fromIncognito: Boolean = false,
+        systemFallback: () -> Unit
+    ) {
         val clean = urls.filter { it.isNotBlank() }
         if (clean.isEmpty()) return
         val joined = clean.joinToString("\n")
+        // Same incognito honesty as downloadWithMode: one reminder
+        // for the whole batch, only if a system download happens.
+        val effectiveFallback: () -> Unit = if (fromIncognito) {
+            {
+                android.widget.Toast.makeText(
+                    context,
+                    "无痕提醒：下载记录会留在系统下载管理里，关掉无痕标签也不会自动删掉",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+                systemFallback()
+            }
+        } else {
+            systemFallback
+        }
         when (store.downloadMode) {
-            DownloadMode.SYSTEM -> systemFallback()
-            DownloadMode.TUXUNDOWN -> tuxunDownOrFallback(joined, systemFallback)
+            DownloadMode.SYSTEM -> effectiveFallback()
+            DownloadMode.TUXUNDOWN -> tuxunDownOrFallback(joined, effectiveFallback)
             DownloadMode.ASK -> askDownload = AskDownloadRequest(
                 message = "共 ${clean.size} 个链接",
-                onSystem = systemFallback,
-                onTuxunDown = { tuxunDownOrFallback(joined, systemFallback) }
+                onSystem = effectiveFallback,
+                onTuxunDown = { tuxunDownOrFallback(joined, effectiveFallback) }
             )
         }
     }
@@ -555,7 +598,10 @@ fun BrowserApp(
                 created?.let { geckoNewSessionHandler(it, session, uri) }
             },
             onUrlDownload = { dlUrl, ua, cd, mt ->
-                downloadWithMode(dlUrl, null) {
+                downloadWithMode(
+                    dlUrl, null,
+                    fromIncognito = created?.incognito == true
+                ) {
                     startSystemDownload(
                         context, dlUrl, ua, cd, mt,
                         referer = created?.url
@@ -570,7 +616,10 @@ fun BrowserApp(
                 // fallback User-Agent itself; the Referer is the
                 // page the tap happened on (the tab has not moved).
                 val fileName = resolveDownloadFileName(target, null, null)
-                downloadWithMode(target, fileName) {
+                downloadWithMode(
+                    target, fileName,
+                    fromIncognito = created?.incognito == true
+                ) {
                     startSystemDownload(
                         context, target, null, null, null,
                         referer = created?.url
@@ -596,6 +645,28 @@ fun BrowserApp(
         if (engine == Engine.GECKO && url.startsWith("http") &&
             isCompatHost(hostOf(url), compatSites.toSet())
         ) Engine.WEBVIEW else engine
+
+    /**
+     * Wipe the shared WebView cookie jar and web storage once no
+     * incognito WebView tab is left (v0.27.0 audit). The system
+     * WebView keeps ONE cookie jar for the whole app, so an incognito
+     * WebView tab's cookies live in the same jar normal tabs read —
+     * the moment the last incognito WebView tab goes away (closed,
+     * batch-closed, or destroyed by an engine switch), the jar must
+     * be wiped or those cookies leak into normal browsing. Incognito
+     * Gecko tabs do NOT keep the jar alive: they are truly private
+     * (usePrivateMode) and never touch it. Callers invoke this only
+     * when an incognito tab was actually involved. (Side effect, as
+     * documented since v0.2.0: normal WebView tabs get signed out —
+     * the jar is shared, there is no per-tab alternative.)
+     */
+    fun wipeWebViewDataIfIncognitoWebViewGone() {
+        if (tabs.none { it.incognito && it.engine == Engine.WEBVIEW }) {
+            android.webkit.CookieManager.getInstance().removeAllCookies(null)
+            android.webkit.CookieManager.getInstance().flush()
+            android.webkit.WebStorage.getInstance().deleteAllData()
+        }
+    }
 
     fun newTab(
         engine: Engine,
@@ -626,6 +697,16 @@ fun BrowserApp(
         val replacement = makeTab(newEngine, tab.incognito, tab.url, desktopMode)
         tabs[idx] = replacement
         tab.destroy()
+        // Engine switch / recreation destroys the old tab without
+        // going through closeTab: if it was an incognito WebView tab
+        // and its replacement is not one (switched to Gecko), the
+        // shared cookie jar may now be unowned — wipe it under the
+        // same rule as closing (v0.27.0). A WebView-to-WebView
+        // recreation keeps the replacement as the jar's owner, so
+        // the helper no-ops and the session survives.
+        if (tab.incognito && tab.engine == Engine.WEBVIEW) {
+            wipeWebViewDataIfIncognitoWebViewGone()
+        }
         if (activeTabId == tab.id) activeTabId = replacement.id
         return replacement
     }
@@ -737,16 +818,12 @@ fun BrowserApp(
         pushClosedTab(tab)
         tab.destroy()
         tabs.remove(tab)
-        if (wasIncognito && tabs.none { it.incognito }) {
-            // The system WebView keeps one cookie jar for the whole app,
-            // so an incognito WebView tab cannot have cookies of its own.
-            // When the last incognito tab closes, wipe WebView cookies
-            // and web storage so the session leaves nothing behind.
-            // (This also signs normal WebView tabs out — Gecko tabs are
-            // unaffected, they use real private mode.)
-            android.webkit.CookieManager.getInstance().removeAllCookies(null)
-            android.webkit.CookieManager.getInstance().flush()
-            android.webkit.WebStorage.getInstance().deleteAllData()
+        if (wasIncognito) {
+            // Wipe once no incognito WebView tab is left — including
+            // the case where incognito Gecko tabs remain open: they
+            // never owned the shared WebView jar, so waiting for ALL
+            // incognito tabs to close would leak (v0.27.0).
+            wipeWebViewDataIfIncognitoWebViewGone()
         }
         if (tabs.isEmpty()) {
             newTab(store.mainEngine, false)
@@ -771,10 +848,8 @@ fun BrowserApp(
         tabs.clear()
         if (hadIncognito) {
             // Same rule as closing the last incognito tab one by one:
-            // wipe the shared WebView cookie jar and web storage.
-            android.webkit.CookieManager.getInstance().removeAllCookies(null)
-            android.webkit.CookieManager.getInstance().flush()
-            android.webkit.WebStorage.getInstance().deleteAllData()
+            // with every tab gone the helper's condition always holds.
+            wipeWebViewDataIfIncognitoWebViewGone()
         }
         newTab(store.mainEngine, false)
     }
@@ -794,12 +869,11 @@ fun BrowserApp(
         others.forEach { pushClosedTab(it) }
         others.forEach { it.destroy() }
         tabs.removeAll(others)
-        if (closedIncognito && tabs.none { it.incognito }) {
-            // Same rule as closing the last incognito tab one by one:
-            // wipe the shared WebView cookie jar and web storage.
-            android.webkit.CookieManager.getInstance().removeAllCookies(null)
-            android.webkit.CookieManager.getInstance().flush()
-            android.webkit.WebStorage.getInstance().deleteAllData()
+        if (closedIncognito) {
+            // Same rule as closing the last incognito tab one by
+            // one — remaining incognito Gecko tabs do not keep the
+            // shared WebView jar alive (v0.27.0).
+            wipeWebViewDataIfIncognitoWebViewGone()
         }
         android.widget.Toast.makeText(
             context, "已关闭 ${others.size} 个标签页",
@@ -1830,7 +1904,11 @@ fun BrowserApp(
             tab = tabs.firstOrNull { it.id == sniffTabId },
             onBack = { screen = Screen.BROWSER },
             onDownload = { res ->
-                downloadWithMode(res.url, res.name) {
+                downloadWithMode(
+                    res.url, res.name,
+                    fromIncognito =
+                        tabs.firstOrNull { t -> t.id == sniffTabId }?.incognito == true
+                ) {
                     startSystemDownload(
                         context, res.url, null, null, null,
                         referer = tabs.firstOrNull { t -> t.id == sniffTabId }?.url
@@ -1838,7 +1916,11 @@ fun BrowserApp(
                 }
             },
             onDownloadAll = { list ->
-                downloadBatchWithMode(list.map { it.url }) {
+                downloadBatchWithMode(
+                    list.map { it.url },
+                    fromIncognito =
+                        tabs.firstOrNull { t -> t.id == sniffTabId }?.incognito == true
+                ) {
                     list.forEach {
                         startSystemDownload(
                             context, it.url, null, null, null,
@@ -2017,6 +2099,16 @@ fun BrowserApp(
                                 .fillMaxWidth()
                                 .clickable {
                                     imageMenuTarget = null
+                                    // Same incognito honesty as the
+                                    // download dispatch: this one calls
+                                    // the system downloader directly.
+                                    if (activeTab()?.incognito == true) {
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            "无痕提醒：下载记录会留在系统下载管理里，关掉无痕标签也不会自动删掉",
+                                            android.widget.Toast.LENGTH_LONG
+                                        ).show()
+                                    }
                                     startSystemDownload(
                                         context, imageTarget, null, null, null,
                                         referer = activeTab()?.url
@@ -3161,10 +3253,20 @@ private fun BrowserScreen(
     }
     // Clipboard link hint: read the clipboard once when this screen
     // appears; if it holds a web link, offer (never force) opening it.
+    // Incognito rule (v0.27.0): while the active tab is incognito the
+    // clipboard is never read and no hint is shown — what the user
+    // copied elsewhere is none of a private session's business. The
+    // effect is keyed on the flag so switching into an incognito tab
+    // also drops a hint that was read earlier, and switching back to
+    // a normal tab re-reads as before.
     val clipboardManager = LocalClipboardManager.current
     var clipUrl by remember { mutableStateOf<String?>(null) }
     var clipDismissed by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
+    LaunchedEffect(activeTab?.incognito) {
+        if (activeTab?.incognito == true) {
+            clipUrl = null
+            return@LaunchedEffect
+        }
         val text = try {
             clipboardManager.getText()?.text?.trim()
         } catch (t: Throwable) {
@@ -3612,7 +3714,8 @@ private fun BrowserScreen(
             }
             val clip = clipUrl
             AnimatedVisibility(
-                visible = clip != null && !clipDismissed && clip != activeTab?.url,
+                visible = clip != null && !clipDismissed && clip != activeTab?.url &&
+                    activeTab?.incognito != true,
                 enter = fadeIn(tween(220, easing = FastOutSlowInEasing)) +
                     expandVertically(tween(220, easing = FastOutSlowInEasing)),
                 exit = fadeOut(tween(180, easing = FastOutSlowInEasing)) +
@@ -4346,6 +4449,31 @@ private fun BrowserScreen(
                             ) {
                                 val thumb = tab.thumbnail
                                 when {
+                                    // Incognito tabs never show a
+                                    // preview (v0.27.0): they are never
+                                    // captured in the first place, and
+                                    // the grid says so in words instead.
+                                    tab.incognito -> Column(
+                                        horizontalAlignment =
+                                            Alignment.CenterHorizontally
+                                    ) {
+                                        Icon(
+                                            Icons.Filled.Language,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme
+                                                .onSurfaceVariant,
+                                            modifier = Modifier
+                                                .size(28.dp)
+                                                .padding(bottom = 4.dp)
+                                        )
+                                        Text(
+                                            "无痕标签不显示预览",
+                                            style = MaterialTheme.typography
+                                                .bodySmall,
+                                            color = MaterialTheme.colorScheme
+                                                .onSurfaceVariant
+                                        )
+                                    }
                                     thumb != null -> FoundationImage(
                                         bitmap = thumb.asImageBitmap(),
                                         contentDescription = "页面预览",
