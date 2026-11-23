@@ -371,6 +371,12 @@ class BrowserTab(
     private val onImageContext: (String) -> Unit = {},
     private val textZoomProvider: () -> Int = { 100 },
     private val webDarkProvider: () -> Boolean = { false },
+    // Whether third-party cookies are allowed in this tab's WebView
+    // (v0.39.0). Read live from the Store by the app at obtain time;
+    // later changes are pushed to created WebViews via
+    // applyThirdPartyCookies. WebView only: CookieManager has no
+    // Gecko counterpart.
+    private val thirdPartyCookiesProvider: () -> Boolean = { true },
     private val onFullscreenShow: (android.view.View) -> Unit = {},
     private val onFullscreenHide: () -> Unit = {},
     private val onGeckoFullscreen: (Boolean) -> Unit = {},
@@ -805,6 +811,24 @@ class BrowserTab(
         }
     }
 
+    /**
+     * Push the third-party-cookie setting to this tab's already
+     * created WebView (v0.39.0). CookieManager.setAcceptThirdPartyCookies
+     * is per-WebView-instance, so a settings change must be re-applied
+     * to every created WebView tab; tabs created later read the
+     * provider in obtainWebView. No-op for Gecko tabs and for WebView
+     * tabs not created yet.
+     */
+    fun applyThirdPartyCookies(enabled: Boolean) {
+        try {
+            webView?.let { view ->
+                CookieManager.getInstance().setAcceptThirdPartyCookies(view, enabled)
+            }
+        } catch (t: Throwable) {
+            // Engine already gone; nothing to apply.
+        }
+    }
+
     fun clearFind() {
         findInfo = ""
         when (engine) {
@@ -944,6 +968,17 @@ class BrowserTab(
         view.settings.builtInZoomControls = true
         view.settings.displayZoomControls = false
         view.settings.textZoom = textZoomProvider()
+        // Third-party cookies (v0.39.0): CookieManager's per-WebView
+        // switch was never set before, so it sat at the platform
+        // default (false) and embedded third-party sign-in / payment
+        // iframes (SSO chains, web payment pages) could fail to sign
+        // in. Apply the user's setting explicitly at creation.
+        try {
+            CookieManager.getInstance()
+                .setAcceptThirdPartyCookies(view, thirdPartyCookiesProvider())
+        } catch (t: Throwable) {
+            // Cookie policy is best-effort only; browsing must still work.
+        }
         // Safe Browsing, turned on explicitly through AndroidX WebKit.
         // Devices whose WebView does not support it are skipped quietly.
         try {

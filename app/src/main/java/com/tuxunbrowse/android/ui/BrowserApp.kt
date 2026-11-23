@@ -602,6 +602,7 @@ fun BrowserApp(
             onImageContext = { img -> imageMenuTarget = img },
             textZoomProvider = { store.textZoomPercent },
             webDarkProvider = { store.webDarkMode },
+            thirdPartyCookiesProvider = { store.allowThirdPartyCookies },
             onFullscreenShow = { view -> fullscreenView = view },
             onFullscreenHide = { fullscreenView = null },
             onGeckoFullscreen = { geckoFullscreen = it },
@@ -1565,8 +1566,34 @@ fun BrowserApp(
         val activity = hostActivity
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP ->
+                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> {
+                    // Cookie flush (v0.39.0), on this same v0.35.0
+                    // wiring: WebView cookies are persisted
+                    // asynchronously by CookieManager, and before this
+                    // version nothing ever flushed outside the two
+                    // wipe paths — if the app was swiped away or
+                    // killed, session cookies set since the last
+                    // internal persist could be lost and sites signed
+                    // the user out. ON_PAUSE is the right moment:
+                    // every path out of the foreground (switching
+                    // apps, locking the screen, being swiped away)
+                    // passes through it, and flush() is cheap.
+                    // Ordering vs the incognito wipe (v0.27.0): the
+                    // wipe runs synchronously at tab-close time,
+                    // while the app is still in the foreground, and
+                    // itself calls removeAllCookies + flush right
+                    // there — so by the time any ON_PAUSE arrives,
+                    // the jar is already cleared AND that cleared
+                    // state is already persisted. This flush can only
+                    // persist the jar as it currently is; it cannot
+                    // resurrect cookies the wipe already removed.
+                    try {
+                        android.webkit.CookieManager.getInstance().flush()
+                    } catch (t: Throwable) {
+                        // Cookie persistence is best-effort only.
+                    }
                     tabs.forEach { it.pauseEngine() }
+                }
                 Lifecycle.Event.ON_RESUME ->
                     tabs.forEach { it.resumeEngine(it.id == activeTabId) }
                 else -> Unit
@@ -2105,6 +2132,9 @@ fun BrowserApp(
             },
             onWebDarkChange = { enabled ->
                 tabs.forEach { it.applyWebDark(enabled) }
+            },
+            onThirdPartyCookiesChange = { enabled ->
+                tabs.forEach { it.applyThirdPartyCookies(enabled) }
             }
         )
 
@@ -6492,7 +6522,8 @@ private fun SettingsScreen(
     onThemeModeChange: (ThemeMode) -> Unit = {},
     onSearchEngineChange: () -> Unit = {},
     onTextZoomChange: (Int) -> Unit,
-    onWebDarkChange: (Boolean) -> Unit
+    onWebDarkChange: (Boolean) -> Unit,
+    onThirdPartyCookiesChange: (Boolean) -> Unit = {}
 ) {
     // Every state below mirrors a stored setting. In-page edits
     // write the local state and the store together, so within this
@@ -6515,6 +6546,9 @@ private fun SettingsScreen(
     var textZoom by remember(refreshTick) { mutableStateOf(store.textZoomPercent) }
     var webDark by remember(refreshTick) { mutableStateOf(store.webDarkMode) }
     var startupRestore by remember(refreshTick) { mutableStateOf(store.startupRestore) }
+    var allowThirdPartyCookies by remember(refreshTick) {
+        mutableStateOf(store.allowThirdPartyCookies)
+    }
     var downloadMode by remember(refreshTick) { mutableStateOf(store.downloadMode) }
     var historyRetention by remember(refreshTick) { mutableStateOf(store.historyRetention) }
     var themeMode by remember(refreshTick) { mutableStateOf(store.themeMode) }
@@ -7257,6 +7291,39 @@ private fun SettingsScreen(
                         }
                     )
                 }
+            }
+            item {
+                Text("网站登录", style = MaterialTheme.typography.titleMedium)
+            }
+            item {
+                ListItem(
+                    headlineContent = {
+                        Text("允许第三方 Cookie（系统 WebView 标签）")
+                    },
+                    supportingContent = {
+                        Text(
+                            "网页里嵌着的其他网站（比如跳转登录、网页版支付）" +
+                                "需要用到第三方 Cookie。这个开关默认开着：" +
+                                "浏览器里挡掉第三方 Cookie，打断登录的麻烦比好处大，" +
+                                "电脑上的浏览器默认也是允许的。关掉它更防跟踪，" +
+                                "但有些网站会登录不上。改了之后，已经打开的" +
+                                "系统 WebView 标签也会马上按新设置来；新开的标签同样生效。" +
+                                "火狐标签不受这个开关影响：火狐的第三方 Cookie " +
+                                "由火狐内核自带的反跟踪决定（只拦已知的跟踪网站，" +
+                                "不是全拦）。"
+                        )
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = allowThirdPartyCookies,
+                            onCheckedChange = {
+                                allowThirdPartyCookies = it
+                                store.allowThirdPartyCookies = it
+                                onThirdPartyCookiesChange(it)
+                            }
+                        )
+                    }
+                )
             }
             item {
                 Text("数据", style = MaterialTheme.typography.titleMedium)

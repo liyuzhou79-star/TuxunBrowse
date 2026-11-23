@@ -305,6 +305,20 @@ class Store(context: Context) {
         get() = safeBoolean(KEY_WEB_DARK, false)
         set(value) = prefs.edit().putBoolean(KEY_WEB_DARK, value).apply()
 
+    /**
+     * Allow third-party cookies in system WebView tabs (v0.39.0).
+     * Default ON: in a browser, blocking third-party cookies breaks
+     * real sign-in flows (SSO redirect chains, payment pages embedded
+     * in iframes) far more often than it helps; desktop browsers
+     * allow them by default and mobile browsers mostly allow or
+     * smart-allow them. Turning it off is more tracking-resistant,
+     * but some sites will then fail to sign in. WebView tabs only —
+     * Gecko tabs are governed by the kernel's own anti-tracking.
+     */
+    var allowThirdPartyCookies: Boolean
+        get() = safeBoolean(KEY_ALLOW_THIRD_PARTY_COOKIES, true)
+        set(value) = prefs.edit().putBoolean(KEY_ALLOW_THIRD_PARTY_COOKIES, value).apply()
+
     /** Restore the previous session's tabs on launch (vs always home). */
     var startupRestore: Boolean
         get() = safeBoolean(KEY_STARTUP_RESTORE, true)
@@ -488,6 +502,7 @@ class Store(context: Context) {
         private const val KEY_CUSTOM_SEARCH_TEMPLATE = "custom_search_template"
         private const val KEY_AD_BLOCK = "ad_block"
         private const val KEY_AD_HIDE_SLOTS = "ad_hide_slots"
+        private const val KEY_ALLOW_THIRD_PARTY_COOKIES = "allow_third_party_cookies"
         private const val KEY_COMPAT_SITES = "compat_sites"
         private const val KEY_BOOKMARKS = "bookmarks"
         private const val KEY_HISTORY = "history"
