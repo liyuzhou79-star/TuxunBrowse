@@ -804,6 +804,7 @@ fun BrowserApp(
             textZoomProvider = { store.textZoomPercent },
             webDarkProvider = { store.webDarkMode },
             thirdPartyCookiesProvider = { store.allowThirdPartyCookies },
+            blockImagesProvider = { store.blockImages },
             onFullscreenShow = { view -> fullscreenView = view },
             onFullscreenHide = { fullscreenView = null },
             onGeckoFullscreen = { geckoFullscreen = it },
@@ -2405,6 +2406,9 @@ fun BrowserApp(
             },
             onThirdPartyCookiesChange = { enabled ->
                 tabs.forEach { it.applyThirdPartyCookies(enabled) }
+            },
+            onBlockImagesChange = { enabled ->
+                tabs.forEach { it.applyBlockImages(enabled) }
             }
         )
 
@@ -7211,7 +7215,8 @@ private fun SettingsScreen(
     onSearchEngineChange: () -> Unit = {},
     onTextZoomChange: (Int) -> Unit,
     onWebDarkChange: (Boolean) -> Unit,
-    onThirdPartyCookiesChange: (Boolean) -> Unit = {}
+    onThirdPartyCookiesChange: (Boolean) -> Unit = {},
+    onBlockImagesChange: (Boolean) -> Unit = {}
 ) {
     // Every state below mirrors a stored setting. In-page edits
     // write the local state and the store together, so within this
@@ -7236,6 +7241,9 @@ private fun SettingsScreen(
     var startupRestore by remember(refreshTick) { mutableStateOf(store.startupRestore) }
     var allowThirdPartyCookies by remember(refreshTick) {
         mutableStateOf(store.allowThirdPartyCookies)
+    }
+    var blockImages by remember(refreshTick) {
+        mutableStateOf(store.blockImages)
     }
     var downloadMode by remember(refreshTick) { mutableStateOf(store.downloadMode) }
     var historyRetention by remember(refreshTick) { mutableStateOf(store.historyRetention) }
@@ -7902,6 +7910,7 @@ private fun SettingsScreen(
                         ListItem(headlineContent = { Text("页内查找计数") })
                         ListItem(headlineContent = { Text("本页拦截计数") })
                         ListItem(headlineContent = { Text("广告位隐藏") })
+                        ListItem(headlineContent = { Text("无图模式") })
                         ListItem(headlineContent = { Text("打印 / 存为 PDF") })
                         HorizontalDivider()
                         Text(
@@ -8008,6 +8017,38 @@ private fun SettingsScreen(
                                 allowThirdPartyCookies = it
                                 store.allowThirdPartyCookies = it
                                 onThirdPartyCookiesChange(it)
+                            }
+                        )
+                    }
+                )
+            }
+            item {
+                Text("省流量", style = MaterialTheme.typography.titleMedium)
+            }
+            item {
+                ListItem(
+                    headlineContent = {
+                        Text("无图模式（系统 WebView 标签）")
+                    },
+                    supportingContent = {
+                        Text(
+                            "打开后，系统 WebView 标签打开的网页不再加载图片：" +
+                                "图片请求根本不会发出，省流量，网速慢的时候" +
+                                "页面打开也更快，只看文字更清净。这个开关默认关着。" +
+                                "改了之后会马上推给所有已经打开的系统 WebView 标签，" +
+                                "之后新加载的页面就不带图片了；页面里已经显示出来的" +
+                                "图片不会立刻消失，刷新一下或者打开新页面就没有了。" +
+                                "火狐标签不受这个开关影响：火狐内核没有给应用留" +
+                                "「不加载图片」的设置办法，火狐标签里的图片还是会照常加载。"
+                        )
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = blockImages,
+                            onCheckedChange = {
+                                blockImages = it
+                                store.blockImages = it
+                                onBlockImagesChange(it)
                             }
                         )
                     }

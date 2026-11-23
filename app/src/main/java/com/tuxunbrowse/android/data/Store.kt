@@ -361,6 +361,23 @@ class Store(context: Context) {
         get() = safeBoolean(KEY_ALLOW_THIRD_PARTY_COOKIES, true)
         set(value) = prefs.edit().putBoolean(KEY_ALLOW_THIRD_PARTY_COOKIES, value).apply()
 
+    /**
+     * No-image mode (v0.46.0): when on, system WebView tabs do not
+     * load images at all (loadsImagesAutomatically=false plus
+     * blockNetworkImage=true in obtainWebView), which saves data
+     * and makes pages open faster on slow networks. Default OFF:
+     * most users expect pages to look complete, and images are
+     * content, not clutter, until the user says otherwise. WebView
+     * tabs only — GeckoView 132 exposes no image-blocking setting
+     * to apps (audited against the AAR: no such key in
+     * GeckoSessionSettings, no such pref in GeckoRuntimeSettings,
+     * no image category in ContentBlocking), so Gecko tabs keep
+     * loading images and the settings text says so plainly.
+     */
+    var blockImages: Boolean
+        get() = safeBoolean(KEY_BLOCK_IMAGES, false)
+        set(value) = prefs.edit().putBoolean(KEY_BLOCK_IMAGES, value).apply()
+
     /** Restore the previous session's tabs on launch (vs always home). */
     var startupRestore: Boolean
         get() = safeBoolean(KEY_STARTUP_RESTORE, true)
@@ -545,6 +562,7 @@ class Store(context: Context) {
         private const val KEY_AD_BLOCK = "ad_block"
         private const val KEY_AD_HIDE_SLOTS = "ad_hide_slots"
         private const val KEY_ALLOW_THIRD_PARTY_COOKIES = "allow_third_party_cookies"
+        private const val KEY_BLOCK_IMAGES = "block_images"
         private const val KEY_COMPAT_SITES = "compat_sites"
         private const val KEY_BOOKMARKS = "bookmarks"
         private const val KEY_HISTORY = "history"

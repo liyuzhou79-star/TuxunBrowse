@@ -516,6 +516,12 @@ class BrowserTab(
     // applyThirdPartyCookies. WebView only: CookieManager has no
     // Gecko counterpart.
     private val thirdPartyCookiesProvider: () -> Boolean = { true },
+    // Whether no-image mode is on for this tab's WebView (v0.46.0).
+    // Read live from the Store by the app at obtain time; later
+    // changes are pushed to created WebViews via applyBlockImages.
+    // WebView only: GeckoView 132 has no image-blocking setting
+    // (AAR-audited), so Gecko tabs ignore this entirely.
+    private val blockImagesProvider: () -> Boolean = { false },
     private val onFullscreenShow: (android.view.View) -> Unit = {},
     private val onFullscreenHide: () -> Unit = {},
     private val onGeckoFullscreen: (Boolean) -> Unit = {},
@@ -1002,6 +1008,28 @@ class BrowserTab(
         }
     }
 
+    /**
+     * Push the no-image setting to this tab's already created
+     * WebView (v0.46.0), mirroring [applyThirdPartyCookies]: both
+     * image switches are re-set together so a created WebView can
+     * never sit in a half state. The pair takes effect for loads
+     * that start after the change; images already on screen stay
+     * until the page is refreshed or a new page loads — the
+     * settings text says exactly that. No-op for Gecko tabs (no
+     * such GeckoView setting exists) and for WebView tabs not
+     * created yet (they read the provider in obtainWebView).
+     */
+    fun applyBlockImages(enabled: Boolean) {
+        try {
+            webView?.settings?.let { settings ->
+                settings.loadsImagesAutomatically = !enabled
+                settings.blockNetworkImage = enabled
+            }
+        } catch (t: Throwable) {
+            // Engine already gone; nothing to apply.
+        }
+    }
+
     fun clearFind() {
         findInfo = ""
         when (engine) {
@@ -1236,7 +1264,19 @@ class BrowserTab(
         view.settings.mixedContentMode =
             android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
         view.settings.setGeolocationEnabled(false)
-        view.settings.loadsImagesAutomatically = true
+        // No-image mode (v0.46.0 audit): the two WebSettings image
+        // switches mean different things. loadsImagesAutomatically
+        // is the master switch — false means the WebView does not
+        // load images at all. blockNetworkImage only covers images
+        // fetched over the network (http/https). The data-saving
+        // goal ("never even send the image requests") is met by
+        // setting BOTH from the one user switch: master off plus
+        // network blocked, so no image request leaves the device
+        // and nothing is merely downloaded-then-hidden. Later
+        // changes are pushed via applyBlockImages.
+        val blockImagesNow = blockImagesProvider()
+        view.settings.loadsImagesAutomatically = !blockImagesNow
+        view.settings.blockNetworkImage = blockImagesNow
         view.settings.builtInZoomControls = true
         view.settings.displayZoomControls = false
         view.settings.textZoom = textZoomProvider()
