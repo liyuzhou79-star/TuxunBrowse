@@ -193,9 +193,10 @@ import com.tuxunbrowse.android.data.isCompatHost
 import com.tuxunbrowse.android.data.isDesktopHost
 import com.tuxunbrowse.android.data.hasBlockedPageScheme
 import com.tuxunbrowse.android.data.isAllowedPageUrl
-import com.tuxunbrowse.android.data.MAX_COMBINED_SUGGESTIONS
 import com.tuxunbrowse.android.data.SEARCH_SUGGESTION_DEBOUNCE_MS
 import com.tuxunbrowse.android.data.fetchSearchSuggestions
+import com.tuxunbrowse.android.data.mergedOnlineSuggestionRows
+import com.tuxunbrowse.android.data.shouldFetchOnlineSuggestions
 import com.tuxunbrowse.android.data.isUrlLikeInput
 import com.tuxunbrowse.android.data.matchSuggestions
 import com.tuxunbrowse.android.data.resolveInput
@@ -2572,6 +2573,14 @@ fun BrowserApp(
                         searchEngine = searchEngineState,
                         customSearchName = store.customSearchName,
                         customSearchTemplate = store.customSearchTemplate,
+                        // Home suggestions (v0.59.0): same switch
+                        // state the address bar gets, plus the ACTIVE
+                        // tab's incognito flag — the home page belongs
+                        // to that tab, so an incognito tab's home box
+                        // never fetches online suggestions.
+                        searchSuggestionsEnabled = searchSuggestionsState,
+                        activeIncognito = current?.incognito == true,
+                        activeTabId = current?.id,
                         onSearchEngineSelected = { engine ->
                             store.searchEngine = engine
                             searchEngineState = engine
@@ -3820,6 +3829,12 @@ private fun HomeContent(
     searchEngine: SearchEngine,
     customSearchName: String = "",
     customSearchTemplate: String = "",
+    // Home search suggestions (v0.59.0): the same switch, the active
+    // tab's incognito flag and the tab id (the fetch effect's stale
+    // guard key), all mirroring what the address bar receives.
+    searchSuggestionsEnabled: Boolean = false,
+    activeIncognito: Boolean = false,
+    activeTabId: Int? = null,
     onSearchEngineSelected: (SearchEngine) -> Unit = {},
     onSaveCustomSearch: (String, String) -> Unit = { _, _ -> },
     onSearchUrl: (String) -> Unit,
@@ -3854,6 +3869,94 @@ private fun HomeContent(
         } else {
             currentEngine.label
         }
+    // ---- Home search suggestions (v0.59.0) ----
+    // The home search box runs the address bar's suggestion pipeline
+    // (v0.50.0) through the SAME shared pieces — the
+    // shouldFetchOnlineSuggestions privacy gate, the same debounce
+    // and fetchSearchSuggestions call, and the same
+    // mergedOnlineSuggestionRows merge/cap — so the two surfaces
+    // cannot drift apart. Address-bar-only concerns (its
+    // TextFieldValue select-all, its AnimatedVisibility unfold) stay
+    // in BrowserScreen; the home box tracks focus with
+    // onFocusChanged on the DockedSearchBar instead. The home page
+    // belongs to the active tab, so the incognito gate reads that
+    // tab's flag (activeIncognito above).
+    var homeSearchFocused by remember { mutableStateOf(false) }
+    var homeOnlineSuggestions by remember {
+        mutableStateOf<List<String>>(emptyList())
+    }
+    val homeFocusManager = LocalFocusManager.current
+    val homeSuggestionQuery = query.trim()
+    LaunchedEffect(
+        homeSuggestionQuery, homeSearchFocused, searchSuggestionsEnabled,
+        currentEngine, activeIncognito, activeTabId
+    ) {
+        if (!shouldFetchOnlineSuggestions(
+                searchSuggestionsEnabled, homeSearchFocused,
+                activeIncognito, currentEngine, homeSuggestionQuery
+            )
+        ) {
+            homeOnlineSuggestions = emptyList()
+            return@LaunchedEffect
+        }
+        // Same debounce as the address bar: a new keystroke restarts
+        // this effect and cancels the pending wait.
+        kotlinx.coroutines.delay(SEARCH_SUGGESTION_DEBOUNCE_MS)
+        val fetched = kotlinx.coroutines.withContext(
+            kotlinx.coroutines.Dispatchers.IO
+        ) {
+            fetchSearchSuggestions(currentEngine, homeSuggestionQuery)
+        }
+        // Stale-response guard, same as the address bar.
+        if (isActive) {
+            homeOnlineSuggestions = fetched
+        }
+    }
+    // Suggestions are bookmarks only (plus online words and the
+    // search tail below): history stays on the History page, exactly
+    // like the address bar.
+    val homeBookmarkSuggestions =
+        if (homeSearchFocused && query.isNotBlank()) {
+            matchSuggestions(query, bookmarks, emptyList())
+        } else {
+            emptyList()
+        }
+    val homeOnlineRows = if (homeSearchFocused) {
+        mergedOnlineSuggestionRows(
+            homeBookmarkSuggestions, homeOnlineSuggestions,
+            homeSuggestionQuery
+        )
+    } else {
+        emptyList()
+    }
+    val homeShowSearchTail = homeSearchFocused &&
+        homeSuggestionQuery.isNotEmpty() &&
+        !isUrlLikeInput(homeSuggestionQuery)
+    // The home submit path, shared by the search box's own submit
+    // and by tapping an online suggestion or the search tail: the
+    // same blocked-scheme refusal and the same resolveInput call
+    // with the home box's current engine. Returns true when a page
+    // was actually opened.
+    fun submitHomeSearch(text: String): Boolean {
+        if (text.isBlank()) return false
+        if (hasBlockedPageScheme(text)) {
+            android.widget.Toast.makeText(
+                homeContext,
+                "这个链接打不开：只支持打开 http 或 https 开头的网址",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            return false
+        }
+        onSearchUrl(resolveInput(text, currentEngine, currentCustomTemplate))
+        return true
+    }
+    // Tapping any suggestion row opens it, then the typed text and
+    // the list go away (the tab navigates to the page).
+    fun finishHomeSuggestionPick() {
+        query = ""
+        homeOnlineSuggestions = emptyList()
+        homeFocusManager.clearFocus()
+    }
     var dialEditing by remember { mutableStateOf<SpeedDial?>(null) }
     var dialName by remember { mutableStateOf("") }
     var dialUrl by remember { mutableStateOf("") }
@@ -4284,30 +4387,118 @@ private fun HomeContent(
                 query = query,
                 onQueryChange = { query = it },
                 onSearch = {
-                    if (query.isNotBlank()) {
-                        // Same refusal as the address bar (v0.31.0):
-                        // a non-web scheme typed here is not a search.
-                        if (hasBlockedPageScheme(query)) {
-                            android.widget.Toast.makeText(
-                                homeContext,
-                                "这个链接打不开：只支持打开 http 或 https 开头的网址",
-                                android.widget.Toast.LENGTH_LONG
-                            ).show()
-                        } else {
-                            onSearchUrl(
-                                resolveInput(query, currentEngine, currentCustomTemplate)
-                            )
-                        }
+                    // Same refusal as the address bar (v0.31.0):
+                    // a non-web scheme typed here is not a search.
+                    // submitHomeSearch carries that exact logic; a
+                    // successful submit clears the box so the
+                    // suggestion list goes away with it (v0.59.0).
+                    if (submitHomeSearch(query)) {
+                        query = ""
+                        homeOnlineSuggestions = emptyList()
                     }
                 },
                 active = false,
                 onActiveChange = {},
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { homeSearchFocused = it.isFocused },
                 placeholder = {
                     Text("用${engineShortName()}搜索，或输入网址", maxLines = 1)
                 },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) }
             ) {}
+        }
+        // Home search suggestions (v0.59.0): only while the search
+        // box is focused AND holds text — with no input this item
+        // does not exist at all, so the default home page stays
+        // exactly brand + search box + quick grid. Rows mirror the
+        // address bar's: bookmark matches first, then online words,
+        // then the "search this" tail, in an official Card of
+        // ListItems inside the home page's own scrolling grid.
+        if (homeBookmarkSuggestions.isNotEmpty() ||
+            homeOnlineRows.isNotEmpty() || homeShowSearchTail
+        ) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        homeBookmarkSuggestions.forEach { suggestion ->
+                            ListItem(
+                                headlineContent = {
+                                    Text(suggestion.title, maxLines = 1)
+                                },
+                                supportingContent = {
+                                    Text(suggestion.url, maxLines = 1)
+                                },
+                                leadingContent = {
+                                    Icon(
+                                        Icons.Filled.Bookmark,
+                                        contentDescription = "书签"
+                                    )
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        val bm = bookmarks.firstOrNull {
+                                            it.url == suggestion.url
+                                        }
+                                        finishHomeSuggestionPick()
+                                        if (bm != null) {
+                                            onOpenBookmark(bm)
+                                        } else {
+                                            onSearchUrl(suggestion.url)
+                                        }
+                                    }
+                            )
+                        }
+                        homeOnlineRows.forEach { word ->
+                            ListItem(
+                                headlineContent = {
+                                    Text(word, maxLines = 1)
+                                },
+                                leadingContent = {
+                                    Icon(
+                                        Icons.Filled.Search,
+                                        contentDescription = "搜索建议"
+                                    )
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        if (submitHomeSearch(word)) {
+                                            finishHomeSuggestionPick()
+                                        }
+                                    }
+                            )
+                        }
+                        if (homeShowSearchTail) {
+                            ListItem(
+                                headlineContent = {
+                                    Text(
+                                        "用${engineShortName()}搜索「$homeSuggestionQuery」",
+                                        maxLines = 1
+                                    )
+                                },
+                                leadingContent = {
+                                    Icon(
+                                        Icons.Filled.Search,
+                                        contentDescription = "搜索"
+                                    )
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        if (submitHomeSearch(
+                                                homeSuggestionQuery
+                                            )
+                                        ) {
+                                            finishHomeSuggestionPick()
+                                        }
+                                    }
+                            )
+                        }
+                    }
+                }
+            }
         }
         item(span = { GridItemSpan(maxLineSpan) }) {
             // Quick engine switch: only the short engine name on the
@@ -5280,10 +5471,14 @@ private fun BrowserScreen(
                 suggestionQuery, addressFocused, searchSuggestionsEnabled,
                 searchEngine, activeIncognito, activeTab?.id
             ) {
-                if (!searchSuggestionsEnabled || !addressFocused ||
-                    activeIncognito || searchEngine == SearchEngine.CUSTOM ||
-                    suggestionQuery.isEmpty() || isUrlLikeInput(suggestionQuery) ||
-                    hasBlockedPageScheme(suggestionQuery)
+                // The gate itself is the shared
+                // shouldFetchOnlineSuggestions (v0.59.0): the home
+                // search box runs the exact same check, so the two
+                // surfaces cannot drift apart.
+                if (!shouldFetchOnlineSuggestions(
+                        searchSuggestionsEnabled, addressFocused,
+                        activeIncognito, searchEngine, suggestionQuery
+                    )
                 ) {
                     onlineSuggestions = emptyList()
                     return@LaunchedEffect
@@ -5320,12 +5515,9 @@ private fun BrowserScreen(
             // typed text itself are dropped, and the two groups
             // together are capped so the list stays compact.
             val onlineRows = if (addressFocused) {
-                val bookmarkKeys = suggestions.map { it.title.lowercase() }.toSet() +
-                    suggestions.map { it.url.lowercase() }
-                onlineSuggestions.filter { s ->
-                    s.lowercase() !in bookmarkKeys &&
-                        !s.equals(suggestionQuery, ignoreCase = true)
-                }.take((MAX_COMBINED_SUGGESTIONS - suggestions.size).coerceAtLeast(0))
+                mergedOnlineSuggestionRows(
+                    suggestions, onlineSuggestions, suggestionQuery
+                )
             } else {
                 emptyList()
             }

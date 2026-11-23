@@ -206,7 +206,9 @@ fun parseSearchSuggestions(raw: String, limit: Int = MAX_ONLINE_SUGGESTIONS): Li
  * Privacy contract (v0.50.0): this is only ever called when the user
  * has turned the "search suggestions" switch on, the active tab is
  * not incognito, the engine is a built-in one and the typed text is
- * not URL-like — all enforced by the caller in the address bar. The
+ * not URL-like — all enforced by the shared
+ * [shouldFetchOnlineSuggestions] gate at every call site (the
+ * address bar since v0.50.0, the home search box since v0.59.0). The
  * request itself carries only the query (in the URL) and a plain
  * User-Agent: no Cookie header (HttpURLConnection sends none unless
  * a CookieHandler is installed, and this app never installs one),
@@ -244,6 +246,53 @@ fun fetchSearchSuggestions(engine: SearchEngine, query: String): List<String> {
             // must never surface.
         }
     }
+}
+
+/**
+ * The ONE privacy gate for online search suggestions (v0.59.0).
+ * The address bar (v0.50.0) and the home search box share this exact
+ * check so the two surfaces can never drift apart: a fetch may happen
+ * only when EVERY condition holds — the user turned the switch on,
+ * the field is focused, the active tab is NOT incognito (incognito
+ * never fetches, whatever the switch says), the engine is a built-in
+ * one with a suggestion endpoint (custom engines have none), the
+ * typed text is non-empty, is not URL-like (it is about to be opened
+ * as an address, so asking an engine about it would only leak it)
+ * and does not start with a blocked scheme.
+ */
+fun shouldFetchOnlineSuggestions(
+    enabled: Boolean,
+    focused: Boolean,
+    incognito: Boolean,
+    engine: SearchEngine,
+    query: String
+): Boolean =
+    enabled && focused && !incognito && engine != SearchEngine.CUSTOM &&
+        query.isNotEmpty() && !isUrlLikeInput(query) &&
+        !hasBlockedPageScheme(query)
+
+/**
+ * Merge step shared by the address bar and the home search box
+ * (v0.59.0): given the bookmark matches and the raw online words,
+ * drop online rows that merely repeat a bookmark title/URL or the
+ * typed text itself, then cap bookmark + online rows together at
+ * [MAX_COMBINED_SUGGESTIONS] — bookmarks come first, so online rows
+ * only fill the room the bookmarks leave. The trailing "search
+ * this" row is not part of this cap (each surface renders its own).
+ */
+fun mergedOnlineSuggestionRows(
+    bookmarkSuggestions: List<Suggestion>,
+    onlineSuggestions: List<String>,
+    query: String
+): List<String> {
+    val bookmarkKeys = bookmarkSuggestions.map { it.title.lowercase() }.toSet() +
+        bookmarkSuggestions.map { it.url.lowercase() }
+    return onlineSuggestions.filter { s ->
+        s.lowercase() !in bookmarkKeys &&
+            !s.equals(query, ignoreCase = true)
+    }.take(
+        (MAX_COMBINED_SUGGESTIONS - bookmarkSuggestions.size).coerceAtLeast(0)
+    )
 }
 
 /** A normal (never incognito) tab saved so the session survives a restart. */
