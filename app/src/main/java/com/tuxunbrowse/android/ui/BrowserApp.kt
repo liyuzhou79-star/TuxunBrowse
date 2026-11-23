@@ -9727,7 +9727,7 @@ private fun SettingsScreen(
                         ListItem(headlineContent = { Text("资源嗅探") })
                         ListItem(headlineContent = { Text("网页截图与长截图") })
                         ListItem(headlineContent = { Text("标签预览图") })
-                        ListItem(headlineContent = { Text("阅读模式") })
+                        ListItem(headlineContent = { Text("阅读模式与排版设置") })
                         ListItem(headlineContent = { Text("页内查找计数") })
                         ListItem(headlineContent = { Text("本页拦截计数") })
                         ListItem(headlineContent = { Text("广告位隐藏") })
@@ -9753,6 +9753,24 @@ private fun SettingsScreen(
                                 Text("和系统 WebView 分开存；无痕是真隔离")
                             }
                         )
+                        ListItem(
+                            headlineContent = { Text("选字菜单") },
+                            supportingContent = {
+                                Text("长按选中文字可复制、全选、剪切、粘贴、粘贴为纯文本、分享或搜索选中文字")
+                            }
+                        )
+                        ListItem(
+                            headlineContent = { Text("剪贴板读权限询问") },
+                            supportingContent = {
+                                Text("网站想读取剪贴板时先弹窗问你，允许只对这一次有效")
+                            }
+                        )
+                        ListItem(
+                            headlineContent = { Text("下载有应用内记录") },
+                            supportingContent = {
+                                Text("下好的文件会记进下载页的「火狐下载」一节，点按可打开")
+                            }
+                        )
                         HorizontalDivider()
                         Text(
                             "两个内核都有",
@@ -9767,6 +9785,13 @@ private fun SettingsScreen(
                             }
                         )
                         ListItem(headlineContent = { Text("禁用 JavaScript 开关") })
+                        ListItem(headlineContent = { Text("长按链接 / 图片菜单") })
+                        ListItem(
+                            headlineContent = { Text("联网搜索建议") },
+                            supportingContent = {
+                                Text("地址栏和首页搜索框都能用，默认关着；无痕时不获取")
+                            }
+                        )
                         ListItem(
                             headlineContent = { Text("下载") },
                             supportingContent = {
