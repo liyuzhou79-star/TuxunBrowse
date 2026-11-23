@@ -170,6 +170,8 @@ import com.tuxunbrowse.android.data.Store
 import com.tuxunbrowse.android.data.ThemeMode
 import com.tuxunbrowse.android.data.dirSizeBytes
 import com.tuxunbrowse.android.data.formatStorageSize
+import com.tuxunbrowse.android.data.WEBVIEW_CACHE_AUTO_CLEAR_THRESHOLD_BYTES
+import com.tuxunbrowse.android.data.webViewCacheSizeBytes
 import com.tuxunbrowse.android.data.BackupData
 import com.tuxunbrowse.android.data.BackupSettings
 import com.tuxunbrowse.android.data.backupToJson
@@ -1004,6 +1006,46 @@ fun BrowserApp(
             }
         }
         startupDone = true
+        // Auto cache management (v0.40.0), deliberately LAST in this
+        // effect: startup is fully done, and the size walk runs on
+        // the IO dispatcher so it never blocks a frame. Only the
+        // WebView cache is measured (cacheDir + cache-named dirs
+        // under app_webview, the v0.20.0 storage-card directories).
+        // Over the threshold, a throwaway WebView's clearCache(true)
+        // clears the whole app WebView cache — that call touches
+        // cache only, never cookies, web storage or history, so
+        // sign-ins survive. A temporary WebView is used so the clear
+        // does not depend on any tab having been created yet. No
+        // toast: the outcome is logged, and the policy is written
+        // out under the storage card on the clear-data page. The
+        // Gecko cache is the kernel's own business (it has its own
+        // size cap) and is not touched here.
+        try {
+            val cacheBytes = kotlinx.coroutines.withContext(
+                kotlinx.coroutines.Dispatchers.IO
+            ) {
+                webViewCacheSizeBytes(
+                    context.cacheDir,
+                    java.io.File(context.applicationInfo.dataDir)
+                )
+            }
+            if (cacheBytes > WEBVIEW_CACHE_AUTO_CLEAR_THRESHOLD_BYTES) {
+                val tempWebView = android.webkit.WebView(context)
+                try {
+                    tempWebView.clearCache(true)
+                } finally {
+                    tempWebView.destroy()
+                }
+                android.util.Log.i(
+                    "TuxunBrowse",
+                    "Auto-cleared WebView cache at startup: " +
+                        "$cacheBytes bytes was over the " +
+                        "$WEBVIEW_CACHE_AUTO_CLEAR_THRESHOLD_BYTES byte limit"
+                )
+            }
+        } catch (t: Throwable) {
+            // Cache housekeeping must never break startup.
+        }
     }
 
     // Keep the saved session in sync with the live tab list.
@@ -6382,6 +6424,13 @@ private fun ClearDataScreen(
                             "这里数的是应用自己文件夹里能数到的部分；" +
                                 "用系统下载下的文件存在公共下载文件夹里，不在这里面。" +
                                 "显示「—」的那项是这次没有找到对应的文件夹。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                        )
+                        Text(
+                            "缓存超过 150 MB 时会在启动时自动清理（不影响登录状态）。" +
+                                "火狐的缓存由火狐内核自己管理，有自己的容量上限，这里不会动它。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)

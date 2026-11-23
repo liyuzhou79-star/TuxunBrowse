@@ -188,6 +188,48 @@ fun formatStorageSize(bytes: Long?): String {
     }
 }
 
+/**
+ * Auto cache management (v0.40.0): when the WebView cache measured
+ * at startup exceeds this many bytes, it is cleared automatically.
+ * 150 MB, as a named constant so the threshold has exactly one home.
+ */
+const val WEBVIEW_CACHE_AUTO_CLEAR_THRESHOLD_BYTES: Long = 150L * 1024L * 1024L
+
+/**
+ * Size in bytes of the WebView cache only (not cookies, storage or
+ * history): the app cacheDir (where the WebView HTTP cache lives)
+ * plus any cache-named directory under app_webview, found with the
+ * same directory names the v0.20.0 storage card uses. The app_webview
+ * walk is depth-limited (3 levels) so a startup call stays cheap;
+ * each cache directory found is measured with the full recursive
+ * [dirSizeBytes], exactly like the storage card measures.
+ */
+fun webViewCacheSizeBytes(cacheDir: java.io.File?, dataDir: java.io.File): Long {
+    var total = dirSizeBytes(cacheDir) ?: 0L
+    val webviewDir = java.io.File(dataDir, "app_webview")
+    if (webviewDir.exists()) {
+        val stack = ArrayDeque<Pair<java.io.File, Int>>()
+        stack.add(webviewDir to 0)
+        while (stack.isNotEmpty()) {
+            val (cur, depth) = stack.removeLast()
+            val children = try {
+                cur.listFiles()
+            } catch (t: Throwable) {
+                null
+            } ?: continue
+            for (child in children) {
+                if (!child.isDirectory) continue
+                if (child.name.contains("cache", ignoreCase = true)) {
+                    total += dirSizeBytes(child) ?: 0L
+                } else if (depth < 3) {
+                    stack.add(child to depth + 1)
+                }
+            }
+        }
+    }
+    return total
+}
+
 /** How long normal (never incognito) history is kept. days = 0 means forever. */
 enum class HistoryRetention(val id: String, val label: String, val days: Int) {
     FOREVER("forever", "永久保留", 0),

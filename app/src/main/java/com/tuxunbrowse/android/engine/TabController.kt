@@ -991,10 +991,23 @@ class BrowserTab(
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             view.settings.setAlgorithmicDarkeningAllowed(webDarkProvider())
         }
+        // Viewport display policy (v0.40.0 audit): wide viewport +
+        // overview mode are set ONCE here, unconditionally, for both
+        // phone and desktop mode. Before this version only the
+        // desktop branch below set them, so phone mode sat at the
+        // platform defaults (both false) and old sites without a
+        // viewport meta were laid out at a narrow width and squeezed
+        // together instead of being shown zoomed-out as a full page
+        // first, the way mainstream browsers present them. Pages
+        // that DO carry a viewport meta are unaffected: the meta
+        // width wins over the wide-viewport fallback either way.
+        // desktopMode is a constructor val (a mode toggle recreates
+        // the tab), so nothing can half-overwrite these later; the
+        // desktop branch below now only swaps the user agent.
+        view.settings.useWideViewPort = true
+        view.settings.loadWithOverviewMode = true
         if (desktopMode) {
             view.settings.userAgentString = DESKTOP_USER_AGENT
-            view.settings.useWideViewPort = true
-            view.settings.loadWithOverviewMode = true
         }
         view.setOnLongClickListener { v ->
             val hit = (v as WebView).hitTestResult
