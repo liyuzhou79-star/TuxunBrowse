@@ -395,6 +395,14 @@ fun BrowserApp(
     val compatSites = remember {
         mutableStateListOf<String>().apply { addAll(store.loadCompatSites()) }
     }
+    // One-time compat bypasses (v0.52.0): tab id -> the exact URL whose
+    // first Gecko load must NOT be bounced back to WebView by the
+    // per-site compat memory. Set only by the load-error page's
+    // "open in the other engine" action: the user asked to try the
+    // other engine for this one load, so the compat list itself is
+    // left untouched (nothing added, nothing removed) and the bypass
+    // is consumed by the first matching navigation check.
+    val compatBypassLoads = remember { mutableMapOf<Int, String>() }
     var pageContextMenu by remember {
         mutableStateOf<PageContextMenuState?>(null)
     }
@@ -760,7 +768,17 @@ fun BrowserApp(
             desktopMode = desktopMode,
             onVisit = { t, u -> recordVisit(t, u) },
             shouldUseWebView = { target ->
-                engine == Engine.GECKO && isCompatHost(hostOf(target), compatSites.toSet())
+                // A pending one-time bypass for exactly this URL (the
+                // load-error page's other-engine action, v0.52.0) wins
+                // over the compat memory and is consumed on use, so
+                // later navigations follow the compat list again.
+                if (created?.id?.let { compatBypassLoads[it] } == target) {
+                    created?.id?.let { compatBypassLoads.remove(it) }
+                    false
+                } else {
+                    engine == Engine.GECKO &&
+                        isCompatHost(hostOf(target), compatSites.toSet())
+                }
             },
             onCompatRedirect = { target -> compatRedirectHandler(target) },
             isAdBlockEnabled = { store.adBlockEnabled },
@@ -1051,6 +1069,39 @@ fun BrowserApp(
             }
         }
         replaceTabEngine(tab, newEngine)
+    }
+
+    /**
+     * The load-error page's recovery action (v0.52.0): reopen the
+     * failed URL in the OTHER engine, this tab only, this once.
+     * Deliberately NOT switchTabEngine: that path can write the
+     * per-site compat list (rememberSite), and the user has not said
+     * "always use this engine for this site" — they only want this
+     * failed page tried in the other engine. So this goes through
+     * replaceTabEngine directly (same slot, same desktop mode, same
+     * incognito flag via recreateTab) and never touches the compat
+     * list. One wrinkle: if the failed host is IN the compat list,
+     * a fresh Gecko tab would be bounced straight back to WebView by
+     * its own compat check before loading anything — so the Gecko
+     * direction registers a one-time bypass for exactly the failed
+     * URL (see compatBypassLoads), consumed by that first load.
+     * If the other engine fails too, the new tab's own loadError
+     * brings the error page back with the button now pointing back
+     * the other way, because the label follows the tab's engine.
+     */
+    fun openLoadErrorInOtherEngine(tab: BrowserTab, failedUrl: String) {
+        if (!failedUrl.startsWith("http://") &&
+            !failedUrl.startsWith("https://")
+        ) return
+        val other = when (tab.engine) {
+            Engine.GECKO -> Engine.WEBVIEW
+            Engine.WEBVIEW -> Engine.GECKO
+        }
+        val replacement = replaceTabEngine(tab, other)
+        if (other == Engine.GECKO) {
+            compatBypassLoads[replacement.id] = failedUrl
+        }
+        if (replacement.url != failedUrl) replacement.load(failedUrl)
     }
 
     /**
@@ -2230,6 +2281,13 @@ fun BrowserApp(
                 onOpenSuggestion = { url -> openUrl(url) },
                 onGoHome = { activeTab()?.load(HOME_URL) },
                 onReloadPage = { activeTab()?.reload() },
+                onOpenInOtherEngine = {
+                    val tab = activeTab()
+                    val error = tab?.loadError
+                    if (tab != null && error != null) {
+                        openLoadErrorInOtherEngine(tab, error.failedUrl)
+                    }
+                },
                 onSwitchEngine = { engine, rememberSite ->
                     val tab = activeTab() ?: return@BrowserScreen
                     switchTabEngine(tab, engine, rememberSite)
@@ -4255,7 +4313,15 @@ private fun EngineCard(
 private fun LoadErrorContent(
     error: TabLoadError,
     onReload: () -> Unit,
-    onGoHome: () -> Unit
+    onGoHome: () -> Unit,
+    // "Open in the other engine" recovery action (v0.52.0): null
+    // hides the button (the caller passes null for anything that is
+    // not a real http(s) page failure — internal/blank pages have no
+    // engine failure to recover from). The label names the OTHER
+    // engine, following the failing tab's current engine, so after a
+    // failed switch it points back the way it came.
+    switchEngineLabel: String? = null,
+    onSwitchEngine: () -> Unit = {}
 ) {
     Column(
         modifier = Modifier
@@ -4299,6 +4365,24 @@ private fun LoadErrorContent(
             Icon(Icons.Filled.Refresh, contentDescription = null)
             Text("重新加载", modifier = Modifier.padding(start = 8.dp))
         }
+        if (switchEngineLabel != null) {
+            OutlinedButton(
+                onClick = onSwitchEngine,
+                modifier = Modifier.padding(top = 12.dp)
+            ) {
+                Icon(Icons.Filled.SwapHoriz, contentDescription = null)
+                Text(
+                    switchEngineLabel,
+                    modifier = Modifier.padding(start = 8.dp)
+                )
+            }
+            Text(
+                "只换这一次，不会改这个网站以后用哪个内核打开",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+        }
         OutlinedButton(
             onClick = onGoHome,
             modifier = Modifier.padding(top = 12.dp)
@@ -4336,6 +4420,7 @@ private fun BrowserScreen(
     onOpenSuggestion: (String) -> Unit,
     onGoHome: () -> Unit,
     onReloadPage: () -> Unit,
+    onOpenInOtherEngine: () -> Unit = {},
     onSwitchEngine: (Engine, Boolean) -> Unit,
     onToggleSiteCompat: () -> Unit = {},
     onClearSiteData: (String) -> Unit = {},
@@ -5222,7 +5307,17 @@ private fun BrowserScreen(
                         LoadErrorContent(
                             error = tab.loadError!!,
                             onReload = onReloadPage,
-                            onGoHome = onGoHome
+                            onGoHome = onGoHome,
+                            switchEngineLabel =
+                                if (tab.loadError!!.failedUrl.startsWith("http://") ||
+                                    tab.loadError!!.failedUrl.startsWith("https://")
+                                ) {
+                                    when (tab.engine) {
+                                        Engine.GECKO -> "用系统 WebView 打开"
+                                        Engine.WEBVIEW -> "用火狐内核打开"
+                                    }
+                                } else null,
+                            onSwitchEngine = onOpenInOtherEngine
                         )
                     else -> TabContent(tab = tab, modifier = Modifier.fillMaxSize())
                 }
