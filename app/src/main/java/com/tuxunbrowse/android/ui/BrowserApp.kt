@@ -5992,7 +5992,8 @@ private fun SettingsScreen(
                         },
                         style = MaterialTheme.typography.bodyMedium
                     )
-                }            item {
+                }
+            item {
                 ListItem(
                     headlineContent = { Text("拦截广告和跟踪请求") },
                     supportingContent = {
