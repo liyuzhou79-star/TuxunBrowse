@@ -46,6 +46,7 @@ import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
@@ -211,6 +212,7 @@ import com.tuxunbrowse.android.data.resolveInput
 import com.tuxunbrowse.android.engine.ALIVE_ENGINE_LIMIT
 import com.tuxunbrowse.android.engine.AdBlocker
 import com.tuxunbrowse.android.engine.BrowserTab
+import com.tuxunbrowse.android.engine.GeckoDownloadTracker
 import com.tuxunbrowse.android.engine.GeckoHolder
 import com.tuxunbrowse.android.engine.MAX_FULL_PAGE_HEIGHT_PX
 import com.tuxunbrowse.android.engine.NavHistoryEntry
@@ -4095,6 +4097,28 @@ private fun HomeContent(
     val homeShowSearchTail = homeSearchFocused &&
         homeSuggestionQuery.isNotEmpty() &&
         !isUrlLikeInput(homeSuggestionQuery)
+    // "Paste and go" row (v0.69.0), the home twin of the address
+    // bar's row: when the home search box gains focus while empty,
+    // read the clipboard ONCE at that focus moment (never in the
+    // background, never at startup) and offer its text as the top
+    // suggestion row. Incognito home tabs never read the clipboard,
+    // the same gate the online suggestions above already apply.
+    val homeClipboardManager = LocalClipboardManager.current
+    var homePasteCandidate by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(homeSearchFocused, activeIncognito) {
+        if (!homeSearchFocused || activeIncognito) {
+            homePasteCandidate = null
+            return@LaunchedEffect
+        }
+        val text = try {
+            homeClipboardManager.getText()?.text?.trim()
+        } catch (t: Throwable) {
+            null
+        }
+        homePasteCandidate = text?.takeIf { it.isNotEmpty() }
+    }
+    val homeShowPasteRow = homeSearchFocused &&
+        homePasteCandidate != null && query.isBlank()
     // The home submit path, shared by the search box's own submit
     // and by tapping an online suggestion or the search tail: the
     // same blocked-scheme refusal and the same resolveInput call
@@ -4571,19 +4595,53 @@ private fun HomeContent(
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) }
             ) {}
         }
-        // Home search suggestions (v0.59.0): only while the search
-        // box is focused AND holds text — with no input this item
-        // does not exist at all, so the default home page stays
-        // exactly brand + search box + quick grid. Rows mirror the
+        // Home search suggestions (v0.59.0): while the search box
+        // is focused AND holds text this item lists matches; with no
+        // input it exists only for the paste-and-go row (v0.69.0),
+        // and only when the clipboard actually holds text — so the
+        // default home page otherwise stays exactly brand + search
+        // box + quick grid. Rows mirror the
         // address bar's: bookmark matches first, then online words,
         // then the "search this" tail, in an official Card of
         // ListItems inside the home page's own scrolling grid.
         if (homeBookmarkSuggestions.isNotEmpty() ||
-            homeOnlineRows.isNotEmpty() || homeShowSearchTail
+            homeOnlineRows.isNotEmpty() || homeShowSearchTail ||
+            homeShowPasteRow
         ) {
             item(span = { GridItemSpan(maxLineSpan) }) {
                 ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.fillMaxWidth()) {
+                        if (homeShowPasteRow) {
+                            // Top row (v0.69.0): paste-and-go, via
+                            // the home box's own submit path (same
+                            // blocked-scheme refusal and resolveInput
+                            // call as typing it in by hand).
+                            val pasteText = homePasteCandidate.orEmpty()
+                            val pasteSummary = pasteText
+                                .replace(Regex("\\s+"), " ")
+                                .take(48)
+                            ListItem(
+                                headlineContent = {
+                                    Text(
+                                        "粘贴并打开：$pasteSummary",
+                                        maxLines = 1
+                                    )
+                                },
+                                leadingContent = {
+                                    Icon(
+                                        Icons.Filled.ContentPaste,
+                                        contentDescription = "粘贴并打开"
+                                    )
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        if (submitHomeSearch(pasteText)) {
+                                            finishHomeSuggestionPick()
+                                        }
+                                    }
+                            )
+                        }
                         homeBookmarkSuggestions.forEach { suggestion ->
                             ListItem(
                                 headlineContent = {
@@ -5110,6 +5168,35 @@ private fun BrowserScreen(
             clipUrl = text
         }
     }
+    // "Paste and go" row (v0.69.0): when the address bar gains focus
+    // while empty (or with its whole text selected, which is how the
+    // bar presents an existing URL on tap), read the clipboard ONCE
+    // — at that focus moment only, never in the background and never
+    // at startup — and offer whatever text it holds as the top
+    // suggestion row. Android 12+ shows a system notice when an app
+    // reads the clipboard; tying the read to this deliberate focus
+    // tap keeps the notice attached to an action the user just took.
+    // Incognito tabs never read the clipboard here either — the same
+    // rule as the link hint above (v0.27.0). An empty or text-less
+    // clipboard simply produces no row.
+    var pasteCandidate by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(addressFocused, activeTab?.incognito) {
+        if (!addressFocused || activeTab?.incognito == true) {
+            pasteCandidate = null
+            return@LaunchedEffect
+        }
+        val text = try {
+            clipboardManager.getText()?.text?.trim()
+        } catch (t: Throwable) {
+            null
+        }
+        pasteCandidate = text?.takeIf { it.isNotEmpty() }
+    }
+    val addressAllSelected = addressValue.text.isNotEmpty() &&
+        addressValue.selection.start == 0 &&
+        addressValue.selection.end == addressValue.text.length
+    val showPasteRow = addressFocused && pasteCandidate != null &&
+        (addressText.isBlank() || addressAllSelected)
     var showRecentClosed by remember { mutableStateOf(false) }
     var showSiteInfo by remember { mutableStateOf(false) }
     var showMoreTools by remember { mutableStateOf(false) }
@@ -5732,7 +5819,7 @@ private fun BrowserScreen(
             // it gains focus and folds away again afterwards.
             AnimatedVisibility(
                 visible = suggestions.isNotEmpty() || onlineRows.isNotEmpty() ||
-                    showSearchTail,
+                    showSearchTail || showPasteRow,
                 enter = fadeIn(tween(220, easing = FastOutSlowInEasing)) +
                     expandVertically(tween(220, easing = FastOutSlowInEasing)),
                 exit = fadeOut(tween(180, easing = FastOutSlowInEasing)) +
@@ -5744,6 +5831,42 @@ private fun BrowserScreen(
                         .padding(horizontal = 8.dp, vertical = 4.dp)
                 ) {
                     LazyColumn(modifier = Modifier.heightIn(max = 320.dp)) {
+                        if (showPasteRow) {
+                            item(key = "paste-and-go") {
+                                // Top row (v0.69.0): paste-and-go.
+                                // Tapping opens the clipboard text
+                                // through the exact same path as
+                                // submitting the bar by hand, so a URL
+                                // goes straight there and plain words
+                                // become a search (resolveInput inside
+                                // onNavigate; blocked schemes are
+                                // refused there too).
+                                val pasteText = pasteCandidate.orEmpty()
+                                val pasteSummary = pasteText
+                                    .replace(Regex("\\s+"), " ")
+                                    .take(48)
+                                ListItem(
+                                    headlineContent = {
+                                        Text(
+                                            "粘贴并打开：$pasteSummary",
+                                            maxLines = 1
+                                        )
+                                    },
+                                    leadingContent = {
+                                        Icon(
+                                            Icons.Filled.ContentPaste,
+                                            contentDescription = "粘贴并打开"
+                                        )
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            onNavigate(pasteText)
+                                            focusManager.clearFocus()
+                                        }
+                                )
+                            }
+                        }
                         items(suggestions, key = { it.url }) { suggestion ->
                             ListItem(
                                 headlineContent = {
@@ -8250,9 +8373,11 @@ private fun DownloadsScreen(
     // Those downloads are saved by the app itself and never pass
     // through DownloadManager, so they live in their own section
     // below the DownloadManager list — the two state models are
-    // different (no status/progress/retry here, just a saved file),
-    // and mixing the rows would mislead. The status filter chips
-    // above apply to the DownloadManager list only.
+    // different (these rows are saved files, with no DownloadManager
+    // status or retry), and mixing the rows would mislead. Downloads
+    // still in progress are a third, live group rendered above the
+    // records (v0.69.0). The status filter chips above apply to the
+    // DownloadManager list only.
     val geckoStore = remember { Store(context) }
     var geckoRecords by remember {
         mutableStateOf(geckoStore.loadGeckoDownloads())
@@ -8271,6 +8396,25 @@ private fun DownloadsScreen(
             geckoRecords
         } else {
             geckoRecords.filter {
+                it.fileName.contains(query, ignoreCase = true)
+            }
+        }
+    }
+    // In-progress Gecko downloads (v0.69.0): live entries from the
+    // engine-side tracker, rendered above the completed records in
+    // their own "downloading" block with a progress bar and a cancel
+    // button. Reading the snapshot list here re-renders this screen
+    // whenever the copy loop publishes a progress update. The same
+    // filename search filters these rows too.
+    val activeGeckoDownloads = GeckoDownloadTracker.active
+    val visibleActiveGeckoDownloads = remember(
+        activeGeckoDownloads.toList(), downloadQuery
+    ) {
+        val query = downloadQuery.trim()
+        if (query.isEmpty()) {
+            activeGeckoDownloads.toList()
+        } else {
+            activeGeckoDownloads.filter {
                 it.fileName.contains(query, ignoreCase = true)
             }
         }
@@ -8871,12 +9015,15 @@ private fun DownloadsScreen(
                         }
                 }
             }
-            if (entries.isEmpty() && geckoRecords.isEmpty()) {
+            if (entries.isEmpty() && geckoRecords.isEmpty() &&
+                activeGeckoDownloads.isEmpty()
+            ) {
                 item {
                     EmptyState(Icons.Filled.Download, "还没有下载记录。")
                 }
             } else if (downloadQuery.isNotBlank() &&
-                visibleEntries.isEmpty() && visibleGeckoRecords.isEmpty()
+                visibleEntries.isEmpty() && visibleGeckoRecords.isEmpty() &&
+                visibleActiveGeckoDownloads.isEmpty()
             ) {
                 // Search found nothing in either list (v0.64.0):
                 // its own wording, distinct from both the
@@ -8975,6 +9122,96 @@ private fun DownloadsScreen(
                         }
                 )
                 HorizontalDivider()
+            }
+            if (visibleActiveGeckoDownloads.isNotEmpty()) {
+                item {
+                    // In-progress Gecko downloads header (v0.69.0):
+                    // these copies are still running, so they sit
+                    // above the completed-records section below and
+                    // disappear the moment each copy ends (the row is
+                    // replaced by the persisted record on success).
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 16.dp, end = 8.dp, top = 16.dp)
+                    ) {
+                        Text(
+                            "正在下载（火狐）",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            "火狐标签正在下载的文件，进度实时更新；" +
+                                "点右侧按钮可以取消，取消后未完成的文件会被删掉。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                items(
+                    visibleActiveGeckoDownloads,
+                    key = { "gecko-active-${it.id}" }
+                ) { progress ->
+                    ListItem(
+                        headlineContent = {
+                            Text(progress.fileName, maxLines = 2)
+                        },
+                        supportingContent = {
+                            Column {
+                                if (progress.totalBytes > 0) {
+                                    val percent = (
+                                        progress.downloadedBytes * 100 /
+                                            progress.totalBytes
+                                        ).coerceIn(0, 100)
+                                    Text(
+                                        "已下载 ${formatStorageSize(progress.downloadedBytes)}" +
+                                            " / ${formatStorageSize(progress.totalBytes)}" +
+                                            " · $percent%"
+                                    )
+                                    LinearProgressIndicator(
+                                        progress = {
+                                            (
+                                                progress.downloadedBytes.toFloat() /
+                                                    progress.totalBytes.toFloat()
+                                                ).coerceIn(0f, 1f)
+                                        },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 4.dp)
+                                    )
+                                } else {
+                                    // No Content-Length: no honest
+                                    // percentage exists, so the bar
+                                    // stays indeterminate and the
+                                    // text reports bytes so far.
+                                    Text(
+                                        "已下载 ${formatStorageSize(progress.downloadedBytes)}" +
+                                            "（总大小未知）"
+                                    )
+                                    LinearProgressIndicator(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 4.dp)
+                                    )
+                                }
+                            }
+                        },
+                        leadingContent = {
+                            Icon(Icons.Filled.Download, contentDescription = null)
+                        },
+                        trailingContent = {
+                            IconButton(onClick = {
+                                GeckoDownloadTracker.requestCancel(progress.id)
+                            }) {
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = "取消下载"
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    HorizontalDivider()
+                }
             }
             if (visibleGeckoRecords.isNotEmpty()) {
                 item {

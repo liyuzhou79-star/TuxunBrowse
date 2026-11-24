@@ -24,6 +24,7 @@ import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -2562,6 +2563,119 @@ fun resolveDownloadFileName(
 
 private val geckoDownloadExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
+/** One in-progress Gecko download, as the downloads screen renders it. */
+data class GeckoDownloadProgress(
+    val id: Long,
+    val fileName: String,
+    val sourceUrl: String,
+    /** Content-Length of the response, or -1 when the server sent none. */
+    val totalBytes: Long,
+    val downloadedBytes: Long
+)
+
+/**
+ * Live registry of in-progress Gecko downloads (v0.69.0). Completed
+ * downloads keep living in the persisted [GeckoDownloadRecord] list
+ * exactly as before; this registry only covers the copy while it is
+ * running, so the downloads screen can show progress and offer a
+ * cancel button. It is in-memory only: if the process dies mid-copy
+ * the entry simply vanishes with it (the partial file is a pending
+ * MediaStore entry the system cleans up, or an app-folder file the
+ * next successful download overwrites by name-clash rules — no
+ * zombie record is ever persisted). Cancellation is cooperative:
+ * [requestCancel] sets a flag the copy loop checks between chunks
+ * AND closes the body stream to wake a read blocked on it; the copy
+ * loop then unwinds through the same cleanup path as a failure,
+ * deleting the partial artefact, except the completion toast says
+ * the download was cancelled.
+ */
+object GeckoDownloadTracker {
+    val active = mutableStateListOf<GeckoDownloadProgress>()
+    private val nextId = java.util.concurrent.atomic.AtomicLong(1L)
+    private val cancelFlags =
+        java.util.concurrent.ConcurrentHashMap<
+            Long, java.util.concurrent.atomic.AtomicBoolean>()
+    private val openStreams =
+        java.util.concurrent.ConcurrentHashMap<Long, java.io.InputStream>()
+
+    fun begin(
+        fileName: String,
+        sourceUrl: String,
+        totalBytes: Long,
+        body: java.io.InputStream
+    ): Long {
+        val id = nextId.getAndIncrement()
+        cancelFlags[id] =
+            java.util.concurrent.atomic.AtomicBoolean(false)
+        openStreams[id] = body
+        active.add(
+            GeckoDownloadProgress(id, fileName, sourceUrl, totalBytes, 0L)
+        )
+        return id
+    }
+
+    fun updateProgress(id: Long, downloadedBytes: Long) {
+        val idx = active.indexOfFirst { it.id == id }
+        if (idx >= 0) {
+            active[idx] = active[idx].copy(downloadedBytes = downloadedBytes)
+        }
+    }
+
+    fun isCancelled(id: Long): Boolean = cancelFlags[id]?.get() == true
+
+    fun requestCancel(id: Long) {
+        cancelFlags[id]?.set(true)
+        // Closing the body stream wakes a read blocked on it; the
+        // copy loop's flag check covers streams whose close does not
+        // interrupt a pending read.
+        try {
+            openStreams[id]?.close()
+        } catch (t: Throwable) {
+            // Best-effort; the flag check still stops the copy.
+        }
+    }
+
+    fun end(id: Long) {
+        active.removeAll { it.id == id }
+        cancelFlags.remove(id)
+        openStreams.remove(id)
+    }
+}
+
+/**
+ * Copy a Gecko download body to [out] in chunks (v0.69.0), reporting
+ * progress to [GeckoDownloadTracker] at most every 256 KB and
+ * honouring cancellation between chunks. Throws when the copy is
+ * cancelled, so the caller unwinds through its normal failure
+ * cleanup (partial artefact deleted) instead of finishing the file.
+ * Returns the number of bytes copied.
+ */
+private fun copyDownloadBody(
+    body: java.io.InputStream,
+    out: java.io.OutputStream,
+    downloadId: Long
+): Long {
+    val buffer = ByteArray(64 * 1024)
+    var total = 0L
+    var lastReport = 0L
+    while (true) {
+        if (GeckoDownloadTracker.isCancelled(downloadId)) {
+            throw java.io.IOException("gecko download cancelled")
+        }
+        val read = body.read(buffer)
+        if (read < 0) break
+        if (read == 0) continue
+        out.write(buffer, 0, read)
+        total += read
+        if (total - lastReport >= 256L * 1024L) {
+            lastReport = total
+            GeckoDownloadTracker.updateProgress(downloadId, total)
+        }
+    }
+    GeckoDownloadTracker.updateProgress(downloadId, total)
+    return total
+}
+
 /**
  * Save a Gecko "external response" (a download) to the public Downloads
  * folder. The body stream already carries the Gecko session's cookies and
@@ -2598,10 +2712,17 @@ fun saveGeckoDownload(
         onFinished()
         return
     }
+    // Register with the live progress tracker before the copy starts
+    // (v0.69.0), so the downloads screen can show this download —
+    // and cancel it — from the first moment. The total is the
+    // response Content-Length when the server sent one.
+    val totalBytes = header("Content-Length")?.trim()?.toLongOrNull() ?: -1L
+    val downloadId = GeckoDownloadTracker.begin(fileName, uri, totalBytes, body)
     Toast.makeText(context, "开始下载：$fileName", Toast.LENGTH_LONG).show()
     try {
         geckoDownloadExecutor.execute {
         var ok = false
+        var wasCancelled = false
         // The name the file actually lands under. MediaStore never
         // overwrites an existing file: on a name clash it saves
         // under an adjusted name instead, so the completion toast
@@ -2638,7 +2759,7 @@ fun saveGeckoDownload(
                     // below instead of staying behind as a 0 KB fake.
                     var copied = -1L
                     resolver.openOutputStream(dest)?.use { out ->
-                        copied = body.copyTo(out)
+                        copied = copyDownloadBody(body, out, downloadId)
                     }
                     if (copied > 0) {
                         copiedBytes = copied.toLong()
@@ -2670,12 +2791,18 @@ fun saveGeckoDownload(
                     ?: context.filesDir
                 val file = java.io.File(dir, fileName)
                 destFile = file
-                val copied = file.outputStream().use { out -> body.copyTo(out) }
+                val copied = file.outputStream().use { out ->
+                    copyDownloadBody(body, out, downloadId)
+                }
                 ok = copied > 0
                 if (ok) copiedBytes = copied
             }
         } catch (t: Throwable) {
             ok = false
+            // A cancelled copy lands here too (the chunk loop throws
+            // on the cancel flag, or the closed stream fails the
+            // read); remember which, for the completion toast below.
+            wasCancelled = GeckoDownloadTracker.isCancelled(downloadId)
         } finally {
             try {
                 body.close()
@@ -2704,6 +2831,11 @@ fun saveGeckoDownload(
             } catch (t: Throwable) {
                 // The callback only clears a flag; never crash here.
             }
+            // The live progress entry dies with the copy (success,
+            // failure and cancel alike): a finished download is
+            // represented by its persisted record (on success) or by
+            // nothing at all — never by a stale progress row.
+            GeckoDownloadTracker.end(downloadId)
         }
         if (ok) {
             // Success point (v0.57.0): everything the in-app record
@@ -2729,14 +2861,20 @@ fun saveGeckoDownload(
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             Toast.makeText(
                 context,
-                if (ok) "已下载：$savedName（在系统下载文件夹）" else "下载失败：$fileName",
+                when {
+                    ok -> "已下载：$savedName（在系统下载文件夹）"
+                    wasCancelled -> "已取消下载：$fileName"
+                    else -> "下载失败：$fileName"
+                },
                 Toast.LENGTH_LONG
             ).show()
         }
         }
     } catch (t: Throwable) {
         // The copy never even started (executor rejected it): the
-        // tab is not download-busy after all.
+        // tab is not download-busy after all, and neither is the
+        // progress tracker.
+        GeckoDownloadTracker.end(downloadId)
         onFinished()
     }
 }

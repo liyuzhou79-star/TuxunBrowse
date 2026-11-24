@@ -28,6 +28,11 @@ jobs:
           restore-keys: |
             gradle-${{ runner.os }}-
 
+      - name: Run unit tests
+        run: |
+          chmod +x gradlew
+          ./gradlew testDebugUnitTest --stacktrace
+
       - name: Build debug APK
         run: |
           chmod +x gradlew
