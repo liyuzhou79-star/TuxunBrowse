@@ -263,6 +263,10 @@ import com.tuxunbrowse.android.engine.NavHistoryEntry
 import com.tuxunbrowse.android.engine.SniffKind
 import com.tuxunbrowse.android.engine.SniffedResource
 import com.tuxunbrowse.android.engine.TabLoadError
+import com.tuxunbrowse.android.engine.EngineFallbackAction
+import com.tuxunbrowse.android.engine.engineFallbackActions
+import com.tuxunbrowse.android.engine.engineFallbackReason
+import com.tuxunbrowse.android.engine.otherEngineOpenLabel
 import com.tuxunbrowse.android.engine.GeckoJsPromptKind
 import com.tuxunbrowse.android.engine.GeckoSelectionMenu
 import com.tuxunbrowse.android.engine.HttpAuthRequestInfo
@@ -3238,6 +3242,30 @@ fun BrowserApp(
                         tab.load(downgradeToHttp(error.failedUrl))
                     }
                 },
+                onEngineFallbackSwitch = {
+                    // Engine-unavailable fallback (v0.81.0): the
+                    // tab's engine could not be created at all —
+                    // reopen its current address in the OTHER
+                    // engine through the very same one-time switch
+                    // the load-error page uses (compat bypass and
+                    // all), never touching the per-site compat list.
+                    val tab = activeTab()
+                    if (tab != null && tab.engineUnavailable) {
+                        openLoadErrorInOtherEngine(tab, tab.url)
+                    }
+                },
+                onEngineFallbackRetry = {
+                    // Retry = rebuild the tab in place with the
+                    // same engine (v0.81.0): a fresh tab object
+                    // retries creation from scratch. If the engine
+                    // is still unavailable, the new tab lands on
+                    // this same fallback page — no crash, no loop
+                    // (each attempt needs a fresh tap).
+                    val tab = activeTab()
+                    if (tab != null && tab.engineUnavailable) {
+                        recreateTab(tab, tab.engine, tab.desktopMode, force = true)
+                    }
+                },
                 onSwitchEngine = { engine, rememberSite ->
                     val tab = activeTab() ?: return@BrowserScreen
                     switchTabEngine(tab, engine, rememberSite)
@@ -5953,6 +5981,98 @@ private fun LoadErrorContent(
     }
 }
 
+/**
+ * Engine-unavailable fallback page (v0.81.0): shown when a tab's
+ * engine view could not be created at all — the system WebView is
+ * disabled / missing / broken, or the Gecko runtime failed to
+ * start. Same shape as the load-error page above (icon, plain-
+ * language reason, the address it was opening, official buttons,
+ * a column that scrolls), with the actions decided by the pure
+ * engineFallbackActions: open this site in the other engine
+ * (http(s) only), retry this engine, go home. Before this
+ * version only the Gecko side had any fallback (a bare line of
+ * text with no buttons), and a broken system WebView crashed
+ * the whole app.
+ */
+@Composable
+private fun EngineUnavailableContent(
+    engine: Engine,
+    url: String,
+    onSwitchEngine: () -> Unit,
+    onRetry: () -> Unit,
+    onGoHome: () -> Unit
+) {
+    val actions = engineFallbackActions(url)
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            Icons.Filled.Error,
+            contentDescription = "内核不可用",
+            tint = MaterialTheme.colorScheme.error,
+            modifier = Modifier
+                .size(56.dp)
+                .padding(bottom = 16.dp)
+        )
+        Text(
+            "内核打不开",
+            style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+        Text(
+            engineFallbackReason(engine),
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.padding(bottom = 16.dp)
+        )
+        if (url.isNotBlank() && url != HOME_URL) {
+            Text(
+                "要打开的网址：$url",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 24.dp)
+            )
+        }
+        if (EngineFallbackAction.SWITCH_ENGINE in actions) {
+            Button(onClick = onSwitchEngine) {
+                Icon(Icons.Filled.SwapHoriz, contentDescription = null)
+                Text(
+                    otherEngineOpenLabel(engine),
+                    modifier = Modifier.padding(start = 8.dp)
+                )
+            }
+            Text(
+                "只换这一次，不会改这个网站以后用哪个内核打开",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+        }
+        if (EngineFallbackAction.RETRY in actions) {
+            OutlinedButton(
+                onClick = onRetry,
+                modifier = Modifier.padding(top = 12.dp)
+            ) {
+                Icon(Icons.Filled.Refresh, contentDescription = null)
+                Text("重试", modifier = Modifier.padding(start = 8.dp))
+            }
+        }
+        if (EngineFallbackAction.GO_HOME in actions) {
+            OutlinedButton(
+                onClick = onGoHome,
+                modifier = Modifier.padding(top = 12.dp)
+            ) {
+                Icon(Icons.Filled.Home, contentDescription = null)
+                Text("回首页", modifier = Modifier.padding(start = 8.dp))
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun BrowserScreen(
@@ -5987,6 +6107,8 @@ private fun BrowserScreen(
     onReloadPage: () -> Unit,
     onOpenInOtherEngine: () -> Unit = {},
     onOpenHttpFallback: () -> Unit = {},
+    onEngineFallbackSwitch: () -> Unit = {},
+    onEngineFallbackRetry: () -> Unit = {},
     onSwitchEngine: (Engine, Boolean) -> Unit,
     onToggleSiteCompat: () -> Unit = {},
     onClearSiteData: (String) -> Unit = {},
@@ -7186,6 +7308,17 @@ private fun BrowserScreen(
                 when {
                     tab == null -> Box(modifier = Modifier.fillMaxSize())
                     tab.isHome -> homeContent()
+                    tab.engineUnavailable ->
+                        // The engine itself could not be created
+                        // (v0.81.0): the app's own fallback page,
+                        // the same shape for both engines.
+                        EngineUnavailableContent(
+                            engine = tab.engine,
+                            url = tab.url,
+                            onSwitchEngine = onEngineFallbackSwitch,
+                            onRetry = onEngineFallbackRetry,
+                            onGoHome = onGoHome
+                        )
                     tab.loadError != null ->
                         // The page failed to load at the network level:
                         // show the app's own error page instead of the
@@ -7225,7 +7358,8 @@ private fun BrowserScreen(
             // Both engines go through the same onReloadPage path.
             val refreshTab = activeTab
             if (refreshTab != null && !refreshTab.isHome &&
-                refreshTab.loadError == null && !chromeHidden
+                refreshTab.loadError == null &&
+                !refreshTab.engineUnavailable && !chromeHidden
             ) {
                 PullToRefreshBox(
                     isRefreshing = refreshTab.progress < 100,
@@ -13172,9 +13306,18 @@ private fun SettingsScreen(
                             )
                         )
                         diagnosticRows.forEach { (label, value) ->
+                            // Values sit UNDER the label, not in the
+                            // trailing slot (v0.81.0 scroll/overflow
+                            // audit): the system WebView row's value
+                            // is a package name plus a long version
+                            // string, and a ListItem's trailing slot
+                            // is a small side area — on a narrow
+                            // screen it squeezed the label and
+                            // clipped the value. Supporting content
+                            // takes the full row width and wraps.
                             ListItem(
                                 headlineContent = { Text(label) },
-                                trailingContent = { Text(value) }
+                                supportingContent = { Text(value) }
                             )
                         }
                         Text(

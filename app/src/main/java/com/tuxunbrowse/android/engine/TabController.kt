@@ -302,6 +302,43 @@ data class TabLoadError(
     val detail: String
 )
 
+/** Actions the engine-unavailable fallback page can offer (v0.81.0). */
+enum class EngineFallbackAction { SWITCH_ENGINE, RETRY, GO_HOME }
+
+/**
+ * Which actions the engine-unavailable fallback page shows
+ * (v0.81.0, pure so it is unit-tested): retrying the same engine
+ * and going home always make sense; "open this site in the other
+ * engine" only makes sense when there IS a site — an http(s) page.
+ * Internal/blank addresses get no switch button, exactly the
+ * load-error page's rule since v0.52.0.
+ */
+fun engineFallbackActions(url: String): List<EngineFallbackAction> {
+    val actions = mutableListOf<EngineFallbackAction>()
+    if (url.startsWith("http://") || url.startsWith("https://")) {
+        actions.add(EngineFallbackAction.SWITCH_ENGINE)
+    }
+    actions.add(EngineFallbackAction.RETRY)
+    actions.add(EngineFallbackAction.GO_HOME)
+    return actions
+}
+
+/** Label of the fallback page's switch-engine button. */
+fun otherEngineOpenLabel(engine: Engine): String = when (engine) {
+    Engine.GECKO -> "用系统 WebView 打开这个网站"
+    Engine.WEBVIEW -> "用火狐打开这个网站"
+}
+
+/** Plain-language reason shown on the engine-unavailable page. */
+fun engineFallbackReason(engine: Engine): String = when (engine) {
+    Engine.GECKO ->
+        "火狐内核这次没能启动起来，网页暂时打不开。" +
+            "可以先用系统 WebView 打开这个网站，或者等一下再重试。"
+    Engine.WEBVIEW ->
+        "这台设备上的系统 WebView 现在用不了（可能被停用、缺失或损坏），" +
+            "网页暂时打不开。可以先用火狐打开这个网站，或者等一下再重试。"
+}
+
 /** One entry of a tab's real back/forward stack, for the history sheet. */
 data class NavHistoryEntry(val title: String, val url: String)
 
@@ -727,6 +764,17 @@ class BrowserTab(
     var loadError by mutableStateOf<TabLoadError?>(null)
 
     /**
+     * True when this tab's engine view could not be created at all
+     * (v0.81.0): the system WebView is disabled / missing / broken,
+     * or the Gecko runtime failed to start. Set only by
+     * obtainWebView / obtainGecko when creation really fails —
+     * never by a slow load — and the app shows its own fallback
+     * page for the tab instead of crashing. Cleared by [load], so
+     * navigating to a new address retries creation.
+     */
+    var engineUnavailable by mutableStateOf(false)
+
+    /**
      * True while this tab's current page load is one the app itself
      * upgraded from http to https (v0.77.0 HTTPS first). Set by the
      * app side right after it loads an upgraded address; cleared by
@@ -924,6 +972,11 @@ class BrowserTab(
 
     fun load(target: String) {
         loadError = null
+        // A fresh navigation is a fresh engine-creation attempt
+        // (v0.81.0): if this tab was sitting on the engine-
+        // unavailable fallback page, clearing the flag puts
+        // TabContent back into composition, which retries obtain*.
+        engineUnavailable = false
         httpsUpgraded = false
         blockedCount = 0
         certIssuedTo = ""
@@ -1528,10 +1581,41 @@ class BrowserTab(
         }
     }
 
+    /**
+     * Create (or return) this tab's WebView. Returns null when the
+     * system WebView cannot be created at all (v0.81.0): on a
+     * device whose WebView provider is disabled, missing or broken,
+     * the WebView constructor throws
+     * WebViewFactory$MissingWebViewPackageException (a
+     * RuntimeException) and the setup calls in [createWebView] can
+     * throw with it. That must never crash the whole app — the tab
+     * is marked [engineUnavailable] and the app shows its fallback
+     * page with a switch-to-Firefox action instead. Only a real
+     * creation exception lands here; a slow page load never
+     * touches this path.
+     */
+    fun obtainWebView(context: Context): WebView? {
+        webView?.let { return it }
+        return try {
+            createWebView(context)
+        } catch (t: Throwable) {
+            // A half-built view may have been assigned already;
+            // drop it so the tab is cleanly uncreated and a later
+            // retry starts from scratch.
+            try {
+                webView?.destroy()
+            } catch (ignored: Throwable) {
+                // Already broken; nothing more to clean up.
+            }
+            webView = null
+            engineUnavailable = true
+            null
+        }
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     @Suppress("DEPRECATION")
-    fun obtainWebView(context: Context): WebView {
-        webView?.let { return it }
+    private fun createWebView(context: Context): WebView {
         val view = WebView(context)
         view.layoutParams = ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -2637,8 +2721,28 @@ class BrowserTab(
         }
     }
 
+    /**
+     * Create (or return) this tab's GeckoView. Returns null when
+     * the Gecko side cannot be created (v0.81.0, aligned with the
+     * WebView side): GeckoHolder.ensure already turns a failed
+     * GeckoRuntime.create into null, and any exception from the
+     * session / view creation below lands in the same place — the
+     * tab is marked [engineUnavailable] and the app shows its
+     * fallback page (with a switch-to-WebView action) instead of
+     * the bare line of text this used to fall back to, or a crash.
+     */
     fun obtainGecko(context: Context): GeckoView? {
         geckoView?.let { return it }
+        val view = try {
+            createGeckoView(context)
+        } catch (t: Throwable) {
+            null
+        }
+        if (view == null) engineUnavailable = true
+        return view
+    }
+
+    private fun createGeckoView(context: Context): GeckoView? {
         val appContext = context.applicationContext
         val runtime = GeckoHolder.ensure(context) ?: return null
         val adopted = geckoSession != null
@@ -3732,16 +3836,25 @@ fun TabContent(tab: BrowserTab, modifier: Modifier = Modifier) {
     when (tab.engine) {
         Engine.WEBVIEW -> AndroidView(
             modifier = modifier,
-            factory = { ctx -> tab.obtainWebView(ctx) },
+            factory = { ctx ->
+                // Null means the engine could not be created
+                // (v0.81.0): the tab is marked engineUnavailable
+                // and the app-level fallback page replaces this
+                // blank placeholder as soon as it recomposes.
+                tab.obtainWebView(ctx) ?: android.view.View(ctx)
+            },
             update = { }
         )
 
         Engine.GECKO -> AndroidView(
             modifier = modifier,
             factory = { ctx ->
-                tab.obtainGecko(ctx) ?: android.widget.TextView(ctx).apply {
-                    text = "火狐内核这次没能启动，请到设置里改用系统 WebView，或重启应用再试。"
-                }
+                // Same contract as the WebView side (v0.81.0):
+                // null = engine unavailable, the app-level
+                // fallback page takes over. (Before this version
+                // this branch showed a bare TextView with no way
+                // to switch engine or retry.)
+                tab.obtainGecko(ctx) ?: android.view.View(ctx)
             },
             update = { }
         )
