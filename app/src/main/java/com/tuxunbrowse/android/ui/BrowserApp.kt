@@ -10473,7 +10473,6 @@ private fun ReadingListScreen(
 }
 
 /**
-/**
  * Page source page (v0.84.0, WebView tabs only; Gecko tabs never
  * reach this screen — the menu entry explains why and offers the
  * switch-engine path). An app-level page: it renders the source
