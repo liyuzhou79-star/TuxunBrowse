@@ -715,6 +715,17 @@ object ThumbnailCache {
     }
 
     /**
+     * A tab dropped its thumbnail without going away (v0.131.0
+     * tab-sheet audit: a fresh navigation invalidates the old
+     * page's preview); stop tracking it so the cap accounting
+     * never counts a bitmap nobody holds.
+     */
+    @Synchronized
+    fun onThumbnailCleared(tab: BrowserTab) {
+        holders.remove(tab)
+    }
+
+    /**
      * Drop EVERY thumbnail at once (v0.127.0 perf/memory audit):
      * the system memory-pressure pass used to squeeze only the
      * engines, leaving up to [MAX_THUMBNAILS] preview bitmaps —
@@ -1412,6 +1423,24 @@ class BrowserTab(
     }
 
     /**
+     * Drop the current thumbnail because it no longer shows what
+     * this tab is on (v0.131.0 tab-sheet audit). Until this
+     * version the preview survived a navigation: open the tab
+     * sheet while a new page was still loading — or after a load
+     * that never reached onPageFinished — and the card kept
+     * showing the PREVIOUS page's picture under the new page's
+     * title and host. The reference is simply dropped (never
+     * recycled — the grid may still be drawing it this frame,
+     * same rule as the cache's own eviction) and the fresh page
+     * recaptures on finish or switch-away as usual.
+     */
+    fun clearThumbnail() {
+        if (thumbnail == null) return
+        thumbnail = null
+        ThumbnailCache.onThumbnailCleared(this)
+    }
+
+    /**
      * Pending clipboard-read permission answers for this tab
      * (v0.45.0). A GeckoResult left unanswered hangs the requesting
      * page script forever, so [destroy] and [sleepEngine] drain this
@@ -1943,6 +1972,11 @@ class BrowserTab(
                 syncPrivacyScript(wv)
                 // A fresh load is under way; any earlier failure is over.
                 loadError = null
+                // The old page's preview no longer describes this
+                // tab (v0.131.0): drop it now instead of letting
+                // the tab sheet show the previous page under the
+                // new title until the new page finishes.
+                clearThumbnail()
                 // The blocked-request counter belongs to one page.
                 blockedCount = 0
                 // So does the find state (v0.124.0): the WebView

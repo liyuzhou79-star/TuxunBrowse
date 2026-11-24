@@ -42,6 +42,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
@@ -1820,7 +1821,13 @@ fun BrowserApp(
         val hadIncognito = tabs.any { it.incognito }
         // Every normal tab goes onto the recently-closed stack
         // (incognito tabs are skipped inside pushClosedTab).
-        tabs.toList().forEach { pushClosedTab(it) }
+        // Pushed in reverse tab order (v0.131.0 tab-sheet audit):
+        // pushClosedTab puts each entry on TOP of the stack, so
+        // walking the tab list backwards leaves the FIRST tab on
+        // top — reopening the batch one by one then rebuilds the
+        // tabs in their original left-to-right order instead of
+        // reversed.
+        tabs.toList().asReversed().forEach { pushClosedTab(it) }
         tabs.forEach { it.destroy() }
         tabs.clear()
         if (hadIncognito) {
@@ -1856,7 +1863,10 @@ fun BrowserApp(
             releaseTransientUiForRemovedTab(activeTabId, force = true)
         }
         val closedIncognito = others.any { it.incognito }
-        others.forEach { pushClosedTab(it) }
+        // Reverse order, same reason as closeAllTabs (v0.131.0):
+        // the stack top ends up being the earliest of the batch,
+        // so reopening restores the original relative order.
+        others.asReversed().forEach { pushClosedTab(it) }
         others.forEach { it.destroy() }
         tabs.removeAll(others)
         if (activeTab() == null) activeTabId = keep.id
@@ -7479,6 +7489,28 @@ private fun BrowserScreen(
         }
     }
     val sheetState = rememberModalBottomSheetState()
+    // Open the sheet already scrolled to the active tab
+    // (v0.131.0 tab-sheet audit): the grid used to always start
+    // at the very first tab, so with many tabs open the user had
+    // to hunt for the one they were on — the sheet's whole point
+    // is the current tab's neighbourhood. The scroll runs once
+    // per opening (keyed on showTabs only, so typing in the
+    // search field never yanks the list around); the item index
+    // counts the full-span rows ahead of the cards — header row
+    // and search field, plus the multi-select action row while
+    // multi-select is on.
+    val tabGridState = rememberLazyGridState()
+    LaunchedEffect(showTabs) {
+        if (showTabs) {
+            val activeIndex = visibleTabs.indexOfFirst {
+                it.id == activeTab?.id
+            }
+            if (activeIndex >= 0) {
+                val headerItems = if (tabMultiSelect) 3 else 2
+                tabGridState.scrollToItem(headerItems + activeIndex)
+            }
+        }
+    }
     if (showTabs) {
         ModalBottomSheet(
             onDismissRequest = { showTabs = false; exitTabMultiSelect() },
@@ -7490,6 +7522,7 @@ private fun BrowserScreen(
             BackHandler(enabled = tabMultiSelect) { exitTabMultiSelect() }
             LazyVerticalGrid(
                 columns = GridCells.Fixed(2),
+                state = tabGridState,
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 600.dp)
@@ -7512,7 +7545,15 @@ private fun BrowserScreen(
                                 // tabs than the actions would touch.
                                 "已选 ${tabs.count { it.id in selectedTabIds }} 个"
                             } else {
-                                "标签页"
+                                // Same count, same number as the
+                                // bottom bar's tab item (v0.131.0
+                                // count audit): the sheet title
+                                // used to carry no number at all,
+                                // so the two surfaces could not be
+                                // cross-checked at a glance. Both
+                                // read tabs.size — every open tab,
+                                // incognito ones included.
+                                "标签页 ${tabs.size}"
                             },
                             style = MaterialTheme.typography.titleLarge,
                             // Polite live region (v0.78.0
@@ -7567,8 +7608,18 @@ private fun BrowserScreen(
                                     // stack, incognito WebView wipe
                                     // and the active-tab fallback all
                                     // behave exactly as closing by
-                                    // hand (v0.76.0).
-                                    selectedTabs.forEach { onCloseTab(it) }
+                                    // hand (v0.76.0). Reverse tab
+                                    // order (v0.131.0): each close
+                                    // pushes onto the TOP of the
+                                    // recently-closed stack, so the
+                                    // batch lands with its earliest
+                                    // tab on top and reopening
+                                    // restores the original order —
+                                    // same rule as close-all and
+                                    // close-others.
+                                    selectedTabs.asReversed().forEach {
+                                        onCloseTab(it)
+                                    }
                                     exitTabMultiSelect()
                                     showTabs = false
                                 },
@@ -7623,7 +7674,26 @@ private fun BrowserScreen(
                     var tabMenuOpen by remember(tab.id) {
                         mutableStateOf(false)
                     }
-                    Box {
+                    Box(
+                        // Card enter / exit / placement animation
+                        // (v0.131.0 tab-sheet audit): every other
+                        // long list got the shared 220/180ms
+                        // animateItem treatment in the v0.82.0 /
+                        // v0.111.0 motion passes, but the tab cards
+                        // themselves still popped in and out
+                        // instantly when a tab was closed from the
+                        // sheet — the remaining cards jumped to
+                        // their new spots with no motion at all.
+                        // Same spec as the rest of the app.
+                        modifier = Modifier.animateItem(
+                            fadeInSpec = tween(
+                                220, easing = FastOutSlowInEasing
+                            ),
+                            fadeOutSpec = tween(
+                                180, easing = FastOutSlowInEasing
+                            )
+                        )
+                    ) {
                     ElevatedCard(
                         modifier = Modifier
                             .fillMaxWidth()
