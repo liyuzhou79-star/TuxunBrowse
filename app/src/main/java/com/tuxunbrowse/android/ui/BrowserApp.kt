@@ -247,6 +247,10 @@ import com.tuxunbrowse.android.data.matchSuggestions
 import com.tuxunbrowse.android.data.resolveInput
 import com.tuxunbrowse.android.data.upgradeToHttps
 import com.tuxunbrowse.android.data.downgradeToHttp
+import com.tuxunbrowse.android.data.HistoryClearRange
+import com.tuxunbrowse.android.data.countHistoryInClearRange
+import com.tuxunbrowse.android.data.historyClearCutoff
+import com.tuxunbrowse.android.data.keptHistoryAfterClear
 import com.tuxunbrowse.android.engine.ALIVE_ENGINE_LIMIT
 import com.tuxunbrowse.android.engine.AdBlocker
 import com.tuxunbrowse.android.engine.BrowserTab
@@ -491,8 +495,9 @@ fun BrowserApp(
     }
     val tabs = remember { mutableStateListOf<BrowserTab>() }
     var activeTabId by remember { mutableStateOf(-1) }
-    // Startup loading split (v0.28.0 audit): the three big JSON lists
-    // start out EMPTY here and are filled in by the startup effect
+    // Startup loading split (v0.28.0 audit): the big JSON lists
+    // (and, since v0.79.0, the bookmark folder names) start out
+    // EMPTY here and are filled in by the startup effect
     // below, which parses them on a background dispatcher before it
     // restores any tab. That ordering is what makes the split safe:
     // nothing can read or mutate these lists before the fill —
@@ -534,15 +539,18 @@ fun BrowserApp(
     // in the share dialog (v0.73.0). Nothing is opened or saved
     // until the user picks — and the clipboard is never involved.
     var pendingShareText by remember { mutableStateOf<String?>(null) }
-    // Stored bookmark folder names (v0.72.0): synchronous like the
-    // two site lists — a handful of short strings. This list exists
-    // so EMPTY folders survive; the folder list the UI offers is
+    // Stored bookmark folder names (v0.72.0): this list exists so
+    // EMPTY folders survive; the folder list the UI offers is
     // always allBookmarkFolders(bookmarks, bookmarkFolders), the
     // union of this stored list with the names derived from the
-    // bookmarks themselves.
-    val bookmarkFolders = remember {
-        mutableStateListOf<String>().apply { addAll(store.loadBookmarkFolders()) }
-    }
+    // bookmarks themselves. Startup audit (v0.79.0): unlike the
+    // three site lists above, nothing in the first restored tab
+    // consults folder names — every folder mutation happens from
+    // the bookmarks UI, which needs an active tab, and tabs are
+    // created only after the startup fill below. The names
+    // therefore start EMPTY here and are filled in by that same
+    // background fill, off the main thread.
+    val bookmarkFolders = remember { mutableStateListOf<String>() }
     // One-time compat bypasses (v0.52.0): tab id -> the exact URL whose
     // first Gecko load must NOT be bounced back to WebView by the
     // per-site compat memory. Set only by the load-error page's
@@ -1789,15 +1797,12 @@ fun BrowserApp(
         val loadedLists = kotlinx.coroutines.withContext(
             kotlinx.coroutines.Dispatchers.Default
         ) {
-            Triple(
-                store.loadBookmarks(),
-                store.loadHistory(),
-                store.loadReadingList()
-            )
+            store.loadStartupLists()
         }
-        bookmarks.addAll(loadedLists.first)
-        history.addAll(loadedLists.second)
-        readingList.addAll(loadedLists.third)
+        bookmarks.addAll(loadedLists.bookmarks)
+        history.addAll(loadedLists.history)
+        readingList.addAll(loadedLists.readingList)
+        bookmarkFolders.addAll(loadedLists.bookmarkFolders)
         // History retention cleanup: drop normal-history entries older
         // than the user's chosen window. Runs inside this effect (off
         // the startup critical path, filtering on a background
@@ -1814,9 +1819,18 @@ fun BrowserApp(
                 snapshot.filter { it.time >= cutoff }
             }
             if (kept.size != history.size) {
+                // The re-save serializes the whole kept list (up to
+                // the 500-entry cap) back to JSON — that is done on
+                // the background dispatcher too (v0.79.0 audit), and
+                // only then is the trimmed list published, so the
+                // in-memory list and the stored one never disagree.
+                kotlinx.coroutines.withContext(
+                    kotlinx.coroutines.Dispatchers.Default
+                ) {
+                    store.saveHistory(kept)
+                }
                 history.clear()
                 history.addAll(kept)
-                store.saveHistory(history)
             }
         }
         if (store.mainEngineChosen && tabs.isEmpty()) {
@@ -2345,6 +2359,40 @@ fun BrowserApp(
         val removed = before - history.size
         if (removed > 0) store.saveHistory(history)
         return removed
+    }
+
+    /**
+     * Ranged history clear (v0.79.0): the ONE implementation both
+     * the history page and the settings page route through, so the
+     * range rule can never differ between entry points. ALL keeps
+     * the old full-wipe path (key removed outright); a windowed
+     * range keeps the survivors and re-saves them. Returns how
+     * many entries were removed.
+     */
+    fun clearHistoryRange(range: HistoryClearRange): Int {
+        if (range == HistoryClearRange.ALL) {
+            val removed = history.size
+            history.clear()
+            store.clearHistory()
+            return removed
+        }
+        val cutoff = historyClearCutoff(range, System.currentTimeMillis())
+        val kept = keptHistoryAfterClear(history, cutoff)
+        val removed = history.size - kept.size
+        if (removed > 0) {
+            history.clear()
+            history.addAll(kept)
+            store.saveHistory(history)
+        }
+        return removed
+    }
+
+    /** Per-range removal counts for the clear dialog (v0.79.0). */
+    fun historyClearCounts(): Map<HistoryClearRange, Int> {
+        val now = System.currentTimeMillis()
+        return HistoryClearRange.entries.associateWith { range ->
+            countHistoryInClearRange(history, historyClearCutoff(range, now))
+        }
     }
 
     /**
@@ -3094,6 +3142,8 @@ fun BrowserApp(
                 recentClosed = recentClosedTabs,
                 onReopenClosed = { reopenClosedTab(it) },
                 onNewTab = { newTab(store.mainEngine, false) },
+                onNewTabWithEngine = { engine -> newTab(engine, false) },
+                mainEngine = store.mainEngine,
                 onNewIncognitoTab = { engine -> newTab(engine, true) },
                 incognitoEngine = store.incognitoEngine,
                 onIncognitoEngineChosen = { store.incognitoEngine = it },
@@ -3584,10 +3634,8 @@ fun BrowserApp(
                     android.widget.Toast.LENGTH_SHORT
                 ).show()
             },
-            onClear = {
-                history.clear()
-                store.clearHistory()
-            }
+            onClearRange = { range -> clearHistoryRange(range) },
+            clearCounts = historyClearCounts()
         )
 
         Screen.SETTINGS -> SettingsScreen(
@@ -3599,10 +3647,8 @@ fun BrowserApp(
             speedDialCount = speedDials.size,
             onOpenReleaseUrl = { url -> openUrl(url) },
             onBack = { screen = Screen.BROWSER },
-            onClearHistory = {
-                history.clear()
-                store.clearHistory()
-            },
+            onClearHistoryRange = { range -> clearHistoryRange(range) },
+            historyClearCounts = historyClearCounts(),
             onRemoveCompatSite = { removeCompatSite(it) },
             onRemoveDesktopSite = { removeDesktopSite(it) },
             onRemoveReaderSite = { removeReaderSite(it) },
@@ -5875,6 +5921,8 @@ private fun BrowserScreen(
     recentClosed: List<ClosedTabInfo>,
     onReopenClosed: (ClosedTabInfo) -> Unit,
     onNewTab: () -> Unit,
+    onNewTabWithEngine: (Engine) -> Unit = {},
+    mainEngine: Engine = Engine.GECKO,
     onNewIncognitoTab: (Engine) -> Unit,
     incognitoEngine: Engine,
     onIncognitoEngineChosen: (Engine) -> Unit,
@@ -5934,6 +5982,7 @@ private fun BrowserScreen(
         }
     }
     var showMenu by remember { mutableStateOf(false) }
+    var showNewTabMenu by remember { mutableStateOf(false) }
     var showIncognitoPicker by remember { mutableStateOf(false) }
     var showEngineSwitch by remember { mutableStateOf(false) }
     var showFindBar by remember { mutableStateOf(false) }
@@ -6490,7 +6539,91 @@ private fun BrowserScreen(
                 NavigationBarItem(
                     selected = false,
                     onClick = onNewTab,
-                    icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                    // Long-press menu (v0.79.0): a plain tap keeps
+                    // doing exactly what it always did (the item's
+                    // own onClick above); the combinedClickable on
+                    // the item's modifier only ADDS the long-press —
+                    // its own click handler is deliberately a no-op
+                    // so a tap can never create two tabs. Same
+                    // combinedClickable pattern as the back/forward
+                    // buttons in the address row.
+                    modifier = Modifier.combinedClickable(
+                        onClick = { },
+                        onLongClick = { showNewTabMenu = true }
+                    ),
+                    icon = {
+                        Box {
+                            Icon(Icons.Filled.Add, contentDescription = null)
+                            DropdownMenu(
+                                expanded = showNewTabMenu,
+                                onDismissRequest = { showNewTabMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("新建标签页") },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.Add, contentDescription = null)
+                                    },
+                                    onClick = { showNewTabMenu = false; onNewTab() }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("用火狐新建") },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.Language, contentDescription = null)
+                                    },
+                                    trailingIcon = if (mainEngine == Engine.GECKO) {
+                                        {
+                                            Text(
+                                                "默认",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    } else {
+                                        null
+                                    },
+                                    onClick = {
+                                        showNewTabMenu = false
+                                        onNewTabWithEngine(Engine.GECKO)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("用 WebView 新建") },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.Language, contentDescription = null)
+                                    },
+                                    trailingIcon = if (mainEngine == Engine.WEBVIEW) {
+                                        {
+                                            Text(
+                                                "默认",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    } else {
+                                        null
+                                    },
+                                    onClick = {
+                                        showNewTabMenu = false
+                                        onNewTabWithEngine(Engine.WEBVIEW)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("新建无痕标签页") },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.VisibilityOff, contentDescription = null)
+                                    },
+                                    onClick = {
+                                        showNewTabMenu = false
+                                        // NOT a shortcut around the
+                                        // picker: the incognito
+                                        // engine is still chosen in
+                                        // the usual dialog (v0.2.0).
+                                        showIncognitoPicker = true
+                                    }
+                                )
+                            }
+                        }
+                    },
                     label = { Text("新建") }
                 )
                 NavigationBarItem(
@@ -8976,6 +9109,55 @@ private fun BookmarksScreen(
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
+/**
+ * Range picker + confirmation for clearing history (v0.79.0):
+ * one official AlertDialog shared by the history page and the
+ * settings page, so both entry points offer exactly the same
+ * three ranges with the same per-range counts. Picking a range
+ * and pressing 清除 is the whole flow — the range wording and
+ * the count ARE the confirmation.
+ */
+@Composable
+private fun HistoryRangeClearDialog(
+    counts: Map<HistoryClearRange, Int>,
+    onDismiss: () -> Unit,
+    onConfirm: (HistoryClearRange) -> Unit
+) {
+    var selected by remember { mutableStateOf(HistoryClearRange.ALL) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("清除历史记录") },
+        text = {
+            Column {
+                Text("选择要清除的时间范围，范围之外的记录会保留。")
+                HistoryClearRange.entries.forEach { range ->
+                    ListItem(
+                        headlineContent = { Text(range.label) },
+                        supportingContent = {
+                            Text("将清除 ${counts[range] ?: 0} 条")
+                        },
+                        leadingContent = {
+                            RadioButton(
+                                selected = selected == range,
+                                onClick = { selected = range }
+                            )
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selected = range }
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onConfirm(selected) }) { Text("清除") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
+}
+
 private fun HistoryScreen(
     history: List<HistoryItem>,
     onBack: () -> Unit,
@@ -8987,8 +9169,10 @@ private fun HistoryScreen(
     onSwipeUndo: (HistoryItem) -> Unit,
     onSwipeCommit: () -> Unit,
     onDeleteSite: (String) -> Unit,
-    onClear: () -> Unit
+    onClearRange: (HistoryClearRange) -> Unit,
+    clearCounts: Map<HistoryClearRange, Int>
 ) {
+    var showClearDialog by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     // Long-press menu target (v0.53.0) and the pending "delete this
     // site's history" confirmation (host + live count). Both live
@@ -9142,21 +9326,19 @@ private fun HistoryScreen(
                 item {
                     OutlinedButton(
                         onClick = {
-                            // Clearing everything also drops the
-                            // site filter (v0.65.0): nothing is left
-                            // for it to filter. A pending swipe
-                            // deletion is committed first (v0.71.0)
-                            // so its undo cannot resurrect an entry
-                            // into the just-cleared list.
+                            // A pending swipe deletion is
+                            // committed first (v0.71.0) so its undo
+                            // cannot resurrect an entry into the
+                            // just-cleared list. The range dialog
+                            // (v0.79.0) then decides how much goes.
                             commitPendingSwipeDelete()
-                            siteFilter = null
-                            onClear()
+                            showClearDialog = true
                         },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 8.dp)
                     ) {
-                        Text("清除全部历史")
+                        Text("清除历史记录")
                     }
                 }
             }
@@ -9457,6 +9639,22 @@ private fun HistoryScreen(
                 TextButton(onClick = { siteDeleteTarget = null }) {
                     Text("取消")
                 }
+            }
+        )
+    }
+    if (showClearDialog) {
+        HistoryRangeClearDialog(
+            counts = clearCounts,
+            onDismiss = { showClearDialog = false },
+            onConfirm = { range ->
+                showClearDialog = false
+                // Clearing everything also drops the site filter
+                // (v0.65.0): nothing is left for it to filter. A
+                // windowed clear keeps the filter — entries outside
+                // the window survive, and the filtered view simply
+                // refreshes from the shared list.
+                if (range == HistoryClearRange.ALL) siteFilter = null
+                onClearRange(range)
             }
         )
     }
@@ -11298,7 +11496,8 @@ private fun SettingsScreen(
     speedDialCount: Int = 0,
     onOpenReleaseUrl: (String) -> Unit = {},
     onBack: () -> Unit,
-    onClearHistory: () -> Unit,
+    onClearHistoryRange: (HistoryClearRange) -> Unit = {},
+    historyClearCounts: Map<HistoryClearRange, Int> = emptyMap(),
     onRemoveCompatSite: (String) -> Unit,
     onRemoveDesktopSite: (String) -> Unit = {},
     onRemoveReaderSite: (String) -> Unit = {},
@@ -11381,6 +11580,7 @@ private fun SettingsScreen(
     var readerList by remember(refreshTick) { mutableStateOf(store.loadReaderSites().sorted()) }
     var showClearDesktopConfirm by remember { mutableStateOf(false) }
     var showCleared by remember { mutableStateOf(false) }
+    var showHistoryClearDialog by remember { mutableStateOf(false) }
     var defaultTick by remember { mutableStateOf(0) }
     val settingsContext = LocalContext.current
     val roleManager = remember {
@@ -12626,7 +12826,7 @@ private fun SettingsScreen(
             }
             item {
                 OutlinedButton(
-                    onClick = { onClearHistory(); showCleared = true },
+                    onClick = { showHistoryClearDialog = true },
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("清除历史记录")
@@ -12785,6 +12985,17 @@ private fun SettingsScreen(
             item { Spacer(modifier = Modifier.padding(bottom = 24.dp)) }            }
 
         }
+    }
+    if (showHistoryClearDialog) {
+        HistoryRangeClearDialog(
+            counts = historyClearCounts,
+            onDismiss = { showHistoryClearDialog = false },
+            onConfirm = { range ->
+                showHistoryClearDialog = false
+                onClearHistoryRange(range)
+                showCleared = true
+            }
+        )
     }
     val newRelease = updateAvailable
     if (newRelease != null) {

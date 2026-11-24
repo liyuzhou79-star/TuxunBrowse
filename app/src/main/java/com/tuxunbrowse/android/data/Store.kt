@@ -201,6 +201,51 @@ fun sortedBookmarksForDisplay(
 }
 data class HistoryItem(val title: String, val url: String, val time: Long)
 
+/**
+ * Time ranges offered when clearing history (v0.79.0). A range is
+ * a window ending NOW: clearing removes every entry whose
+ * timestamp falls inside the window and keeps everything older.
+ * [windowMillis] is null for ALL, which has no lower bound.
+ */
+enum class HistoryClearRange(val label: String, val windowMillis: Long?) {
+    LAST_HOUR("最近一小时", 3_600_000L),
+    LAST_24_HOURS("最近 24 小时", 86_400_000L),
+    ALL("全部时间", null)
+}
+
+/**
+ * The cutoff timestamp for a ranged history clear (v0.79.0): an
+ * entry is removed iff its time is >= the returned cutoff, so an
+ * entry timestamped exactly AT the cutoff is inside the window
+ * and is removed. ALL returns [Long.MIN_VALUE], which every real
+ * timestamp satisfies.
+ */
+fun historyClearCutoff(range: HistoryClearRange, nowMillis: Long): Long =
+    range.windowMillis?.let { nowMillis - it } ?: Long.MIN_VALUE
+
+/** Whether an entry timestamp falls inside a clear window. */
+fun isInClearRange(timeMillis: Long, cutoff: Long): Boolean = timeMillis >= cutoff
+
+/** How many entries a clear with [cutoff] would remove. */
+fun countHistoryInClearRange(items: List<HistoryItem>, cutoff: Long): Int =
+    items.count { isInClearRange(it.time, cutoff) }
+
+/** The entries that SURVIVE a clear with [cutoff], order kept. */
+fun keptHistoryAfterClear(items: List<HistoryItem>, cutoff: Long): List<HistoryItem> =
+    items.filter { !isInClearRange(it.time, cutoff) }
+
+/**
+ * The four stored lists the startup effect parses off the main
+ * thread (v0.28.0, folders added v0.79.0). Bundled into one value
+ * so the background load is a single call.
+ */
+data class StartupLists(
+    val bookmarks: List<Bookmark>,
+    val history: List<HistoryItem>,
+    val readingList: List<ReadingItem>,
+    val bookmarkFolders: List<String>
+)
+
 /** One "read it later" entry: a saved page, with its read/unread state. */
 data class ReadingItem(
     val title: String,
@@ -1513,6 +1558,14 @@ class Store(context: Context) {
             .forEach { arr.put(it) }
         prefs.edit().putString(KEY_BOOKMARK_FOLDERS, arr.toString()).apply()
     }
+
+    /** All startup lists in one call; call off the main thread. */
+    fun loadStartupLists(): StartupLists = StartupLists(
+        bookmarks = loadBookmarks(),
+        history = loadHistory(),
+        readingList = loadReadingList(),
+        bookmarkFolders = loadBookmarkFolders()
+    )
 
     fun loadHistory(): MutableList<HistoryItem> = readList(KEY_HISTORY) {
         HistoryItem(it.optString("title"), it.optString("url"), it.optLong("time"))
