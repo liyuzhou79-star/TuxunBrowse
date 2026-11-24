@@ -11903,7 +11903,7 @@ private fun SettingsScreen(
                     }
                     Row {
                         Text(
-                            "Github：",
+                            "GitHub：",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
