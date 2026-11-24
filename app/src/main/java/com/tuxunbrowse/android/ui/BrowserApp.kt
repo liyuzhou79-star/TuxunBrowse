@@ -3921,18 +3921,58 @@ fun BrowserApp(
         Screen.CLEAR_DATA -> ClearDataScreen(
             geckoStarted = GeckoHolder.hasRuntime,
             onBack = { screen = Screen.SETTINGS },
-            onClear = { clearHistorySel, clearWebView, clearGecko ->
+            onClear = { clearHistorySel, clearWebView, clearGecko, onDone ->
                 if (clearHistorySel) {
                     history.clear()
                     store.clearHistory()
                 }
-                if (clearWebView) {
-                    android.webkit.CookieManager.getInstance().removeAllCookies(null)
-                    android.webkit.CookieManager.getInstance().flush()
-                    android.webkit.WebStorage.getInstance().deleteAllData()
-                }
                 if (clearGecko) {
                     GeckoHolder.clearSiteData()
+                }
+                if (clearWebView) {
+                    // Full WebView spectrum (v0.129.0 site-data
+                    // audit): cookies + web storage, PLUS the HTTP
+                    // cache (via a throwaway WebView, the same trick
+                    // as the startup auto-clear — it touches cache
+                    // only and needs no live tab), saved form data
+                    // and saved HTTP-auth credentials. SSL error
+                    // decisions are NOT covered: clearing them needs
+                    // a live WebView instance API whose profile-wide
+                    // effect from a throwaway view is unverified, so
+                    // nothing claims them.
+                    try {
+                        val tempWebView = android.webkit.WebView(context)
+                        try {
+                            tempWebView.clearCache(true)
+                        } finally {
+                            tempWebView.destroy()
+                        }
+                        val webDb = android.webkit.WebViewDatabase.getInstance(context)
+                        webDb.clearFormData()
+                        webDb.clearHttpAuthUsernamePassword()
+                    } catch (t: Throwable) {
+                        // Best-effort: the cookie/storage clear below
+                        // is the part the page promises first.
+                    }
+                    android.webkit.WebStorage.getInstance().deleteAllData()
+                    // removeAllCookies is asynchronous: the page's
+                    // "cleared" message must wait for the completion
+                    // callback instead of reporting success the
+                    // moment the call returns (v0.129.0 — the same
+                    // false-completion class the v0.125.0 per-site
+                    // fix removed). flush() runs inside the callback
+                    // so the empty jar is what gets persisted.
+                    android.webkit.CookieManager.getInstance()
+                        .removeAllCookies {
+                            try {
+                                android.webkit.CookieManager.getInstance().flush()
+                            } catch (t: Throwable) {
+                                // Persistence is best-effort only.
+                            }
+                            onDone()
+                        }
+                } else {
+                    onDone()
                 }
             },
         )
@@ -11174,7 +11214,7 @@ private fun DownloadsScreen(
 private fun ClearDataScreen(
     geckoStarted: Boolean,
     onBack: () -> Unit,
-    onClear: (Boolean, Boolean, Boolean) -> Unit
+    onClear: (Boolean, Boolean, Boolean, () -> Unit) -> Unit
 ) {
     var clearHistorySel by remember { mutableStateOf(true) }
     var clearWebView by remember { mutableStateOf(true) }
@@ -11224,9 +11264,15 @@ private fun ClearDataScreen(
             confirmButton = {
                 Button(onClick = {
                     showConfirm = false
-                    onClear(clearHistorySel, clearWebView, clearGecko)
-                    doneText = "已清除勾选的数据。"
-                    storageTick++
+                    // The done message waits for the clear's real
+                    // completion callback (v0.129.0): the WebView
+                    // cookie removal is asynchronous, so reporting
+                    // success here, before it lands, would be a
+                    // false completion.
+                    onClear(clearHistorySel, clearWebView, clearGecko) {
+                        doneText = "已清除勾选的数据。"
+                        storageTick++
+                    }
                 }) { Text("清除") }
             },
             dismissButton = {
@@ -11319,6 +11365,11 @@ private fun ClearDataScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(top = 8.dp)
                 )
+                Text(
+                    "清除不会删掉你导出到下载文件夹的备份文件和书签文件。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
             item {
                 ListItem(
@@ -11334,7 +11385,7 @@ private fun ClearDataScreen(
             }
             item {
                 ListItem(
-                    headlineContent = { Text("系统 WebView 的 Cookie 和网站数据") },
+                    headlineContent = { Text("系统 WebView 的 Cookie、网站数据和缓存") },
                     supportingContent = { Text("清完后用系统 WebView 打开的网站都要重新登录。") },
                     trailingContent = {
                         Switch(
@@ -11352,7 +11403,8 @@ private fun ClearDataScreen(
                             if (geckoStarted) {
                                 "清完后用火狐打开的网站都要重新登录。"
                             } else {
-                                "火狐内核这次还没启动过，没有数据需要清。"
+                                "火狐内核还没启动，这次清不了火狐数据；" +
+                                    "先打开一个火狐标签，再回来清。"
                             }
                         )
                     },

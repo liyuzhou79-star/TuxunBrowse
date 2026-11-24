@@ -1737,12 +1737,25 @@ class BrowserTab(
         // Third-party cookies stay allowed: blocking them breaks
         // real sign-in flows (SSO redirect chains, payment pages
         // embedded in iframes) far more often than it helps.
+        // First-party acceptance is pinned to the platform default
+        // (true) explicitly as well (v0.129.0 site-data audit), so
+        // the whole cookie policy is on the record, not on OEM
+        // defaults. Zero behaviour change.
         try {
+            CookieManager.getInstance().setAcceptCookie(true)
             CookieManager.getInstance()
                 .setAcceptThirdPartyCookies(view, true)
         } catch (t: Throwable) {
             // Cookie policy is best-effort only; browsing must still work.
         }
+        // Cache mode pinned to the platform default (LOAD_DEFAULT:
+        // honour the server's cache headers) explicitly, in the
+        // same pin-the-defaults spirit as the v0.113.0 pass
+        // (v0.129.0 site-data audit). It was previously left unset,
+        // which happens to mean LOAD_DEFAULT on current Android —
+        // pinned now so an OEM WebView cannot drift it. Zero
+        // behaviour change.
+        view.settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
         // Safe Browsing, turned on explicitly through AndroidX WebKit.
         // Devices whose WebView does not support it are skipped quietly.
         try {
