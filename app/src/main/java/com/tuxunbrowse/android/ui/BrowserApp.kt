@@ -4958,12 +4958,22 @@ private fun HomeContent(
             }
         )
     }
-    // Home quick-access list, memoised on the bookmark list
-    // (v0.96.0 fluency pass): pinned first, at most eight. The sort
-    // used to re-run over the whole bookmark list (imports can hold
-    // thousands) on every recomposition of the home grid.
-    val homeBookmarks = remember(bookmarks) {
-        bookmarks.sortedByDescending { it.pinned }.take(8)
+    // Home quick-access list: pinned first, at most eight. The
+    // v0.96.0 fluency pass memoised this with remember(bookmarks),
+    // but that key is the ONE snapshot-state list instance the app
+    // keeps for its whole lifetime — it never changes identity, so
+    // the cached sort never re-ran while this page stayed composed:
+    // deleting or pinning a bookmark from THIS page's own long-press
+    // menu left the grid showing the old card / old order until the
+    // page was left and re-entered (v0.117.0 home audit). A derived
+    // state keeps the fluency property (the sort re-runs only when
+    // the bookmark list actually changes, not on every
+    // recomposition) and stays live, exactly like the suggestion
+    // list above.
+    val homeBookmarks by remember {
+        derivedStateOf {
+            bookmarks.sortedByDescending { it.pinned }.take(8)
+        }
     }
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
