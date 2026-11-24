@@ -1671,6 +1671,16 @@ class BrowserTab(
                         override fun handleMessage(msg: Message) {
                             if (fired) return
                             fired = true
+                            // The answer (and the fallback below)
+                            // only counts while this tab still owns
+                            // this exact WebView (v0.106.0 timer
+                            // audit): if the tab was slept, destroyed
+                            // or rebuilt in the meantime, its view is
+                            // gone and a context menu for it must
+                            // never pop up over whatever the user is
+                            // looking at now — same liveness guard as
+                            // captureThumbnailDeferred.
+                            if (webView !== wv) return
                             val img = (msg.obj as? String)
                                 ?.takeIf { it.isNotBlank() }
                             onPageContextMenu(extra, img)
@@ -1687,7 +1697,9 @@ class BrowserTab(
                     handler.postDelayed({
                         if (!fired) {
                             fired = true
-                            onPageContextMenu(extra, null)
+                            if (webView === wv) {
+                                onPageContextMenu(extra, null)
+                            }
                         }
                     }, 300)
                     true
