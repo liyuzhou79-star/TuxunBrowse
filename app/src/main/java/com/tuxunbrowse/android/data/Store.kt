@@ -2648,6 +2648,64 @@ fun bookmarksToJson(list: List<Bookmark>): String {
         .toString(2)
 }
 
+/** Escape text for HTML output: & first, so escapes are not re-escaped. */
+private fun escapeHtmlText(text: String): String {
+    var out = text
+    out = out.replace("&", "&amp;")
+    out = out.replace("<", "&lt;")
+    out = out.replace(">", "&gt;")
+    out = out.replace("\"", "&quot;")
+    return out
+}
+
+/**
+ * Export bookmarks in the standard Netscape HTML format (v0.90.0),
+ * the mirror image of [bookmarksFromHtml]: uncategorized entries at
+ * the root of the list, then one folder section per folder in
+ * first-appearance order. Other browsers can import this file
+ * directly. The pinned flag has no HTML representation and is not
+ * carried — the JSON export remains the lossless one. The output
+ * round-trips through [bookmarksFromHtml] with titles, URLs and
+ * folders intact.
+ */
+fun bookmarksToHtml(list: List<Bookmark>): String {
+    val sb = StringBuilder()
+    sb.append("<!DOCTYPE NETSCAPE-Bookmark-file-1>\n")
+    sb.append(
+        "<META HTTP-EQUIV=\"Content-Type\" " +
+            "CONTENT=\"text/html; charset=UTF-8\">\n"
+    )
+    sb.append("<TITLE>Bookmarks</TITLE>\n")
+    sb.append("<H1>Bookmarks</H1>\n")
+    sb.append("<DL><p>\n")
+    fun entry(b: Bookmark, indent: String) {
+        sb.append(indent)
+            .append("<DT><A HREF=\"")
+            .append(escapeHtmlText(b.url))
+            .append("\">")
+            .append(escapeHtmlText(b.title))
+            .append("</A>\n")
+    }
+    for (b in list) {
+        if (b.folder.isBlank()) entry(b, "    ")
+    }
+    val folderOrder = mutableListOf<String>()
+    for (b in list) {
+        val f = b.folder.trim()
+        if (f.isNotEmpty() && f !in folderOrder) folderOrder.add(f)
+    }
+    for (f in folderOrder) {
+        sb.append("    <DT><H3>").append(escapeHtmlText(f)).append("</H3>\n")
+        sb.append("    <DL><p>\n")
+        for (b in list) {
+            if (b.folder.trim() == f) entry(b, "        ")
+        }
+        sb.append("    </DL><p>\n")
+    }
+    sb.append("</DL><p>\n")
+    return sb.toString()
+}
+
 /** Parse an exported bookmarks file (our object format or a bare array). */
 fun bookmarksFromJson(raw: String): List<Bookmark> {
     val trimmed = raw.trim()

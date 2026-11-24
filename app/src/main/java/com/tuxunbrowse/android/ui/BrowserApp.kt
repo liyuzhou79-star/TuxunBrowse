@@ -227,6 +227,7 @@ import com.tuxunbrowse.android.data.backupToJson
 import com.tuxunbrowse.android.data.parseBackup
 import com.tuxunbrowse.android.data.bookmarksFromHtml
 import com.tuxunbrowse.android.data.bookmarksFromJson
+import com.tuxunbrowse.android.data.bookmarksToHtml
 import com.tuxunbrowse.android.data.bookmarksToJson
 import com.tuxunbrowse.android.data.MAX_IMPORT_FILE_CHARS
 import com.tuxunbrowse.android.data.isValidCustomSearchTemplate
@@ -3010,6 +3011,14 @@ fun BrowserApp(
         }
     }
 
+    // Bookmark export (v0.90.0): tapping export now asks for the
+    // format first — this app's JSON (lossless: pinned + folders) or
+    // the standard HTML every other browser can import (folders
+    // carried, pinned not representable). The write itself is the
+    // same MediaStore-to-Downloads path for both.
+    var showExportFormatDialog by remember { mutableStateOf(false) }
+    var exportAsHtml by remember { mutableStateOf(false) }
+
     fun exportBookmarks() {
         if (bookmarks.isEmpty()) {
             android.widget.Toast.makeText(
@@ -3017,14 +3026,27 @@ fun BrowserApp(
             ).show()
             return
         }
-        val json = bookmarksToJson(bookmarks)
-        val fileName = "tuxunbrowse-bookmarks.json"
+        showExportFormatDialog = true
+    }
+
+    fun doExportBookmarks(html: Boolean) {
+        val content = if (html) {
+            bookmarksToHtml(bookmarks)
+        } else {
+            bookmarksToJson(bookmarks)
+        }
+        val fileName = if (html) {
+            "tuxunbrowse-bookmarks.html"
+        } else {
+            "tuxunbrowse-bookmarks.json"
+        }
+        val mimeType = if (html) "text/html" else "application/json"
         try {
             if (android.os.Build.VERSION.SDK_INT >= 29) {
                 val resolver = context.contentResolver
                 val values = android.content.ContentValues().apply {
                     put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName)
-                    put(android.provider.MediaStore.Downloads.MIME_TYPE, "application/json")
+                    put(android.provider.MediaStore.Downloads.MIME_TYPE, mimeType)
                     put(
                         android.provider.MediaStore.Downloads.RELATIVE_PATH,
                         android.os.Environment.DIRECTORY_DOWNLOADS
@@ -3034,13 +3056,13 @@ fun BrowserApp(
                     android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
                 ) ?: throw IllegalStateException("insert failed")
                 resolver.openOutputStream(dest)?.use {
-                    it.write(json.toByteArray(Charsets.UTF_8))
+                    it.write(content.toByteArray(Charsets.UTF_8))
                 }
             } else {
                 val dir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
                     ?: context.filesDir
                 java.io.File(dir, fileName)
-                    .writeText(json, Charsets.UTF_8)
+                    .writeText(content, Charsets.UTF_8)
             }
             android.widget.Toast.makeText(
                 context, "书签已导出到下载文件夹：$fileName",
@@ -3051,6 +3073,55 @@ fun BrowserApp(
                 context, "导出失败，请重试", android.widget.Toast.LENGTH_LONG
             ).show()
         }
+    }
+
+    if (showExportFormatDialog) {
+        AlertDialog(
+            onDismissRequest = { showExportFormatDialog = false },
+            title = { Text("导出书签") },
+            text = {
+                Column {
+                    Text("导出成哪种文件？都会存到下载文件夹。")
+                    ListItem(
+                        headlineContent = { Text("本应用 JSON 格式") },
+                        supportingContent = {
+                            Text("信息最全：置顶和文件夹都在。适合导回本应用或留作备份。")
+                        },
+                        leadingContent = {
+                            RadioButton(
+                                selected = !exportAsHtml,
+                                onClick = { exportAsHtml = false }
+                            )
+                        },
+                        modifier = Modifier.clickable { exportAsHtml = false }
+                    )
+                    ListItem(
+                        headlineContent = { Text("通用 HTML 格式") },
+                        supportingContent = {
+                            Text("Chrome、火狐等其他浏览器也能导入的通用书签文件；文件夹会带上，置顶不会带。")
+                        },
+                        leadingContent = {
+                            RadioButton(
+                                selected = exportAsHtml,
+                                onClick = { exportAsHtml = true }
+                            )
+                        },
+                        modifier = Modifier.clickable { exportAsHtml = true }
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showExportFormatDialog = false
+                    doExportBookmarks(exportAsHtml)
+                }) { Text("导出") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExportFormatDialog = false }) {
+                    Text("取消")
+                }
+            }
+        )
     }
 
     fun openUrl(url: String, httpsUpgrade: Boolean = false) {
