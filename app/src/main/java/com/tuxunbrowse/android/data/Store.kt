@@ -2710,8 +2710,17 @@ private fun decodeHtmlEntities(text: String): String {
     return out
 }
 
-private val HTML_BOOKMARK_REGEX = Regex(
-    "<A\\s[^>]*?HREF\\s*=\\s*\"([^\"]*)\"[^>]*>(.*?)</A>",
+/**
+ * One pass over a Netscape bookmark file needs three token kinds:
+ * list open/close (the folder structure lives in how `<DL>` lists
+ * nest), folder headings (`<H3>`), and the links themselves.
+ * Group 1 is the closing slash of a `<DL>` token, group 2 a folder
+ * name, groups 3/4 a link's href and title; exactly one alternative
+ * participates per match.
+ */
+private val HTML_TOKEN_REGEX = Regex(
+    "<(/?)DL\\b[^>]*>|<H3\\b[^>]*>(.*?)</H3>|" +
+        "<A\\s[^>]*?HREF\\s*=\\s*\"([^\"]*)\"[^>]*>(.*?)</A>",
     setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
 )
 
@@ -2723,23 +2732,62 @@ private val HTML_BOOKMARK_REGEX = Regex(
  * (v0.31.0: file: entries are skipped too — imported bookmarks are
  * inbound data and follow the same http/https-only rule as every
  * other outside link; see isAllowedPageUrl.)
+ *
+ * Folder structure (v0.89.0): a `<H3>` heading names the folder
+ * whose entries live in the `<DL>` list that follows it, and lists
+ * nest. Each bookmark takes the innermost folder it sits in (this
+ * app's folders are one flat level, so a nested export folder lands
+ * under its deepest heading); entries outside any folder list keep
+ * the empty folder, i.e. uncategorized. A heading whose list never
+ * opens names nothing. Folder display needs no extra bookkeeping:
+ * allBookmarkFolders derives folder names from the bookmarks
+ * themselves, exactly like the JSON import path.
  * De-duplication against existing bookmarks is the caller's job.
  */
 fun bookmarksFromHtml(raw: String): Pair<List<Bookmark>, Int> {
     val out = mutableListOf<Bookmark>()
     var skipped = 0
-    for (match in HTML_BOOKMARK_REGEX.findAll(raw)) {
-        if (out.size >= MAX_IMPORT_ENTRIES) break
-        val href = decodeHtmlEntities(match.groupValues[1].trim())
-        val scheme = href.substringBefore("://", "").lowercase()
-        if (href.isBlank() || (scheme != "http" && scheme != "https")) {
-            skipped++
-            continue
+    val folderStack = mutableListOf<String>()
+    var pendingFolder: String? = null
+    for (match in HTML_TOKEN_REGEX.findAll(raw)) {
+        val groups = match.groups
+        when {
+            groups[3] != null -> {
+                if (out.size >= MAX_IMPORT_ENTRIES) break
+                val href = decodeHtmlEntities(groups[3]!!.value.trim())
+                val scheme = href.substringBefore("://", "").lowercase()
+                if (href.isBlank() || (scheme != "http" && scheme != "https")) {
+                    skipped++
+                    continue
+                }
+                val title = decodeHtmlEntities(
+                    groups[4]!!.value.replace(Regex("<[^>]+>"), "").trim()
+                )
+                out.add(
+                    Bookmark(
+                        title.ifBlank { href }, href,
+                        folder = folderStack.lastOrNull().orEmpty()
+                    )
+                )
+            }
+            groups[2] != null -> {
+                pendingFolder = normalizeBookmarkFolderName(
+                    decodeHtmlEntities(
+                        groups[2]!!.value.replace(Regex("<[^>]+>"), "").trim()
+                    )
+                )
+            }
+            groups[1] != null -> {
+                if (groups[1]!!.value == "/") {
+                    if (folderStack.isNotEmpty()) {
+                        folderStack.removeAt(folderStack.lastIndex)
+                    }
+                } else {
+                    folderStack.add(pendingFolder.orEmpty())
+                }
+                pendingFolder = null
+            }
         }
-        val title = decodeHtmlEntities(
-            match.groupValues[2].replace(Regex("<[^>]+>"), "").trim()
-        )
-        out.add(Bookmark(title.ifBlank { href }, href))
     }
     return out to skipped
 }
