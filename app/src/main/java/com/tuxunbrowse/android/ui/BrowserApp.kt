@@ -2484,12 +2484,22 @@ fun BrowserApp(
      * own history entries for the host (subdomains included). The
      * system WebView has no per-site API, so WebView data is NOT
      * touched here — callers say so in their copy.
+     *
+     * Returns whether the Gecko-side clear was actually dispatched
+     * (v0.125.0 site-info audit): GeckoHolder.clearDataFromHost
+     * returns false when the Gecko runtime has not started this
+     * session (both engine choices set to the system WebView, or a
+     * failed start) — Gecko data saved by earlier sessions is still
+     * on disk then, so claiming "cleared" would be false. The
+     * history half always runs. Callers must word their result
+     * message from this return value, never assume success.
      */
-    fun clearSiteData(host: String) {
-        GeckoHolder.clearDataFromHost(host)
+    fun clearSiteData(host: String): Boolean {
+        val geckoCleared = GeckoHolder.clearDataFromHost(host)
         val before = history.size
         history.removeAll { hostMatchesSite(hostOf(it.url), host) }
         if (history.size != before) store.saveHistory(history)
+        return geckoCleared
     }
 
     /**
@@ -5654,7 +5664,7 @@ private fun BrowserScreen(
     onEngineFallbackRetry: () -> Unit = {},
     onSwitchEngine: (Engine, Boolean) -> Unit,
     onToggleSiteCompat: () -> Unit = {},
-    onClearSiteData: (String) -> Unit = {},
+    onClearSiteData: (String) -> Boolean = { true },
     activeDesktopMode: Boolean,
     onToggleDesktopMode: (Boolean) -> Unit,
     onFind: (String, Boolean) -> Unit,
@@ -7122,9 +7132,20 @@ private fun BrowserScreen(
             confirmButton = {
                 Button(onClick = {
                     showClearSiteConfirm = false
-                    onClearSiteData(siteHost)
+                    val geckoCleared = onClearSiteData(siteHost)
                     android.widget.Toast.makeText(
-                        context, "已清除 $siteHost 在火狐里的数据和本机历史",
+                        context,
+                        if (geckoCleared) {
+                            "已清除 $siteHost 在火狐里的数据和本机历史"
+                        } else {
+                            // The Gecko runtime never started this
+                            // session, so its saved site data could
+                            // not be touched (v0.125.0): say so
+                            // instead of claiming a clear that did
+                            // not happen. The history half did run.
+                            "本机历史已删；火狐里的数据这次没清成" +
+                                "（火狐内核还没启动），打开一个火狐标签后再清一次"
+                        },
                         android.widget.Toast.LENGTH_LONG
                     ).show()
                 }) { Text("清除") }
@@ -7277,6 +7298,11 @@ private fun BrowserScreen(
                                 showSiteInfo = false
                                 onToggleSiteCompat()
                             },
+                            // Same guard as the clear-data button
+                            // below (v0.125.0): with no parseable
+                            // host the toggle would close the sheet
+                            // and silently do nothing.
+                            enabled = siteHost != null,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(top = 8.dp)
