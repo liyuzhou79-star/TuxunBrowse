@@ -13,6 +13,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image as FoundationImage
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -104,6 +105,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
@@ -112,7 +114,14 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Switch
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -208,8 +217,12 @@ import com.tuxunbrowse.android.data.fetchSearchSuggestions
 import com.tuxunbrowse.android.data.mergedOnlineSuggestionRows
 import com.tuxunbrowse.android.data.shouldFetchOnlineSuggestions
 import com.tuxunbrowse.android.data.isUrlLikeInput
+import com.tuxunbrowse.android.data.SETTINGS_SEARCH_INDEX
 import com.tuxunbrowse.android.data.blockedDayKey
+import com.tuxunbrowse.android.data.filterSettingsIndex
+import com.tuxunbrowse.android.data.historyRestoreIndex
 import com.tuxunbrowse.android.data.recentBlockedSeries
+import com.tuxunbrowse.android.data.shouldPreheatGecko
 import com.tuxunbrowse.android.data.matchRange
 import com.tuxunbrowse.android.data.matchSuggestions
 import com.tuxunbrowse.android.data.resolveInput
@@ -490,6 +503,25 @@ fun BrowserApp(
     LaunchedEffect(screen) {
         searchEngineState = store.searchEngine
         searchSuggestionsState = store.searchSuggestionsEnabled
+    }
+    // Gecko warm-up (v0.71.0): the runtime used to be created only
+    // when the first Firefox tab was opened, and that tab sat
+    // waiting for it. When either engine choice is Firefox, kick
+    // the creation off right after the first frame, on a background
+    // dispatcher — the first screen never waits for it, and when
+    // both engines are the system WebView nothing is created at
+    // all. A failed warm-up is silent by design: ensure() leaves
+    // the runtime null and the first real Firefox tab retries
+    // through the existing path (plain-language fallback page
+    // included), exactly as before.
+    LaunchedEffect(Unit) {
+        if (shouldPreheatGecko(store.mainEngine, store.incognitoEngine)) {
+            kotlinx.coroutines.withContext(
+                kotlinx.coroutines.Dispatchers.Default
+            ) {
+                GeckoHolder.ensure(context.applicationContext)
+            }
+        }
     }
     // Bumped whenever something outside the settings page rewrites
     // the stored settings wholesale (today: a backup import). The
@@ -2903,6 +2935,21 @@ fun BrowserApp(
             },
             onDelete = {
                 history.remove(it)
+                store.saveHistory(history)
+            },
+            onSwipeRemove = {
+                // Memory only (v0.71.0): the removal reaches disk
+                // when the undo window closes (onSwipeCommit) —
+                // or never, when undo restores the entry instead.
+                history.remove(it)
+            },
+            onSwipeUndo = {
+                // Back in by its own timestamp, then saved, so the
+                // restored order is the order it was deleted from.
+                history.add(historyRestoreIndex(history, it), it)
+                store.saveHistory(history)
+            },
+            onSwipeCommit = {
                 store.saveHistory(history)
             },
             onDeleteSite = { host ->
@@ -7515,6 +7562,9 @@ private fun HistoryScreen(
     onOpenInNewTab: (HistoryItem) -> Unit,
     onCopyUrl: (HistoryItem) -> Unit,
     onDelete: (HistoryItem) -> Unit,
+    onSwipeRemove: (HistoryItem) -> Unit,
+    onSwipeUndo: (HistoryItem) -> Unit,
+    onSwipeCommit: () -> Unit,
     onDeleteSite: (String) -> Unit,
     onClear: () -> Unit
 ) {
@@ -7574,10 +7624,66 @@ private fun HistoryScreen(
             .map { bucket -> bucket to filtered.filter { bucketOf(it) == bucket } }
             .filter { it.second.isNotEmpty() }
     }
+    // Swipe-to-delete with undo (v0.71.0): swiping a row from the
+    // end towards the start removes the entry from the in-memory
+    // list at once but does NOT save yet — the snackbar's undo
+    // window is the grace period. Undo puts the entry back by its
+    // own timestamp (historyRestoreIndex) and saves; the snackbar
+    // timing out or being dismissed commits the removal to disk.
+    // A second swipe while one deletion is still pending commits
+    // the first one first, so at most one entry is ever in limbo;
+    // the other history actions on this page (row delete button,
+    // long-press delete, per-site delete, clear-all) commit a
+    // pending swipe deletion before they save, for the same
+    // reason. Leaving the page commits too (DisposableEffect).
+    val snackbarHostState = remember { SnackbarHostState() }
+    val historyScope = rememberCoroutineScope()
+    var pendingSwipeDelete by remember {
+        mutableStateOf<HistoryItem?>(null)
+    }
+    val pendingSwipeDeleteState = rememberUpdatedState(pendingSwipeDelete)
+    fun commitPendingSwipeDelete() {
+        if (pendingSwipeDelete != null) {
+            pendingSwipeDelete = null
+            onSwipeCommit()
+        }
+    }
+    fun startSwipeDelete(item: HistoryItem) {
+        commitPendingSwipeDelete()
+        pendingSwipeDelete = item
+        onSwipeRemove(item)
+        historyScope.launch {
+            val result = snackbarHostState.showSnackbar(
+                message = "已删除一条历史记录",
+                actionLabel = "撤销",
+                duration = SnackbarDuration.Short
+            )
+            // A newer swipe may have taken over the pending slot
+            // (and already committed this one) while the snackbar
+            // was up; only the swipe that still owns the slot
+            // settles itself here.
+            if (pendingSwipeDelete == item) {
+                pendingSwipeDelete = null
+                if (result == SnackbarResult.ActionPerformed) {
+                    onSwipeUndo(item)
+                } else {
+                    onSwipeCommit()
+                }
+            }
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            if (pendingSwipeDeleteState.value != null) {
+                onSwipeCommit()
+            }
+        }
+    }
     // System back returns to the browser (v0.37.0); before this the
     // key finished the activity from every sub-page.
     BackHandler { onBack() }
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("历史记录") },
@@ -7617,7 +7723,11 @@ private fun HistoryScreen(
                         onClick = {
                             // Clearing everything also drops the
                             // site filter (v0.65.0): nothing is left
-                            // for it to filter.
+                            // for it to filter. A pending swipe
+                            // deletion is committed first (v0.71.0)
+                            // so its undo cannot resurrect an entry
+                            // into the just-cleared list.
+                            commitPendingSwipeDelete()
                             siteFilter = null
                             onClear()
                         },
@@ -7692,27 +7802,77 @@ private fun HistoryScreen(
                     )
                 }
                 items(bucketItems, key = { it.time.toString() + it.url }) { item ->
-                    ListItem(
-                        headlineContent = { Text(item.title) },
-                        supportingContent = { Text(item.url) },
-                        leadingContent = {
-                            Icon(Icons.Filled.History, contentDescription = null)
-                        },
-                        trailingContent = {
-                            IconButton(onClick = { onDelete(item) }) {
+                    // Swipe-to-delete (v0.71.0): official M3
+                    // SwipeToDismissBox, end-to-start only — the
+                    // other direction is disabled, so a row can
+                    // only ever be swiped away, never swiped into
+                    // some other action. The item handed over is
+                    // the very entry this row renders (identity by
+                    // url + time, the same key the list uses), so
+                    // search and site filters cannot shift the
+                    // deletion onto a different entry.
+                    val dismissState = rememberSwipeToDismissBoxState(
+                        confirmValueChange = { value ->
+                            if (value == SwipeToDismissBoxValue.EndToStart) {
+                                startSwipeDelete(item)
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                    )
+                    SwipeToDismissBox(
+                        state = dismissState,
+                        enableDismissFromStartToEnd = false,
+                        enableDismissFromEndToStart = true,
+                        backgroundContent = {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(
+                                        MaterialTheme.colorScheme.errorContainer
+                                    )
+                                    .padding(horizontal = 16.dp),
+                                contentAlignment = Alignment.CenterEnd
+                            ) {
                                 Icon(
                                     Icons.Filled.Delete,
-                                    contentDescription = "删除这条历史"
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme
+                                        .onErrorContainer
                                 )
                             }
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .combinedClickable(
-                                onClick = { onOpen(item) },
-                                onLongClick = { menuItem = item }
-                            )
-                    )
+                        }
+                    ) {
+                        ListItem(
+                            headlineContent = { Text(item.title) },
+                            supportingContent = { Text(item.url) },
+                            leadingContent = {
+                                Icon(Icons.Filled.History, contentDescription = null)
+                            },
+                            trailingContent = {
+                                IconButton(onClick = {
+                                    commitPendingSwipeDelete()
+                                    onDelete(item)
+                                }) {
+                                    Icon(
+                                        Icons.Filled.Delete,
+                                        contentDescription = "删除这条历史"
+                                    )
+                                }
+                            },
+                            colors = ListItemDefaults.colors(
+                                containerColor =
+                                    MaterialTheme.colorScheme.surface
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .combinedClickable(
+                                    onClick = { onOpen(item) },
+                                    onLongClick = { menuItem = item }
+                                )
+                        )
+                    }
                     HorizontalDivider()
                 }
             }
@@ -7783,6 +7943,7 @@ private fun HistoryScreen(
                                 .fillMaxWidth()
                                 .clickable {
                                     menuItem = null
+                                    commitPendingSwipeDelete()
                                     onDelete(menuTarget)
                                 }
                         )
@@ -7855,6 +8016,7 @@ private fun HistoryScreen(
             confirmButton = {
                 Button(onClick = {
                     siteDeleteTarget = null
+                    commitPendingSwipeDelete()
                     onDeleteSite(host)
                     // Settled rule (v0.65.0): when the site being
                     // viewed through the "only this site" filter is
@@ -9773,6 +9935,12 @@ private fun SettingsScreen(
     // categories, each opening its own sub-page. Back from a
     // sub-page returns here; back from home leaves settings.
     var settingsPage by remember { mutableStateOf("home") }
+    // Settings search (v0.71.0): home-only state, never persisted.
+    // While the query is non-blank the home list swaps its six
+    // category cards for the matching index entries; clearing the
+    // query (or tapping a result, which clears it too) brings the
+    // categories back.
+    var settingsQuery by remember { mutableStateOf("") }
     BackHandler(enabled = settingsPage != "home") { settingsPage = "home" }
     // From the settings home the same back key leaves settings for
     // the browser (v0.37.0): before this, no handler was enabled on
@@ -9900,38 +10068,108 @@ private fun SettingsScreen(
         ) {
             if (settingsPage == "home") {
                 item {
-                    Text(
-                        "点一个分类进去改，改完点左上角返回。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(top = 8.dp)
+                    OutlinedTextField(
+                        value = settingsQuery,
+                        onValueChange = { settingsQuery = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        singleLine = true,
+                        placeholder = {
+                            Text("搜索设置（比如：深色、历史、下载）")
+                        },
+                        leadingIcon = {
+                            Icon(Icons.Filled.Search, contentDescription = null)
+                        },
+                        trailingIcon = if (settingsQuery.isNotEmpty()) {
+                            {
+                                IconButton(onClick = { settingsQuery = "" }) {
+                                    Icon(
+                                        Icons.Filled.Close,
+                                        contentDescription = "清空搜索"
+                                    )
+                                }
+                            }
+                        } else {
+                            null
+                        }
                     )
                 }
-                items(
-                    listOf(
-                        Triple("engine", "内核与搜索引擎", Icons.Filled.Language),
-                        Triple("appearance", "外观与字体", Icons.Filled.Palette),
-                        Triple("privacy", "隐私与数据", Icons.Filled.Lock),
-                        Triple("download", "下载", Icons.Filled.Download),
-                        Triple("adblock", "广告拦截", Icons.Filled.VisibilityOff),
-                        Triple("about", "关于", Icons.Filled.Info)
+                if (settingsQuery.isBlank()) {
+                    item {
+                        Text(
+                            "点一个分类进去改，改完点左上角返回。",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                    items(
+                        listOf(
+                            Triple("engine", "内核与搜索引擎", Icons.Filled.Language),
+                            Triple("appearance", "外观与字体", Icons.Filled.Palette),
+                            Triple("privacy", "隐私与数据", Icons.Filled.Lock),
+                            Triple("download", "下载", Icons.Filled.Download),
+                            Triple("adblock", "广告拦截", Icons.Filled.VisibilityOff),
+                            Triple("about", "关于", Icons.Filled.Info)
+                        )
+                    ) { (key, label, icon) ->
+                        ElevatedCard(
+                            onClick = { settingsPage = key },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            ListItem(
+                                headlineContent = { Text(label) },
+                                leadingContent = {
+                                    Icon(icon, contentDescription = null)
+                                },
+                                trailingContent = {
+                                    Icon(
+                                        Icons.Filled.ChevronRight,
+                                        contentDescription = "进入"
+                                    )
+                                }
+                            )
+                        }
+                    }
+                } else {
+                    val matches = filterSettingsIndex(
+                        SETTINGS_SEARCH_INDEX, settingsQuery
                     )
-                ) { (key, label, icon) ->
-                    ElevatedCard(
-                        onClick = { settingsPage = key },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        ListItem(
-                            headlineContent = { Text(label) },
-                            leadingContent = {
-                                Icon(icon, contentDescription = null)
-                            },
-                            trailingContent = {
-                                Icon(
-                                    Icons.Filled.ChevronRight,
-                                    contentDescription = "进入"
+                    if (matches.isEmpty()) {
+                        item {
+                            EmptyState(
+                                Icons.Filled.Search,
+                                "没有找到相关的设置，换个词试试。"
+                            )
+                        }
+                    } else {
+                        items(matches, key = { it.page + "|" + it.name }) { entry ->
+                            ElevatedCard(
+                                onClick = {
+                                    settingsQuery = ""
+                                    settingsPage = entry.page
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                ListItem(
+                                    headlineContent = { Text(entry.name) },
+                                    supportingContent = {
+                                        Text("在「${entry.pageLabel}」里")
+                                    },
+                                    leadingContent = {
+                                        Icon(
+                                            Icons.Filled.Settings,
+                                            contentDescription = null
+                                        )
+                                    },
+                                    trailingContent = {
+                                        Icon(
+                                            Icons.Filled.ChevronRight,
+                                            contentDescription = "进入"
+                                        )
+                                    }
                                 )
                             }
-                        )
+                        }
                     }
                 }
             }

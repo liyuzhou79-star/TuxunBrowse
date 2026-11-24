@@ -669,6 +669,124 @@ fun recentBlockedSeries(
         key to (counts[key] ?: 0L)
     }
 
+/**
+ * Whether the Gecko runtime should be warmed up in the background
+ * right after the browser UI first renders (v0.71.0). The runtime
+ * is worth creating early only when some tab can actually use it:
+ * the main engine or the incognito engine being Firefox. When both
+ * are the system WebView the runtime is never created at all, so
+ * preheating would only waste memory.
+ */
+fun shouldPreheatGecko(
+    mainEngine: Engine,
+    incognitoEngine: Engine
+): Boolean =
+    mainEngine == Engine.GECKO || incognitoEngine == Engine.GECKO
+
+/**
+ * Where a restored history entry belongs in the newest-first
+ * history list (v0.71.0): the index of the first entry that is not
+ * newer than [item], or the end of the list when every entry is
+ * newer. Used by the history page's swipe-to-delete undo, so the
+ * entry goes back by its own timestamp — never by a remembered
+ * position, which the search/site filters could have shifted.
+ */
+fun historyRestoreIndex(list: List<HistoryItem>, item: HistoryItem): Int {
+    val idx = list.indexOfFirst { it.time <= item.time }
+    return if (idx < 0) list.size else idx
+}
+
+/** One searchable settings entry: an option's name and its sub-page. */
+data class SettingsIndexEntry(
+    val name: String,
+    val page: String,
+    val pageLabel: String
+)
+
+/**
+ * Static search index for the settings home (v0.71.0): every option
+ * on the six settings sub-pages, listed by the name it shows on
+ * screen, with the sub-page key it lives on. Kept in step with
+ * SettingsScreen by hand — when an option is added, renamed or
+ * moved between sub-pages, its entry here must follow.
+ */
+val SETTINGS_SEARCH_INDEX: List<SettingsIndexEntry> = listOf(
+    // 内核与搜索引擎 (engine)
+    SettingsIndexEntry("主内核", "engine", "内核与搜索引擎"),
+    SettingsIndexEntry("火狐内核（GeckoView）", "engine", "内核与搜索引擎"),
+    SettingsIndexEntry("系统 WebView", "engine", "内核与搜索引擎"),
+    SettingsIndexEntry("无痕内核", "engine", "内核与搜索引擎"),
+    SettingsIndexEntry("搜索引擎", "engine", "内核与搜索引擎"),
+    SettingsIndexEntry("百度", "engine", "内核与搜索引擎"),
+    SettingsIndexEntry("必应", "engine", "内核与搜索引擎"),
+    SettingsIndexEntry("Google", "engine", "内核与搜索引擎"),
+    SettingsIndexEntry("DuckDuckGo", "engine", "内核与搜索引擎"),
+    SettingsIndexEntry("自定义搜索引擎", "engine", "内核与搜索引擎"),
+    SettingsIndexEntry("获取联网搜索建议", "engine", "内核与搜索引擎"),
+    SettingsIndexEntry("兼容模式记住的网站", "engine", "内核与搜索引擎"),
+    SettingsIndexEntry("桌面模式站点", "engine", "内核与搜索引擎"),
+    SettingsIndexEntry("清空全部桌面模式站点", "engine", "内核与搜索引擎"),
+    SettingsIndexEntry("默认浏览器", "engine", "内核与搜索引擎"),
+    SettingsIndexEntry("重新检测默认浏览器状态", "engine", "内核与搜索引擎"),
+    SettingsIndexEntry("两个内核的差别", "engine", "内核与搜索引擎"),
+    // 外观与字体 (appearance)
+    SettingsIndexEntry("界面主题 · 跟随系统", "appearance", "外观与字体"),
+    SettingsIndexEntry("界面主题 · 浅色", "appearance", "外观与字体"),
+    SettingsIndexEntry("界面主题 · 深色", "appearance", "外观与字体"),
+    SettingsIndexEntry("文字大小 · 小（85%）", "appearance", "外观与字体"),
+    SettingsIndexEntry("文字大小 · 标准（100%）", "appearance", "外观与字体"),
+    SettingsIndexEntry("文字大小 · 大（115%）", "appearance", "外观与字体"),
+    SettingsIndexEntry("文字大小 · 特大（130%）", "appearance", "外观与字体"),
+    SettingsIndexEntry("网页深色模式", "appearance", "外观与字体"),
+    SettingsIndexEntry("阅读字号 · 小（15px）", "appearance", "外观与字体"),
+    SettingsIndexEntry("阅读字号 · 标准（17px）", "appearance", "外观与字体"),
+    SettingsIndexEntry("阅读字号 · 大（19px）", "appearance", "外观与字体"),
+    SettingsIndexEntry("阅读字号 · 特大（21px）", "appearance", "外观与字体"),
+    SettingsIndexEntry("阅读背景 · 跟随应用", "appearance", "外观与字体"),
+    SettingsIndexEntry("阅读背景 · 浅色", "appearance", "外观与字体"),
+    SettingsIndexEntry("阅读背景 · 米色护眼", "appearance", "外观与字体"),
+    SettingsIndexEntry("阅读背景 · 深色", "appearance", "外观与字体"),
+    // 隐私与数据 (privacy)
+    SettingsIndexEntry("启动时恢复上次的标签页", "privacy", "隐私与数据"),
+    SettingsIndexEntry("历史记录 · 永久保留", "privacy", "隐私与数据"),
+    SettingsIndexEntry("历史记录 · 保留 30 天", "privacy", "隐私与数据"),
+    SettingsIndexEntry("历史记录 · 保留 7 天", "privacy", "隐私与数据"),
+    SettingsIndexEntry("允许第三方 Cookie（系统 WebView 标签）", "privacy", "隐私与数据"),
+    SettingsIndexEntry("无图模式（系统 WebView 标签）", "privacy", "隐私与数据"),
+    SettingsIndexEntry("禁用 JavaScript（两个内核）", "privacy", "隐私与数据"),
+    SettingsIndexEntry("清除浏览数据（可选细项）", "privacy", "隐私与数据"),
+    SettingsIndexEntry("清除历史记录", "privacy", "隐私与数据"),
+    SettingsIndexEntry("导出备份到下载文件夹", "privacy", "隐私与数据"),
+    SettingsIndexEntry("从备份文件导入", "privacy", "隐私与数据"),
+    // 下载 (download)
+    SettingsIndexEntry("系统下载", "download", "下载"),
+    SettingsIndexEntry("TuxunDown 多线程下载", "download", "下载"),
+    SettingsIndexEntry("每次下载时询问", "download", "下载"),
+    // 广告拦截 (adblock)
+    SettingsIndexEntry("拦截广告和跟踪请求", "adblock", "广告拦截"),
+    SettingsIndexEntry("隐藏页面广告位", "adblock", "广告拦截"),
+    SettingsIndexEntry("清零拦截统计", "adblock", "广告拦截"),
+    SettingsIndexEntry("最近 7 天", "adblock", "广告拦截"),
+    // 关于 (about)
+    SettingsIndexEntry("检查更新", "about", "关于"),
+    SettingsIndexEntry("关于 TuxunBrowse", "about", "关于")
+)
+
+/**
+ * Settings-home search (v0.71.0): the entries whose shown name
+ * contains the query, case-insensitively, in index order. A blank
+ * query matches nothing — the home shows its category list then,
+ * not the whole index.
+ */
+fun filterSettingsIndex(
+    index: List<SettingsIndexEntry>,
+    query: String
+): List<SettingsIndexEntry> {
+    val q = query.trim()
+    if (q.isEmpty()) return emptyList()
+    return index.filter { it.name.contains(q, ignoreCase = true) }
+}
+
 /** Local persistence: engine choices, search engine, compat sites, bookmarks, history. */
 class Store(context: Context) {
     private val prefs: SharedPreferences =

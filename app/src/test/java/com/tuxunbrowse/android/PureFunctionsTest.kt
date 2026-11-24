@@ -1,9 +1,15 @@
 package com.tuxunbrowse.android
 
 import com.tuxunbrowse.android.data.Bookmark
+import com.tuxunbrowse.android.data.Engine
 import com.tuxunbrowse.android.data.HOME_URL
 import com.tuxunbrowse.android.data.HistoryItem
+import com.tuxunbrowse.android.data.SETTINGS_SEARCH_INDEX
 import com.tuxunbrowse.android.data.SearchEngine
+import com.tuxunbrowse.android.data.SettingsIndexEntry
+import com.tuxunbrowse.android.data.filterSettingsIndex
+import com.tuxunbrowse.android.data.historyRestoreIndex
+import com.tuxunbrowse.android.data.shouldPreheatGecko
 import com.tuxunbrowse.android.data.blockedDayKey
 import com.tuxunbrowse.android.data.bookmarksFromHtml
 import com.tuxunbrowse.android.data.compareVersionNames
@@ -465,5 +471,140 @@ class BlockedDailyTest {
         assertEquals("2026-02-23", series.first().first)
         assertEquals("2026-03-01", series.last().first)
         assertEquals(4L, series[5].second)
+    }
+}
+
+/** Gecko warm-up decision (v0.71.0): preheat iff either engine is Firefox. */
+class ShouldPreheatGeckoTest {
+
+    @Test
+    fun bothFirefoxPreheats() {
+        assertTrue(shouldPreheatGecko(Engine.GECKO, Engine.GECKO))
+    }
+
+    @Test
+    fun mainFirefoxOnlyPreheats() {
+        assertTrue(shouldPreheatGecko(Engine.GECKO, Engine.WEBVIEW))
+    }
+
+    @Test
+    fun incognitoFirefoxOnlyPreheats() {
+        assertTrue(shouldPreheatGecko(Engine.WEBVIEW, Engine.GECKO))
+    }
+
+    @Test
+    fun bothWebViewNeverPreheats() {
+        assertFalse(shouldPreheatGecko(Engine.WEBVIEW, Engine.WEBVIEW))
+    }
+}
+
+/** History swipe-delete undo slot (v0.71.0): restore by timestamp. */
+class HistoryRestoreIndexTest {
+
+    private fun item(time: Long) =
+        HistoryItem("t$time", "https://e$time.example/", time)
+
+    private val list = listOf(item(300), item(200), item(100))
+
+    @Test
+    fun emptyListRestoresAtZero() {
+        assertEquals(0, historyRestoreIndex(emptyList(), item(50)))
+    }
+
+    @Test
+    fun newerThanAllGoesFirst() {
+        assertEquals(0, historyRestoreIndex(list, item(400)))
+    }
+
+    @Test
+    fun olderThanAllGoesLast() {
+        assertEquals(3, historyRestoreIndex(list, item(50)))
+    }
+
+    @Test
+    fun middleItemSlotsByTime() {
+        assertEquals(1, historyRestoreIndex(list, item(250)))
+        assertEquals(2, historyRestoreIndex(list, item(150)))
+    }
+
+    @Test
+    fun equalTimeGoesBeforeTheExistingEqualEntry() {
+        assertEquals(1, historyRestoreIndex(list, item(200)))
+    }
+
+    @Test
+    fun restoredListStaysNewestFirst() {
+        val restored = list.toMutableList().apply {
+            val it = item(250)
+            add(historyRestoreIndex(list, it), it)
+        }
+        assertEquals(
+            listOf(300L, 250L, 200L, 100L),
+            restored.map { it.time }
+        )
+    }
+}
+
+/** Settings-home search index matching (v0.71.0). */
+class FilterSettingsIndexTest {
+
+    @Test
+    fun blankQueryMatchesNothing() {
+        assertTrue(filterSettingsIndex(SETTINGS_SEARCH_INDEX, "").isEmpty())
+        assertTrue(filterSettingsIndex(SETTINGS_SEARCH_INDEX, "   ").isEmpty())
+    }
+
+    @Test
+    fun queryIsTrimmedBeforeMatching() {
+        assertEquals(
+            filterSettingsIndex(SETTINGS_SEARCH_INDEX, "深色"),
+            filterSettingsIndex(SETTINGS_SEARCH_INDEX, "  深色  ")
+        )
+    }
+
+    @Test
+    fun darkMatchesAcrossThreePages() {
+        val names = filterSettingsIndex(SETTINGS_SEARCH_INDEX, "深色")
+            .map { it.name }
+        assertEquals(
+            listOf("界面主题 · 深色", "网页深色模式", "阅读背景 · 深色"),
+            names
+        )
+    }
+
+    @Test
+    fun matchingIsCaseInsensitive() {
+        val lower = filterSettingsIndex(SETTINGS_SEARCH_INDEX, "google")
+        val upper = filterSettingsIndex(SETTINGS_SEARCH_INDEX, "GOOGLE")
+        assertEquals(lower, upper)
+        assertEquals(listOf("Google"), lower.map { it.name })
+    }
+
+    @Test
+    fun noMatchGivesEmpty() {
+        assertTrue(
+            filterSettingsIndex(SETTINGS_SEARCH_INDEX, "不存在的设置项").isEmpty()
+        )
+    }
+
+    @Test
+    fun customIndexKeepsEntryAndPageIntact() {
+        val index = listOf(
+            SettingsIndexEntry("甲选项", "engine", "内核与搜索引擎"),
+            SettingsIndexEntry("乙选项", "about", "关于")
+        )
+        val hits = filterSettingsIndex(index, "甲")
+        assertEquals(1, hits.size)
+        assertEquals("engine", hits[0].page)
+        assertEquals("内核与搜索引擎", hits[0].pageLabel)
+    }
+
+    @Test
+    fun indexCoversAllSixPagesWithValidKeys() {
+        val pages = SETTINGS_SEARCH_INDEX.map { it.page }.toSet()
+        assertEquals(
+            setOf("engine", "appearance", "privacy", "download", "adblock", "about"),
+            pages
+        )
     }
 }

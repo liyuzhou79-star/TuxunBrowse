@@ -61,6 +61,16 @@ object GeckoHolder {
     var available: Boolean = true
         private set
 
+    /**
+     * Create the runtime if it does not exist yet. Synchronized
+     * since v0.71.0: the startup warm-up calls this from a
+     * background thread while a first Firefox tab could be asking
+     * for the same runtime on the main thread, and two racing
+     * creations must never happen. A failed creation leaves
+     * [runtime] null, so the next call simply tries again — that
+     * retry is the fallback path a failed warm-up relies on.
+     */
+    @Synchronized
     fun ensure(context: Context): GeckoRuntime? {
         if (runtime != null) return runtime
         return try {
