@@ -979,6 +979,86 @@ fun parseSavedTabsJson(raw: String?): Pair<List<SavedTab>, Int> {
     return list to obj.optInt("active", 0)
 }
 
+/**
+ * The one JSON object a bookmark is written as (v0.109.0 field
+ * audit). Every writer — the local store, the full backup and the
+ * standalone bookmark export — builds its bookmark entries through
+ * this single function, and every reader reads the same four keys
+ * ("title" / "url" / "pinned" / "folder"), so the write side and
+ * the read side cannot drift apart field by field. The folder is
+ * stored trimmed, matching every reader's trim.
+ */
+fun bookmarkJsonObject(bookmark: Bookmark): JSONObject =
+    JSONObject().put("title", bookmark.title).put("url", bookmark.url)
+        .put("pinned", bookmark.pinned).put("folder", bookmark.folder.trim())
+
+/** The one JSON object a history entry is written as. See [bookmarkJsonObject]. */
+fun historyJsonObject(item: HistoryItem): JSONObject =
+    JSONObject().put("title", item.title).put("url", item.url)
+        .put("time", item.time)
+
+/**
+ * The one JSON object a Gecko download / web-archive record is
+ * written as. See [bookmarkJsonObject]. Nullable fields are
+ * written as "" and read back as null (the readers' ifBlank rule),
+ * so null is the only "absent" value a record can carry.
+ */
+fun geckoDownloadJsonObject(record: GeckoDownloadRecord): JSONObject =
+    JSONObject()
+        .put("name", record.fileName)
+        .put("url", record.sourceUrl)
+        .put("size", record.sizeBytes)
+        .put("mime", record.mimeType ?: "")
+        .put("uri", record.contentUri ?: "")
+        .put("path", record.filePath ?: "")
+        .put("time", record.time)
+
+/** The saved-tab archive payload: a "tabs" array plus the "active" index. */
+fun savedTabsJson(list: List<SavedTab>, activeIndex: Int): String {
+    val arr = JSONArray()
+    list.forEach {
+        arr.put(
+            JSONObject()
+                .put("e", it.engine.id)
+                .put("u", it.url)
+                .put("d", it.desktopMode)
+        )
+    }
+    return JSONObject().put("tabs", arr).put("active", activeIndex).toString()
+}
+
+/**
+ * Where the saved active tab lands in the RESTORED tab list
+ * (v0.109.0 field audit). The stored "active" index counts
+ * positions in the saved list, but the restore pass first drops
+ * the entries [keep] rejects (non-web URLs), so applying the raw
+ * index to the filtered list would activate the wrong tab
+ * whenever an entry before the active one was dropped. This maps
+ * the index through the same filter: the position of the saved
+ * active entry among the kept ones. When the active entry itself
+ * was dropped, the last kept entry before it is chosen (or the
+ * first kept one when there is none before it). With nothing
+ * dropped this is exactly the clamped saved index, so archives
+ * that restore whole behave exactly as before.
+ */
+fun restoredActiveIndex(
+    savedTabs: List<SavedTab>,
+    savedActive: Int,
+    keep: (SavedTab) -> Boolean
+): Int {
+    if (savedTabs.isEmpty()) return 0
+    val target = savedActive.coerceIn(0, savedTabs.lastIndex)
+    var keptBefore = 0
+    for (i in 0 until target) {
+        if (keep(savedTabs[i])) keptBefore++
+    }
+    return if (keep(savedTabs[target])) {
+        keptBefore
+    } else {
+        maxOf(0, keptBefore - 1)
+    }
+}
+
 /** Local persistence: engine choices, search engine, compat sites, bookmarks, history. */
 class Store(context: Context) {
     private val prefs: SharedPreferences =
@@ -1264,8 +1344,7 @@ class Store(context: Context) {
         parseBookmarksJson(safeString(KEY_BOOKMARKS, null)).toMutableList()
 
     fun saveBookmarks(list: List<Bookmark>) = writeList(KEY_BOOKMARKS, list) {
-        JSONObject().put("title", it.title).put("url", it.url)
-            .put("pinned", it.pinned).put("folder", it.folder.trim())
+        bookmarkJsonObject(it)
     }
 
     /**
@@ -1351,7 +1430,7 @@ class Store(context: Context) {
         parseHistoryJson(safeString(KEY_HISTORY, null)).toMutableList()
 
     fun saveHistory(list: List<HistoryItem>) = writeList(KEY_HISTORY, list) {
-        JSONObject().put("title", it.title).put("url", it.url).put("time", it.time)
+        historyJsonObject(it)
     }
 
     fun clearHistory() = prefs.edit().remove(KEY_HISTORY).apply()
@@ -1363,14 +1442,7 @@ class Store(context: Context) {
 
     fun saveGeckoDownloads(list: List<GeckoDownloadRecord>) =
         writeList(KEY_GECKO_DOWNLOADS, list) {
-            JSONObject()
-                .put("name", it.fileName)
-                .put("url", it.sourceUrl)
-                .put("size", it.sizeBytes)
-                .put("mime", it.mimeType ?: "")
-                .put("uri", it.contentUri ?: "")
-                .put("path", it.filePath ?: "")
-                .put("time", it.time)
+            geckoDownloadJsonObject(it)
         }
 
     /** Newest first; past the cap the oldest records fall off. */
@@ -1386,17 +1458,8 @@ class Store(context: Context) {
     }
 
     fun saveTabs(list: List<SavedTab>, activeIndex: Int) {
-        val arr = JSONArray()
-        list.forEach {
-            arr.put(
-                JSONObject()
-                    .put("e", it.engine.id)
-                    .put("u", it.url)
-                    .put("d", it.desktopMode)
-            )
-        }
-        val obj = JSONObject().put("tabs", arr).put("active", activeIndex)
-        prefs.edit().putString(KEY_TABS, obj.toString()).apply()
+        prefs.edit()
+            .putString(KEY_TABS, savedTabsJson(list, activeIndex)).apply()
     }
 
     fun loadTabs(): Pair<List<SavedTab>, Int> =
@@ -1597,19 +1660,9 @@ fun backupToJson(
     totalBlocked: Long? = null
 ): String {
     val bookmarkArr = JSONArray()
-    bookmarks.forEach {
-        bookmarkArr.put(
-            JSONObject().put("title", it.title).put("url", it.url)
-                .put("pinned", it.pinned).put("folder", it.folder.trim())
-        )
-    }
+    bookmarks.forEach { bookmarkArr.put(bookmarkJsonObject(it)) }
     val historyArr = JSONArray()
-    history.forEach {
-        historyArr.put(
-            JSONObject().put("title", it.title).put("url", it.url)
-                .put("time", it.time)
-        )
-    }
+    history.forEach { historyArr.put(historyJsonObject(it)) }
     val settingsObj = JSONObject()
     settings.mainEngine?.let { settingsObj.put("mainEngine", it.id) }
     settings.incognitoEngine?.let { settingsObj.put("incognitoEngine", it.id) }
@@ -1885,12 +1938,7 @@ fun parseBackup(raw: String): BackupData? {
 /** Serialize bookmarks for export; the format is a plain JSON object. */
 fun bookmarksToJson(list: List<Bookmark>): String {
     val arr = JSONArray()
-    list.forEach {
-        arr.put(
-            JSONObject().put("title", it.title).put("url", it.url)
-                .put("pinned", it.pinned).put("folder", it.folder.trim())
-        )
-    }
+    list.forEach { arr.put(bookmarkJsonObject(it)) }
     return JSONObject()
         .put("app", "TuxunBrowse")
         .put("type", "bookmarks")

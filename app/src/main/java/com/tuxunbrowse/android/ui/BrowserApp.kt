@@ -220,6 +220,7 @@ import com.tuxunbrowse.android.data.TUXUNDOWN_PACKAGE
 import com.tuxunbrowse.android.data.ReaderBackground
 import com.tuxunbrowse.android.data.ReaderFontSize
 import com.tuxunbrowse.android.data.compareVersionNames
+import com.tuxunbrowse.android.data.restoredActiveIndex
 import com.tuxunbrowse.android.data.pickLatestRelease
 import com.tuxunbrowse.android.data.SavedTab
 import com.tuxunbrowse.android.data.SearchEngine
@@ -1927,8 +1928,15 @@ fun BrowserApp(
             ) {
                 store.loadTabs()
             }
+            // The restore filter and the active-index mapping must
+            // agree (v0.109.0 field audit): the stored index counts
+            // positions in the SAVED list, so it is mapped through
+            // this same filter by restoredActiveIndex instead of
+            // being applied raw to the filtered list.
+            val usableSavedTab: (SavedTab) -> Boolean =
+                { it.url.startsWith("http") || it.url == HOME_URL }
             val usable = if (store.startupRestore) {
-                saved.filter { it.url.startsWith("http") || it.url == HOME_URL }
+                saved.filter(usableSavedTab)
             } else {
                 emptyList()
             }
@@ -1950,7 +1958,10 @@ fun BrowserApp(
                         )
                     )
                 }
-                activeTabId = tabs[savedActive.coerceIn(0, tabs.lastIndex)].id
+                activeTabId = tabs[
+                    restoredActiveIndex(saved, savedActive, usableSavedTab)
+                        .coerceIn(0, tabs.lastIndex)
+                ].id
             } else {
                 newTab(store.mainEngine, false)
             }
