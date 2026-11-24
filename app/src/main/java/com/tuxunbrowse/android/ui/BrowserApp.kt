@@ -1435,6 +1435,9 @@ fun BrowserApp(
             android.webkit.CookieManager.getInstance().removeAllCookies(null)
             android.webkit.CookieManager.getInstance().flush()
             android.webkit.WebStorage.getInstance().deleteAllData()
+            // The wipe has run, so the process-death marker the
+            // startup pass checks (v0.128.0) is settled too.
+            store.webViewIncognitoDirty = false
         }
     }
 
@@ -1935,6 +1938,28 @@ fun BrowserApp(
     // Runs once, before the persistence effect below is allowed to save
     // anything, so a fresh start can never wipe the saved session first.
     LaunchedEffect(Unit) {
+        // Incognito WebView leftovers from a dead process
+        // (v0.128.0 process-death audit). The shared WebView
+        // cookie jar is wiped when the last incognito WebView tab
+        // closes — but if the process was killed first, that wipe
+        // never ran, while the pause-time cookie flush had already
+        // persisted the jar, incognito cookies included. The dirty
+        // marker says an incognito WebView tab existed when the
+        // process died: finish the wipe now, before any page can
+        // read the jar. Same documented side effect as the
+        // close-time wipe (normal WebView tabs are signed out —
+        // the jar is shared and there is no per-tab alternative).
+        if (store.webViewIncognitoDirty) {
+            try {
+                android.webkit.CookieManager.getInstance()
+                    .removeAllCookies(null)
+                android.webkit.CookieManager.getInstance().flush()
+                android.webkit.WebStorage.getInstance().deleteAllData()
+            } catch (t: Throwable) {
+                // Best-effort: a failed wipe must not break startup.
+            }
+            store.webViewIncognitoDirty = false
+        }
         // Background fill of the three big lists (v0.28.0): parse the
         // stored JSON off the main thread, then publish the results
         // into the state lists above. This must stay the FIRST step of
@@ -2093,6 +2118,18 @@ fun BrowserApp(
         } catch (t: Throwable) {
             // Cache housekeeping must never break startup.
         }
+    }
+
+    // Incognito WebView marker (v0.128.0): while any incognito
+    // WebView tab exists, the store flag the startup pass checks
+    // must be set, so a process death from here leaves the next
+    // start able to finish the cookie-jar wipe. Setting it is
+    // idempotent and cheap; clearing is the wipe's own job (the
+    // close-time wipe above and the startup wipe both clear it).
+    val hasIncognitoWebViewTab =
+        tabs.any { it.incognito && it.engine == Engine.WEBVIEW }
+    LaunchedEffect(hasIncognitoWebViewTab) {
+        if (hasIncognitoWebViewTab) store.webViewIncognitoDirty = true
     }
 
     // Keep the saved session in sync with the live tab list.
@@ -2867,6 +2904,30 @@ fun BrowserApp(
                     } catch (t: Throwable) {
                         // Cookie persistence is best-effort only.
                     }
+                    // Process-death hardening (v0.128.0): going to
+                    // the background is where a process death
+                    // normally follows, so settle the two lagging
+                    // writers right here instead of trusting their
+                    // timers — the tab archive's 400 ms debounce may
+                    // not have fired for the very last navigation,
+                    // and the blocked counter may hold unflushed
+                    // hits. The tab save mirrors the debounced
+                    // writer's mapping exactly (normal tabs only,
+                    // same active-index rule) and is skipped until
+                    // startup restore has run, so it can never save
+                    // over the archive restore is about to read.
+                    if (startupDone) {
+                        val normalTabs = tabs.filter { !it.incognito }
+                        store.saveTabs(
+                            normalTabs.map {
+                                SavedTab(it.engine, it.url, it.desktopMode)
+                            },
+                            normalTabs.indexOfFirst {
+                                it.id == activeTabId
+                            }.coerceAtLeast(0)
+                        )
+                    }
+                    store.flushBlockedCounter()
                     tabs.forEach { it.pauseEngine() }
                 }
                 Lifecycle.Event.ON_RESUME ->

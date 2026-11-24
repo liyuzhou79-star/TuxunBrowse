@@ -1228,6 +1228,21 @@ class Store(context: Context) {
         get() = safeBoolean(KEY_STARTUP_RESTORE, true)
         set(value) = prefs.edit().putBoolean(KEY_STARTUP_RESTORE, value).apply()
 
+    /**
+     * Set while an incognito WebView tab exists (v0.128.0 process-
+     * death audit). The close-time cookie-jar wipe only runs when
+     * the last incognito WebView tab goes away through a normal
+     * path; if the process dies first, the jar — already flushed
+     * to disk on pause — would keep the incognito session's
+     * cookies for the next launch. This flag lets the next start
+     * finish that wipe before anything reads the jar. Cleared by
+     * the wipe itself, on both the close-time and startup paths.
+     */
+    var webViewIncognitoDirty: Boolean
+        get() = safeBoolean(KEY_WV_INCOGNITO_DIRTY, false)
+        set(value) = prefs.edit()
+            .putBoolean(KEY_WV_INCOGNITO_DIRTY, value).apply()
+
     /** Where URL-type downloads go. Gecko tab downloads never use this. */
     var downloadMode: DownloadMode
         get() = DownloadMode.fromId(safeString(KEY_DOWNLOAD_MODE, null))
@@ -1285,6 +1300,20 @@ class Store(context: Context) {
         blockedPendingFlush = 0
         blockedLastFlushAt = System.currentTimeMillis()
         prefs.edit().putLong(KEY_TOTAL_BLOCKED, cleanTotal).apply()
+    }
+
+    /**
+     * Write out any blocked hits still sitting in the memory
+     * buffer (v0.128.0 process-death audit). Without this, a
+     * process death could lose up to BLOCKED_FLUSH_EVERY - 1
+     * unflushed hits; the app calls this when it goes to the
+     * background, which is where process death normally follows.
+     */
+    fun flushBlockedCounter() {
+        if (blockedPendingFlush <= 0) return
+        blockedPendingFlush = 0
+        blockedLastFlushAt = System.currentTimeMillis()
+        prefs.edit().putLong(KEY_TOTAL_BLOCKED, totalBlocked).apply()
     }
 
     /** Reset the lifetime blocked counter, effective at once. */
@@ -1507,6 +1536,7 @@ class Store(context: Context) {
         private const val KEY_HISTORY_RETENTION = "history_retention"
         private const val KEY_SPEED_DIALS = "speed_dials"
         private const val KEY_TOTAL_BLOCKED = "total_blocked"
+        private const val KEY_WV_INCOGNITO_DIRTY = "wv_incognito_dirty"
         private const val BLOCKED_FLUSH_EVERY = 20
         private const val BLOCKED_FLUSH_MS = 5_000L
     }
