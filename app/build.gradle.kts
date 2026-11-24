@@ -12,8 +12,8 @@ android {
         applicationId = "com.tuxunbrowse.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 71
-        versionName = "0.71.0"
+        versionCode = 72
+        versionName = "0.72.0"
         // GeckoView pushes the method count past 64k in debug builds.
         multiDexEnabled = true
     }
@@ -86,4 +86,10 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     implementation("androidx.compose.ui:ui-tooling-preview")
     testImplementation("junit:junit:4.13.2")
+    // Real org.json for JVM unit tests (v0.72.0): the android.jar
+    // stubs throw "not mocked", so the bookmark/backup JSON parsers
+    // could not be exercised in testDebugUnitTest before. This jar
+    // shadows the stubs on the unit-test classpath only; it is NOT
+    // packaged into the APK.
+    testImplementation("org.json:json:20240303")
 }

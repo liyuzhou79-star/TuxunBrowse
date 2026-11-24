@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -56,6 +57,7 @@ import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.FindInPage
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.InsertDriveFile
@@ -223,6 +225,11 @@ import com.tuxunbrowse.android.data.filterSettingsIndex
 import com.tuxunbrowse.android.data.historyRestoreIndex
 import com.tuxunbrowse.android.data.recentBlockedSeries
 import com.tuxunbrowse.android.data.shouldPreheatGecko
+import com.tuxunbrowse.android.data.allBookmarkFolders
+import com.tuxunbrowse.android.data.bookmarksInFolder
+import com.tuxunbrowse.android.data.clearBookmarksFolder
+import com.tuxunbrowse.android.data.normalizeBookmarkFolderName
+import com.tuxunbrowse.android.data.renameBookmarksFolder
 import com.tuxunbrowse.android.data.matchRange
 import com.tuxunbrowse.android.data.matchSuggestions
 import com.tuxunbrowse.android.data.resolveInput
@@ -464,6 +471,15 @@ fun BrowserApp(
     // consults this list), and the set is a handful of host strings.
     val desktopSites = remember {
         mutableStateListOf<String>().apply { addAll(store.loadDesktopSites()) }
+    }
+    // Stored bookmark folder names (v0.72.0): synchronous like the
+    // two site lists — a handful of short strings. This list exists
+    // so EMPTY folders survive; the folder list the UI offers is
+    // always allBookmarkFolders(bookmarks, bookmarkFolders), the
+    // union of this stored list with the names derived from the
+    // bookmarks themselves.
+    val bookmarkFolders = remember {
+        mutableStateListOf<String>().apply { addAll(store.loadBookmarkFolders()) }
     }
     // One-time compat bypasses (v0.52.0): tab id -> the exact URL whose
     // first Gecko load must NOT be bounced back to WebView by the
@@ -1463,14 +1479,20 @@ fun BrowserApp(
      * a large batch can overflow the stack and incognito tabs are
      * never recorded.
      */
-    fun closeOtherTabs() {
-        val keep = activeTab() ?: return
+    /**
+     * Close every tab except [keep] (v0.72.0: generalized from
+     * closeOtherTabs so the tab card's long-press menu can keep an
+     * arbitrary tab, not just the active one). If the active tab is
+     * among the closed, [keep] becomes the active tab.
+     */
+    fun closeOtherTabsKeeping(keep: BrowserTab) {
         val others = tabs.filter { it.id != keep.id }
         if (others.isEmpty()) return
         val closedIncognito = others.any { it.incognito }
         others.forEach { pushClosedTab(it) }
         others.forEach { it.destroy() }
         tabs.removeAll(others)
+        if (activeTab() == null) activeTabId = keep.id
         if (closedIncognito) {
             // Same rule as closing the last incognito tab one by
             // one — remaining incognito Gecko tabs do not keep the
@@ -1481,6 +1503,39 @@ fun BrowserApp(
             context, "已关闭 ${others.size} 个标签页",
             android.widget.Toast.LENGTH_SHORT
         ).show()
+    }
+
+    /** Close every tab except the active one (see above). */
+    fun closeOtherTabs() {
+        val keep = activeTab() ?: return
+        closeOtherTabsKeeping(keep)
+    }
+
+    /**
+     * Toggle one tab's bookmark (v0.72.0: extracted from the star
+     * button's lambda so the tab card's long-press menu toggles the
+     * bookmark of an arbitrary tab through the exact same code —
+     * same home-page refusal, same URL rule, same storage).
+     */
+    fun toggleBookmarkForTab(tab: BrowserTab) {
+        if (tab.isHome) {
+            // The star sits in the home tab's bar too; without this
+            // branch the tap silently did nothing (v0.61.0
+            // regression fix — every other home-tab action answers
+            // with the same kind of toast).
+            android.widget.Toast.makeText(
+                context, "先打开一个网页再收藏",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        val existing = bookmarks.firstOrNull { it.url == tab.url }
+        if (existing != null) {
+            bookmarks.remove(existing)
+        } else if (tab.url.startsWith("http")) {
+            bookmarks.add(0, Bookmark(tab.title.ifBlank { tab.url }, tab.url))
+        }
+        store.saveBookmarks(bookmarks)
     }
 
     // Session restore: reopen the tabs that were open when the app was
@@ -1715,7 +1770,8 @@ fun BrowserApp(
                 bookmarkSortOrder = store.bookmarkSortOrder
             ),
             compatSites = store.loadCompatSites().sorted(),
-            desktopSites = store.loadDesktopSites().sorted()
+            desktopSites = store.loadDesktopSites().sorted(),
+            bookmarkFolders = allBookmarkFolders(bookmarks, bookmarkFolders)
         )
         val fileName = "tuxunbrowse-backup.json"
         try {
@@ -1875,6 +1931,19 @@ fun BrowserApp(
                 addedDesktop++
             }
         }
+        // Bookmark folder names merge the same way (union,
+        // v0.72.0): a restore must never delete a folder the user
+        // made on this device. (Folders of the imported bookmarks
+        // themselves need no handling here — they derive from the
+        // bookmark list.)
+        var addedFolders = 0
+        data.bookmarkFolders.forEach { name ->
+            if (name !in bookmarkFolders) {
+                bookmarkFolders.add(name)
+                addedFolders++
+            }
+        }
+        if (addedFolders > 0) store.saveBookmarkFolders(bookmarkFolders)
         if (data.settings.overwriteSummary().isNotEmpty() ||
             addedCompat > 0 || addedDesktop > 0
         ) {
@@ -1891,7 +1960,8 @@ fun BrowserApp(
         return "书签 +$addedBookmarks 条、历史 +$addedHistory 条、" +
             "阅读列表 +$addedReading 条、快捷方式 +$addedDials 条" +
             (if (addedCompat > 0) "、兼容名单 +$addedCompat 个" else "") +
-            (if (addedDesktop > 0) "、桌面模式站点 +$addedDesktop 个" else "")
+            (if (addedDesktop > 0) "、桌面模式站点 +$addedDesktop 个" else "") +
+            (if (addedFolders > 0) "、书签文件夹 +$addedFolders 个" else "")
     }
 
     // Backup import: system file picker. The file is validated by
@@ -2572,6 +2642,8 @@ fun BrowserApp(
                 onCloseTab = { closeTab(it) },
                 onCloseAllTabs = { closeAllTabs() },
                 onCloseOtherTabs = { closeOtherTabs() },
+                onCloseOtherTabsFor = { closeOtherTabsKeeping(it) },
+                onToggleBookmarkFor = { toggleBookmarkForTab(it) },
                 recentClosed = recentClosedTabs,
                 onReopenClosed = { reopenClosedTab(it) },
                 onNewTab = { newTab(store.mainEngine, false) },
@@ -2580,25 +2652,7 @@ fun BrowserApp(
                 onIncognitoEngineChosen = { store.incognitoEngine = it },
                 onToggleBookmark = {
                     val tab = activeTab() ?: return@BrowserScreen
-                    if (tab.isHome) {
-                        // The star sits in the home tab's bar too;
-                        // without this branch the tap silently did
-                        // nothing (v0.61.0 regression fix — every
-                        // other home-tab action answers with the
-                        // same kind of toast).
-                        android.widget.Toast.makeText(
-                            context, "先打开一个网页再收藏",
-                            android.widget.Toast.LENGTH_SHORT
-                        ).show()
-                        return@BrowserScreen
-                    }
-                    val existing = bookmarks.firstOrNull { it.url == tab.url }
-                    if (existing != null) {
-                        bookmarks.remove(existing)
-                    } else if (tab.url.startsWith("http")) {
-                        bookmarks.add(0, Bookmark(tab.title.ifBlank { tab.url }, tab.url))
-                    }
-                    store.saveBookmarks(bookmarks)
+                    toggleBookmarkForTab(tab)
                 },
                 onNavigate = { text ->
                     // Typed input with a non-web scheme (file:,
@@ -2854,6 +2908,7 @@ fun BrowserApp(
 
         Screen.BOOKMARKS -> BookmarksScreen(
             bookmarks = bookmarks,
+            folders = allBookmarkFolders(bookmarks, bookmarkFolders),
             sortOrder = store.bookmarkSortOrder,
             onSortOrderChange = { store.bookmarkSortOrder = it },
             onBack = { screen = Screen.BROWSER },
@@ -2862,18 +2917,70 @@ fun BrowserApp(
                 bookmarks.remove(it)
                 store.saveBookmarks(bookmarks)
             },
-            onEdit = { old, newTitle, newUrl ->
+            onEdit = { old, newTitle, newUrl, newFolder ->
                 val idx = bookmarks.indexOf(old)
                 if (idx >= 0) {
                     // Field-level update via copy() (v0.55.0 audit):
                     // rebuilding Bookmark(newTitle, newUrl) here used
                     // to reset every non-edited field to its default —
                     // a pinned bookmark silently lost its pin when the
-                    // user only renamed it. Title and URL are the only
-                    // edited fields; everything else (pinned) carries
-                    // over from the old entry.
-                    bookmarks[idx] = old.copy(title = newTitle, url = newUrl)
+                    // user only renamed it. Title, URL and (v0.72.0)
+                    // folder are the edited fields; everything else
+                    // (pinned) carries over from the old entry.
+                    bookmarks[idx] = old.copy(
+                        title = newTitle, url = newUrl,
+                        folder = normalizeBookmarkFolderName(newFolder)
+                    )
                     store.saveBookmarks(bookmarks)
+                    // A folder name first typed in the edit dialog
+                    // joins the stored list too, so the union's
+                    // order stays stable.
+                    val folderName = normalizeBookmarkFolderName(newFolder)
+                    if (folderName.isNotEmpty() &&
+                        folderName !in bookmarkFolders
+                    ) {
+                        bookmarkFolders.add(folderName)
+                        store.saveBookmarkFolders(bookmarkFolders)
+                    }
+                }
+            },
+            onCreateFolder = { name ->
+                val folderName = normalizeBookmarkFolderName(name)
+                if (folderName.isNotEmpty() &&
+                    folderName !in bookmarkFolders
+                ) {
+                    bookmarkFolders.add(folderName)
+                    store.saveBookmarkFolders(bookmarkFolders)
+                }
+            },
+            onRenameFolder = { oldName, newName ->
+                val target = normalizeBookmarkFolderName(newName)
+                if (target.isNotEmpty() && target != oldName) {
+                    val renamed = renameBookmarksFolder(
+                        bookmarks, oldName, target
+                    )
+                    bookmarks.clear()
+                    bookmarks.addAll(renamed)
+                    store.saveBookmarks(bookmarks)
+                    val storedIdx = bookmarkFolders.indexOf(oldName)
+                    if (storedIdx >= 0) {
+                        bookmarkFolders[storedIdx] = target
+                    } else if (target !in bookmarkFolders) {
+                        bookmarkFolders.add(target)
+                    }
+                    store.saveBookmarkFolders(bookmarkFolders)
+                }
+            },
+            onDeleteFolder = { name ->
+                // Only the folder goes away: its bookmarks fall
+                // back to uncategorized (clearBookmarksFolder),
+                // never deleted.
+                val cleared = clearBookmarksFolder(bookmarks, name)
+                bookmarks.clear()
+                bookmarks.addAll(cleared)
+                store.saveBookmarks(bookmarks)
+                if (bookmarkFolders.remove(name)) {
+                    store.saveBookmarkFolders(bookmarkFolders)
                 }
             },
             onExport = { exportBookmarks() },
@@ -5169,6 +5276,8 @@ private fun BrowserScreen(
     onCloseTab: (BrowserTab) -> Unit,
     onCloseAllTabs: () -> Unit,
     onCloseOtherTabs: () -> Unit,
+    onCloseOtherTabsFor: (BrowserTab) -> Unit = {},
+    onToggleBookmarkFor: (BrowserTab) -> Unit = {},
     recentClosed: List<ClosedTabInfo>,
     onReopenClosed: (ClosedTabInfo) -> Unit,
     onNewTab: () -> Unit,
@@ -6675,9 +6784,24 @@ private fun BrowserScreen(
                 }
                 gridItems(visibleTabs, key = { it.id }) { tab ->
                     val isActive = tab.id == activeTab?.id
+                    // Long-press menu (v0.72.0): the card itself
+                    // carries combinedClickable (tap still selects
+                    // the tab, the close button keeps its own tap),
+                    // and the official DropdownMenu anchors to the
+                    // card's Box.
+                    var tabMenuOpen by remember(tab.id) {
+                        mutableStateOf(false)
+                    }
+                    Box {
                     ElevatedCard(
-                        onClick = { onSelectTab(tab); showTabs = false },
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .combinedClickable(
+                                onClick = {
+                                    onSelectTab(tab); showTabs = false
+                                },
+                                onLongClick = { tabMenuOpen = true }
+                            ),
                         colors = if (isActive) {
                             CardDefaults.elevatedCardColors(
                                 containerColor = MaterialTheme.colorScheme.secondaryContainer
@@ -6814,6 +6938,90 @@ private fun BrowserScreen(
                                 )
                             }
                         }
+                    }
+                    DropdownMenu(
+                        expanded = tabMenuOpen,
+                        onDismissRequest = { tabMenuOpen = false }
+                    ) {
+                        if (tabs.size > 1) {
+                            DropdownMenuItem(
+                                text = { Text("关闭其他标签") },
+                                onClick = {
+                                    tabMenuOpen = false
+                                    showTabs = false
+                                    onCloseOtherTabsFor(tab)
+                                }
+                            )
+                        }
+                        if (!tab.isHome) {
+                            DropdownMenuItem(
+                                text = { Text("复制网址") },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Filled.ContentCopy,
+                                        contentDescription = null
+                                    )
+                                },
+                                onClick = {
+                                    tabMenuOpen = false
+                                    val ok = copyTextToClipboard(
+                                        context, "url", tab.url
+                                    )
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        if (ok) {
+                                            "网址已复制"
+                                        } else {
+                                            "复制失败，请重试"
+                                        },
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            )
+                        }
+                        // Bookmark toggle: an incognito tab never
+                        // writes one (v0.72.0, the app-wide
+                        // incognito rule — nothing from an
+                        // incognito tab is persisted). The item
+                        // stays visible but is intercepted with a
+                        // plain-language toast instead of saving.
+                        val tabBookmarked = !tab.incognito &&
+                            bookmarks.any { it.url == tab.url }
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (tabBookmarked) {
+                                        "取消书签"
+                                    } else {
+                                        "加入书签"
+                                    }
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    if (tabBookmarked) {
+                                        Icons.Filled.Star
+                                    } else {
+                                        Icons.Filled.StarBorder
+                                    },
+                                    contentDescription = null
+                                )
+                            },
+                            onClick = {
+                                tabMenuOpen = false
+                                if (tab.incognito) {
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        "无痕标签不会保存书签，" +
+                                            "请在普通标签里收藏",
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
+                                } else {
+                                    onToggleBookmarkFor(tab)
+                                }
+                            }
+                        )
+                    }
                     }
                 }
                 item(span = { GridItemSpan(maxLineSpan) }) {
@@ -7065,12 +7273,16 @@ private fun EmptyState(icon: ImageVector, text: String) {
 @Composable
 private fun BookmarksScreen(
     bookmarks: List<Bookmark>,
+    folders: List<String> = emptyList(),
     sortOrder: BookmarkSortOrder = BookmarkSortOrder.DEFAULT,
     onSortOrderChange: (BookmarkSortOrder) -> Unit = {},
     onBack: () -> Unit,
     onOpen: (Bookmark) -> Unit,
     onDelete: (Bookmark) -> Unit,
-    onEdit: (Bookmark, String, String) -> Unit,
+    onEdit: (Bookmark, String, String, String) -> Unit,
+    onCreateFolder: (String) -> Unit = {},
+    onRenameFolder: (String, String) -> Unit = { _, _ -> },
+    onDeleteFolder: (String) -> Unit = {},
     onExport: () -> Unit,
     onImport: () -> Unit,
     onDeleteMany: (List<Bookmark>) -> Unit = {},
@@ -7084,6 +7296,18 @@ private fun BookmarksScreen(
     if (editingBookmark != null) {
         var editTitle by remember(editingBookmark) { mutableStateOf(editingBookmark.title) }
         var editUrl by remember(editingBookmark) { mutableStateOf(editingBookmark.url) }
+        // Folder picker (v0.72.0): pick an existing folder (or
+        // uncategorized), or switch to typing a brand-new name.
+        var editFolder by remember(editingBookmark) {
+            mutableStateOf(editingBookmark.folder)
+        }
+        var editFolderIsNew by remember(editingBookmark) {
+            mutableStateOf(false)
+        }
+        var editNewFolder by remember(editingBookmark) { mutableStateOf("") }
+        var editFolderMenuOpen by remember(editingBookmark) {
+            mutableStateOf(false)
+        }
         // Opens focused on the first field with the keyboard up.
         val editFocusRequester = remember { FocusRequester() }
         LaunchedEffect(Unit) { editFocusRequester.requestFocus() }
@@ -7112,6 +7336,100 @@ private fun BookmarksScreen(
                             singleLine = true
                         )
                     }
+                    item {
+                        if (editFolderIsNew) {
+                            OutlinedTextField(
+                                value = editNewFolder,
+                                onValueChange = { editNewFolder = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                label = { Text("新文件夹名称") },
+                                singleLine = true,
+                                trailingIcon = {
+                                    IconButton(onClick = {
+                                        editFolderIsNew = false
+                                    }) {
+                                        Icon(
+                                            Icons.Filled.Close,
+                                            contentDescription = "改回选择已有文件夹"
+                                        )
+                                    }
+                                }
+                            )
+                        } else {
+                            Box {
+                                OutlinedButton(
+                                    onClick = { editFolderMenuOpen = true },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        if (editFolder.isBlank()) {
+                                            "文件夹：未分类"
+                                        } else {
+                                            "文件夹：$editFolder"
+                                        },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Icon(
+                                        Icons.Filled.ArrowDropDown,
+                                        contentDescription = null
+                                    )
+                                }
+                                DropdownMenu(
+                                    expanded = editFolderMenuOpen,
+                                    onDismissRequest = {
+                                        editFolderMenuOpen = false
+                                    }
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("未分类") },
+                                        onClick = {
+                                            editFolderMenuOpen = false
+                                            editFolder = ""
+                                        },
+                                        leadingIcon = {
+                                            if (editFolder.isBlank()) {
+                                                Icon(
+                                                    Icons.Filled.Check,
+                                                    contentDescription = null
+                                                )
+                                            }
+                                        }
+                                    )
+                                    folders.forEach { name ->
+                                        DropdownMenuItem(
+                                            text = { Text(name) },
+                                            onClick = {
+                                                editFolderMenuOpen = false
+                                                editFolder = name
+                                            },
+                                            leadingIcon = {
+                                                if (editFolder == name) {
+                                                    Icon(
+                                                        Icons.Filled.Check,
+                                                        contentDescription = null
+                                                    )
+                                                }
+                                            }
+                                        )
+                                    }
+                                    DropdownMenuItem(
+                                        text = { Text("新建文件夹…") },
+                                        onClick = {
+                                            editFolderMenuOpen = false
+                                            editFolderIsNew = true
+                                            editNewFolder = ""
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Filled.Add,
+                                                contentDescription = null
+                                            )
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             },
             confirmButton = {
@@ -7130,7 +7448,12 @@ private fun BookmarksScreen(
                             onEdit(
                                 editingBookmark,
                                 editTitle.ifBlank { resolved },
-                                resolved
+                                resolved,
+                                if (editFolderIsNew) {
+                                    editNewFolder.trim()
+                                } else {
+                                    editFolder
+                                }
                             )
                             editing = null
                         }
@@ -7144,13 +7467,153 @@ private fun BookmarksScreen(
         )
     }
     var bookmarkQuery by remember { mutableStateOf("") }
+    // Folder filter (v0.72.0): page-local state, never persisted —
+    // same precedent as the downloads-page search (v0.64.0). null =
+    // 全部, "" = 未分类, anything else = that folder. The pipeline
+    // is settled in ONE place, in this order: folder filter first,
+    // then the search filter, then the display sort below reads
+    // only the final list. Every action (open/edit/pin/delete,
+    // batch selection) is keyed by the entry itself, so filtering
+    // can never point an action at an entry the user is not
+    // looking at.
+    var folderFilter by remember { mutableStateOf<String?>(null) }
+    val folderFiltered = bookmarksInFolder(bookmarks, folderFilter)
     val visibleBookmarks = if (bookmarkQuery.isBlank()) {
-        bookmarks
+        folderFiltered
     } else {
-        bookmarks.filter {
+        folderFiltered.filter {
             it.title.contains(bookmarkQuery, ignoreCase = true) ||
                 it.url.contains(bookmarkQuery, ignoreCase = true)
         }
+    }
+    // A filter naming a folder that no longer exists (renamed or
+    // deleted elsewhere) falls back to 全部 instead of stranding
+    // the user on an empty page. The rename flow below re-points
+    // the filter itself, so this is only a safety net.
+    LaunchedEffect(folderFilter, folders) {
+        val current = folderFilter
+        if (current != null && current.isNotEmpty() &&
+            current !in folders
+        ) {
+            folderFilter = null
+        }
+    }
+    // Folder management dialogs (v0.72.0): create / rename / delete.
+    var showCreateFolder by remember { mutableStateOf(false) }
+    var createFolderName by remember { mutableStateOf("") }
+    var renameFolderTarget by remember { mutableStateOf<String?>(null) }
+    var renameFolderText by remember { mutableStateOf("") }
+    var deleteFolderTarget by remember { mutableStateOf<String?>(null) }
+    if (showCreateFolder) {
+        AlertDialog(
+            onDismissRequest = { showCreateFolder = false },
+            title = { Text("新建文件夹") },
+            text = {
+                OutlinedTextField(
+                    value = createFolderName,
+                    onValueChange = { createFolderName = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("文件夹名称") },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val name = createFolderName.trim()
+                        if (name in folders) {
+                            android.widget.Toast.makeText(
+                                context, "已经有这个文件夹了",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        } else {
+                            showCreateFolder = false
+                            onCreateFolder(name)
+                            // Land on the new folder so the user
+                            // sees where their bookmarks will go.
+                            folderFilter = name
+                        }
+                    },
+                    enabled = createFolderName.isNotBlank()
+                ) { Text("新建") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCreateFolder = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+    val renameTarget = renameFolderTarget
+    if (renameTarget != null) {
+        AlertDialog(
+            onDismissRequest = { renameFolderTarget = null },
+            title = { Text("重命名文件夹") },
+            text = {
+                OutlinedTextField(
+                    value = renameFolderText,
+                    onValueChange = { renameFolderText = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("文件夹名称") },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val name = renameFolderText.trim()
+                        if (name != renameTarget && name in folders) {
+                            android.widget.Toast.makeText(
+                                context, "已经有这个文件夹了",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        } else {
+                            renameFolderTarget = null
+                            if (name != renameTarget) {
+                                onRenameFolder(renameTarget, name)
+                                folderFilter = name
+                            }
+                        }
+                    },
+                    enabled = renameFolderText.isNotBlank()
+                ) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameFolderTarget = null }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+    val deleteTarget = deleteFolderTarget
+    if (deleteTarget != null) {
+        val inFolder = bookmarks.count { it.folder == deleteTarget }
+        AlertDialog(
+            onDismissRequest = { deleteFolderTarget = null },
+            title = { Text("删除文件夹「$deleteTarget」？") },
+            text = {
+                Text(
+                    if (inFolder > 0) {
+                        "只会删掉这个文件夹，里面的 $inFolder 条书签" +
+                            "会回到「未分类」，不会被删掉。"
+                    } else {
+                        "这个文件夹是空的，删掉它不会影响任何书签。"
+                    }
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    deleteFolderTarget = null
+                    onDeleteFolder(deleteTarget)
+                    folderFilter = null
+                }) { Text("删除文件夹") }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteFolderTarget = null }) {
+                    Text("取消")
+                }
+            }
+        )
     }
     // Display sort (v0.63.0): filter first, then sort for display
     // only — the stored list is never reordered. Local state seeded
@@ -7172,6 +7635,10 @@ private fun BookmarksScreen(
     // and the "完成" button all leave the mode).
     var batchMode by remember { mutableStateOf(false) }
     var selectedUrls by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // Switching the folder filter clears the batch selection
+    // (v0.72.0): batch delete must only ever act on entries the
+    // user can currently see selected.
+    LaunchedEffect(folderFilter) { selectedUrls = emptySet() }
     var showBatchDeleteConfirm by remember { mutableStateOf(false) }
     // Long-press menu target (v0.54.0, same shape as the history
     // page's v0.53.0 menu) and the pending single-delete
@@ -7351,9 +7818,110 @@ private fun BookmarksScreen(
                         }
                     )
                 }
+                item {
+                    // Folder filter chips (v0.72.0): official
+                    // FilterChip in a horizontally scrollable row —
+                    // 全部 / 未分类 / one chip per folder, plus the
+                    // create-folder entry at the end.
+                    LazyRow(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        item {
+                            FilterChip(
+                                selected = folderFilter == null,
+                                onClick = { folderFilter = null },
+                                label = { Text("全部") }
+                            )
+                        }
+                        item {
+                            FilterChip(
+                                selected = folderFilter == "",
+                                onClick = { folderFilter = "" },
+                                label = { Text("未分类") }
+                            )
+                        }
+                        items(folders, key = { it }) { name ->
+                            FilterChip(
+                                selected = folderFilter == name,
+                                onClick = { folderFilter = name },
+                                label = { Text(name) },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Filled.Folder,
+                                        contentDescription = null
+                                    )
+                                }
+                            )
+                        }
+                        item {
+                            AssistChip(
+                                onClick = {
+                                    createFolderName = ""
+                                    showCreateFolder = true
+                                },
+                                label = { Text("新建文件夹") },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Filled.Add,
+                                        contentDescription = null
+                                    )
+                                }
+                            )
+                        }
+                    }
+                }
+                val selectedFolder = folderFilter
+                if (selectedFolder != null && selectedFolder.isNotEmpty()) {
+                    item {
+                        // Folder management (v0.72.0): rename and
+                        // delete live next to the selected folder's
+                        // chip. Delete only removes the folder —
+                        // its bookmarks fall back to 未分类 (the
+                        // confirmation dialog says so in words).
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp)
+                        ) {
+                            TextButton(onClick = {
+                                renameFolderText = selectedFolder
+                                renameFolderTarget = selectedFolder
+                            }) {
+                                Text("重命名文件夹")
+                            }
+                            TextButton(onClick = {
+                                deleteFolderTarget = selectedFolder
+                            }) {
+                                Text("删除文件夹")
+                            }
+                        }
+                    }
+                }
                 if (visibleBookmarks.isEmpty()) {
                     item {
-                        EmptyState(Icons.Filled.Search, "没有找到相关的书签。")
+                        if (bookmarkQuery.isNotBlank()) {
+                            EmptyState(
+                                Icons.Filled.Search,
+                                "没有找到相关的书签。"
+                            )
+                        } else {
+                            // Folder filter with no hits / an empty
+                            // folder (v0.72.0): the shared empty
+                            // state, never a blank board.
+                            EmptyState(
+                                Icons.Filled.Folder,
+                                if (folderFilter == "") {
+                                    "还没有未分类的书签。"
+                                } else {
+                                    "这个文件夹里还没有书签，" +
+                                        "编辑书签时可以把它放进来。"
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -7376,11 +7944,16 @@ private fun BookmarksScreen(
                     headlineContent = { Text(bookmark.title) },
                     supportingContent = {
                         Text(
-                            if (bookmark.pinned) {
-                                "已置顶（在首页最前面） · ${bookmark.url}"
-                            } else {
+                            listOfNotNull(
+                                if (bookmark.pinned) {
+                                    "已置顶（在首页最前面）"
+                                } else {
+                                    null
+                                },
+                                bookmark.folder.takeIf { it.isNotBlank() }
+                                    ?.let { "文件夹：$it" },
                                 bookmark.url
-                            }
+                            ).joinToString(" · ")
                         )
                     },
                     leadingContent = {

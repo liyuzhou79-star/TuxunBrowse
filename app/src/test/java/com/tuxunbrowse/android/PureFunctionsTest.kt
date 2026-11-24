@@ -7,8 +7,19 @@ import com.tuxunbrowse.android.data.HistoryItem
 import com.tuxunbrowse.android.data.SETTINGS_SEARCH_INDEX
 import com.tuxunbrowse.android.data.SearchEngine
 import com.tuxunbrowse.android.data.SettingsIndexEntry
+import com.tuxunbrowse.android.data.allBookmarkFolders
+import com.tuxunbrowse.android.data.backupToJson
+import com.tuxunbrowse.android.data.BackupSettings
+import com.tuxunbrowse.android.data.bookmarksFromJson
+import com.tuxunbrowse.android.data.bookmarksInFolder
+import com.tuxunbrowse.android.data.bookmarksToJson
+import com.tuxunbrowse.android.data.clearBookmarksFolder
+import com.tuxunbrowse.android.data.derivedBookmarkFolders
 import com.tuxunbrowse.android.data.filterSettingsIndex
 import com.tuxunbrowse.android.data.historyRestoreIndex
+import com.tuxunbrowse.android.data.normalizeBookmarkFolderName
+import com.tuxunbrowse.android.data.parseBackup
+import com.tuxunbrowse.android.data.renameBookmarksFolder
 import com.tuxunbrowse.android.data.shouldPreheatGecko
 import com.tuxunbrowse.android.data.blockedDayKey
 import com.tuxunbrowse.android.data.bookmarksFromHtml
@@ -606,5 +617,200 @@ class FilterSettingsIndexTest {
             setOf("engine", "appearance", "privacy", "download", "adblock", "about"),
             pages
         )
+    }
+}
+
+/**
+ * Bookmark folder logic (v0.72.0): derivation, the stored+derived
+ * union, the page filter, rename mapping and delete-folder
+ * fallback. All pure list transforms.
+ */
+class BookmarkFolderLogicTest {
+
+    private fun bm(url: String, folder: String = "") =
+        Bookmark("t-$url", url, folder = folder)
+
+    @Test
+    fun derivedFoldersSkipUncategorizedAndDeduplicate() {
+        val list = listOf(
+            bm("https://a.example", "工作"),
+            bm("https://b.example"),
+            bm("https://c.example", "工作"),
+            bm("https://d.example", "稍后看")
+        )
+        assertEquals(listOf("工作", "稍后看"), derivedBookmarkFolders(list))
+    }
+
+    @Test
+    fun unionKeepsStoredOrderThenDerivedOnlyNames() {
+        // "空夹" holds no bookmarks: it survives only via the stored
+        // list. "工作" is in both: it keeps its stored position.
+        val list = listOf(
+            bm("https://a.example", "工作"),
+            bm("https://b.example", "新夹")
+        )
+        assertEquals(
+            listOf("空夹", "工作", "新夹"),
+            allBookmarkFolders(list, listOf("空夹", "工作"))
+        )
+    }
+
+    @Test
+    fun unionTrimsAndDropsBlankNames() {
+        assertEquals(
+            listOf("甲"),
+            allBookmarkFolders(emptyList(), listOf("  甲 ", "", "甲"))
+        )
+        assertEquals("甲", normalizeBookmarkFolderName("  甲  "))
+    }
+
+    @Test
+    fun filterNullMeansAllEmptyMeansUncategorized() {
+        val list = listOf(
+            bm("https://a.example", "工作"),
+            bm("https://b.example"),
+            bm("https://c.example", "工作")
+        )
+        assertEquals(list, bookmarksInFolder(list, null))
+        assertEquals(
+            listOf("https://b.example"),
+            bookmarksInFolder(list, "").map { it.url }
+        )
+        assertEquals(
+            listOf("https://a.example", "https://c.example"),
+            bookmarksInFolder(list, "工作").map { it.url }
+        )
+        assertTrue(bookmarksInFolder(list, "不存在的夹").isEmpty())
+    }
+
+    @Test
+    fun renameMovesEveryBookmarkInTheFolderOnly() {
+        val list = listOf(
+            bm("https://a.example", "工作"),
+            bm("https://b.example", "生活"),
+            bm("https://c.example", "工作")
+        )
+        val renamed = renameBookmarksFolder(list, "工作", "公司")
+        assertEquals(
+            listOf("公司", "生活", "公司"),
+            renamed.map { it.folder }
+        )
+        // Input list is never mutated.
+        assertEquals("工作", list[0].folder)
+    }
+
+    @Test
+    fun deleteFolderFallsBackToUncategorizedAndKeepsBookmarks() {
+        val list = listOf(
+            bm("https://a.example", "工作"),
+            bm("https://b.example", "工作"),
+            bm("https://c.example")
+        )
+        val cleared = clearBookmarksFolder(list, "工作")
+        assertEquals(3, cleared.size)
+        assertTrue(cleared.all { it.folder.isEmpty() || it.url == "https://c.example" })
+        assertEquals("", cleared[0].folder)
+        assertEquals("", cleared[1].folder)
+    }
+}
+
+/**
+ * Bookmark folder JSON compatibility (v0.72.0) — the highest-risk
+ * surface of the release: an old user's archive, export file or
+ * backup has NO "folder" key anywhere, and every one of those
+ * files must still load with every bookmark landing in
+ * uncategorized and nothing dropped. Runs on the real org.json
+ * (test-only dependency), not the android.jar stubs.
+ */
+class BookmarkFolderJsonCompatTest {
+
+    @Test
+    fun oldStoredShapeWithoutFolderParsesAsUncategorized() {
+        // Exactly what bookmarksFromJson accepted before v0.72.0.
+        val raw = """
+            {"app":"TuxunBrowse","type":"bookmarks","items":[
+              {"title":"甲站","url":"https://a.example","pinned":true},
+              {"title":"乙站","url":"https://b.example","pinned":false}
+            ]}
+        """.trimIndent()
+        val parsed = bookmarksFromJson(raw)
+        assertEquals(2, parsed.size)
+        assertEquals("", parsed[0].folder)
+        assertEquals("", parsed[1].folder)
+        assertTrue(parsed[0].pinned)
+        assertEquals("甲站", parsed[0].title)
+    }
+
+    @Test
+    fun bareArrayExportWithoutFolderAlsoParses() {
+        val parsed = bookmarksFromJson(
+            """[{"title":"甲","url":"https://a.example"}]"""
+        )
+        assertEquals(1, parsed.size)
+        assertEquals("", parsed[0].folder)
+    }
+
+    @Test
+    fun folderSurvivesExportRoundTrip() {
+        val list = listOf(
+            Bookmark("甲站", "https://a.example", pinned = true, folder = "工作"),
+            Bookmark("乙站", "https://b.example")
+        )
+        val back = bookmarksFromJson(bookmarksToJson(list))
+        assertEquals(list, back)
+    }
+
+    @Test
+    fun oldBackupWithoutAnyFolderDataImportsClean() {
+        // A backup in the exact pre-v0.72.0 shape: no "folder" on
+        // the bookmarks, no "bookmarkFolders" key at all.
+        val raw = """
+            {"format":"tuxunbrowse-backup","version":1,
+             "bookmarks":[
+               {"title":"甲站","url":"https://a.example","pinned":false},
+               {"title":"乙站","url":"https://b.example","pinned":true}
+             ],
+             "history":[],"readingList":[],"speedDials":[],
+             "compatSites":[],"desktopSites":[],"settings":{}}
+        """.trimIndent()
+        val data = parseBackup(raw)
+        assertTrue(data != null)
+        assertEquals(2, data!!.bookmarks.size)
+        assertTrue(data.bookmarks.all { it.folder.isEmpty() })
+        assertTrue(data.bookmarkFolders.isEmpty())
+        assertEquals("乙站", data.bookmarks[1].title)
+        assertTrue(data.bookmarks[1].pinned)
+    }
+
+    @Test
+    fun newBackupRoundTripsFoldersAndEmptyFolderNames() {
+        val list = listOf(
+            Bookmark("甲站", "https://a.example", folder = "工作"),
+            Bookmark("乙站", "https://b.example")
+        )
+        val json = backupToJson(
+            list, emptyList(), emptyList(), emptyList(),
+            BackupSettings(),
+            bookmarkFolders = listOf("工作", "空夹")
+        )
+        val data = parseBackup(json)
+        assertTrue(data != null)
+        assertEquals("工作", data!!.bookmarks[0].folder)
+        assertEquals("", data.bookmarks[1].folder)
+        // The empty folder survives the round trip via the
+        // top-level name list even though no bookmark derives it.
+        assertEquals(listOf("工作", "空夹"), data.bookmarkFolders)
+    }
+
+    @Test
+    fun backupFolderNamesAreSanitizedOnParse() {
+        val raw = """
+            {"format":"tuxunbrowse-backup","version":1,
+             "bookmarks":[],
+             "bookmarkFolders":["  正常  ","","正常"]}
+        """.trimIndent()
+        val data = parseBackup(raw)
+        assertTrue(data != null)
+        assertEquals(listOf("正常"), data!!.bookmarkFolders)
     }
 }

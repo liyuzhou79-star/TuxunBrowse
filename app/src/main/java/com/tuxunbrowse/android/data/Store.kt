@@ -76,7 +76,86 @@ enum class SearchEngine(
     }
 }
 
-data class Bookmark(val title: String, val url: String, val pinned: Boolean = false)
+data class Bookmark(
+    val title: String,
+    val url: String,
+    val pinned: Boolean = false,
+    /**
+     * Bookmark folder name (v0.72.0). The empty string means
+     * "uncategorized" — there is no separate uncategorized bucket in
+     * storage, an absent/blank folder IS the uncategorized state.
+     * Every JSON reader below reads this with optString + trim, so
+     * files written before folders existed (no "folder" key at all)
+     * parse as uncategorized and lose nothing.
+     */
+    val folder: String = ""
+)
+
+/** Folder names are compared trimmed; storage keeps them trimmed. */
+fun normalizeBookmarkFolderName(raw: String): String = raw.trim()
+
+/**
+ * The folders that actually hold bookmarks, in first-appearance
+ * order (v0.72.0). Derived from the bookmark list itself, so it can
+ * never disagree with the data.
+ */
+fun derivedBookmarkFolders(bookmarks: List<Bookmark>): List<String> =
+    bookmarks.map { it.folder.trim() }
+        .filter { it.isNotEmpty() }
+        .distinct()
+
+/**
+ * The full folder list the UI offers (v0.72.0): the union of the
+ * separately stored folder names (which is what lets an EMPTY
+ * folder survive — it holds no bookmarks, so derivation alone
+ * would forget it) and the folders derived from the bookmarks.
+ * Stored names keep their stored order first; derived-only names
+ * follow in first-appearance order.
+ */
+fun allBookmarkFolders(
+    bookmarks: List<Bookmark>,
+    storedFolders: List<String>
+): List<String> {
+    val out = mutableListOf<String>()
+    (storedFolders + derivedBookmarkFolders(bookmarks)).forEach { name ->
+        val trimmed = name.trim()
+        if (trimmed.isNotEmpty() && trimmed !in out) out.add(trimmed)
+    }
+    return out
+}
+
+/**
+ * Folder filter for the bookmarks page (v0.72.0): a null filter
+ * means "all bookmarks", the empty string means "uncategorized
+ * only", any other value selects exactly that folder.
+ */
+fun bookmarksInFolder(
+    bookmarks: List<Bookmark>,
+    folder: String?
+): List<Bookmark> = when (folder) {
+    null -> bookmarks
+    else -> bookmarks.filter { it.folder.trim() == folder }
+}
+
+/** Rename a folder: every bookmark in it moves to the new name. */
+fun renameBookmarksFolder(
+    bookmarks: List<Bookmark>,
+    oldName: String,
+    newName: String
+): List<Bookmark> = bookmarks.map {
+    if (it.folder.trim() == oldName) it.copy(folder = newName.trim()) else it
+}
+
+/**
+ * Delete a folder: the folder goes away, its bookmarks fall back
+ * to uncategorized — deleting a folder never deletes a bookmark.
+ */
+fun clearBookmarksFolder(
+    bookmarks: List<Bookmark>,
+    name: String
+): List<Bookmark> = bookmarks.map {
+    if (it.folder.trim() == name) it.copy(folder = "") else it
+}
 
 /**
  * Bookmarks-page display sort (v0.63.0). Display-only: the stored
@@ -1120,11 +1199,47 @@ class Store(context: Context) {
     }
 
     fun loadBookmarks(): MutableList<Bookmark> = readList(KEY_BOOKMARKS) {
-        Bookmark(it.optString("title"), it.optString("url"), it.optBoolean("pinned"))
+        // folder (v0.72.0): optString yields "" when the key is
+        // absent, so archives written before folders existed load
+        // as uncategorized — no migration, no data loss.
+        Bookmark(
+            it.optString("title"), it.optString("url"),
+            it.optBoolean("pinned"), it.optString("folder").trim()
+        )
     }.toMutableList()
 
     fun saveBookmarks(list: List<Bookmark>) = writeList(KEY_BOOKMARKS, list) {
-        JSONObject().put("title", it.title).put("url", it.url).put("pinned", it.pinned)
+        JSONObject().put("title", it.title).put("url", it.url)
+            .put("pinned", it.pinned).put("folder", it.folder.trim())
+    }
+
+    /**
+     * The stored folder-name list (v0.72.0). This list exists for
+     * exactly one reason: an empty folder holds no bookmarks, so it
+     * cannot be derived from them — without a stored list it would
+     * vanish the moment its last bookmark leaves. The list the UI
+     * shows is the UNION of this and the derived names (see
+     * allBookmarkFolders), so the two can never disagree about a
+     * folder that holds bookmarks.
+     */
+    fun loadBookmarkFolders(): List<String> {
+        val raw = safeString(KEY_BOOKMARK_FOLDERS, null) ?: return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length())
+                .map { arr.optString(it).trim() }
+                .filter { it.isNotEmpty() }
+                .distinct()
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    fun saveBookmarkFolders(list: List<String>) {
+        val arr = JSONArray()
+        list.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+            .forEach { arr.put(it) }
+        prefs.edit().putString(KEY_BOOKMARK_FOLDERS, arr.toString()).apply()
     }
 
     fun loadHistory(): MutableList<HistoryItem> = readList(KEY_HISTORY) {
@@ -1264,6 +1379,7 @@ class Store(context: Context) {
         private const val KEY_COMPAT_SITES = "compat_sites"
         private const val KEY_DESKTOP_SITES = "desktop_sites"
         private const val KEY_BOOKMARKS = "bookmarks"
+        private const val KEY_BOOKMARK_FOLDERS = "bookmark_folders"
         private const val KEY_BOOKMARK_SORT_ORDER = "bookmark_sort_order"
         private const val KEY_HISTORY = "history"
         private const val KEY_READING_LIST = "reading_list"
@@ -1313,7 +1429,11 @@ const val BACKUP_FORMAT = "tuxunbrowse-backup"
  * written by v0.19.0 still parses exactly as before, and an older
  * app version reading a newer backup simply ignores the fields it
  * does not know. Bump this only when a change would make an old
- * file parse differently, not for additive fields.
+ * file parse differently, not for additive fields. (v0.72.0's
+ * bookmark folders follow the same rule: the per-bookmark "folder"
+ * field and the top-level "bookmarkFolders" list are both additive
+ * and read tolerantly, so the version stays 1 and pre-v0.72.0
+ * backups import exactly as before.)
  */
 const val BACKUP_FORMAT_VERSION = 1
 
@@ -1394,7 +1514,13 @@ data class BackupData(
      * beside the lists and merges (union) on import. Empty when the
      * backup predates v0.56.0.
      */
-    val desktopSites: List<String> = emptyList()
+    val desktopSites: List<String> = emptyList(),
+    /**
+     * Bookmark folder names (v0.72.0), including empty folders that
+     * no bookmark derives. Merges (union) on import, like the two
+     * site lists. Empty when the backup predates v0.72.0.
+     */
+    val bookmarkFolders: List<String> = emptyList()
 )
 
 /** Serialize a full backup (lists + main settings) to one JSON text. */
@@ -1405,13 +1531,14 @@ fun backupToJson(
     speedDials: List<SpeedDial>,
     settings: BackupSettings,
     compatSites: List<String> = emptyList(),
-    desktopSites: List<String> = emptyList()
+    desktopSites: List<String> = emptyList(),
+    bookmarkFolders: List<String> = emptyList()
 ): String {
     val bookmarkArr = JSONArray()
     bookmarks.forEach {
         bookmarkArr.put(
             JSONObject().put("title", it.title).put("url", it.url)
-                .put("pinned", it.pinned)
+                .put("pinned", it.pinned).put("folder", it.folder.trim())
         )
     }
     val historyArr = JSONArray()
@@ -1467,6 +1594,9 @@ fun backupToJson(
     compatSites.forEach { compatArr.put(it) }
     val desktopArr = JSONArray()
     desktopSites.forEach { desktopArr.put(it) }
+    val folderArr = JSONArray()
+    bookmarkFolders.map { it.trim() }.filter { it.isNotEmpty() }
+        .distinct().forEach { folderArr.put(it) }
     return JSONObject()
         .put("format", BACKUP_FORMAT)
         .put("version", BACKUP_FORMAT_VERSION)
@@ -1476,6 +1606,7 @@ fun backupToJson(
         .put("speedDials", dialArr)
         .put("compatSites", compatArr)
         .put("desktopSites", desktopArr)
+        .put("bookmarkFolders", folderArr)
         .put("settings", settingsObj)
         .toString(2)
 }
@@ -1509,8 +1640,12 @@ fun parseBackup(raw: String): BackupData? {
         }
     val bookmarks = readArr("bookmarks") { o ->
         val url = webUrl(o.optString("url")) ?: return@readArr null
+        // folder (v0.72.0): absent in older backups — optString
+        // yields "", which IS uncategorized, so old files import
+        // exactly as before.
         Bookmark(
-            o.optString("title").ifBlank { url }, url, o.optBoolean("pinned")
+            o.optString("title").ifBlank { url }, url,
+            o.optBoolean("pinned"), o.optString("folder").trim()
         )
     }
     val history = readArr("history") { o ->
@@ -1645,9 +1780,23 @@ fun parseBackup(raw: String): BackupData? {
             }
         }.distinct()
     }
+    // Bookmark folder names (v0.72.0): plain names only — blank or
+    // implausibly long entries are dropped, never stored. Absent in
+    // older backups: empty list (folders still derive from the
+    // imported bookmarks themselves).
+    val folderArr = obj.optJSONArray("bookmarkFolders")
+    val bookmarkFolders = if (folderArr == null) {
+        emptyList()
+    } else {
+        val count = minOf(folderArr.length(), MAX_IMPORT_ENTRIES)
+        (0 until count).mapNotNull { i ->
+            val name = folderArr.optString(i).trim()
+            name.takeIf { it.isNotEmpty() && it.length <= 60 }
+        }.distinct()
+    }
     return BackupData(
         bookmarks, history, reading, dials, settings, compatSites,
-        desktopSites
+        desktopSites, bookmarkFolders
     )
 }
 
@@ -1656,7 +1805,8 @@ fun bookmarksToJson(list: List<Bookmark>): String {
     val arr = JSONArray()
     list.forEach {
         arr.put(
-            JSONObject().put("title", it.title).put("url", it.url).put("pinned", it.pinned)
+            JSONObject().put("title", it.title).put("url", it.url)
+                .put("pinned", it.pinned).put("folder", it.folder.trim())
         )
     }
     return JSONObject()
@@ -1691,7 +1841,12 @@ fun bookmarksFromJson(raw: String): List<Bookmark> {
         ) {
             null
         } else {
-            Bookmark(o.optString("title").ifBlank { url }, url, o.optBoolean("pinned"))
+            // folder (v0.72.0): absent in exports written before
+            // folders existed — "" = uncategorized, as everywhere.
+            Bookmark(
+                o.optString("title").ifBlank { url }, url,
+                o.optBoolean("pinned"), o.optString("folder").trim()
+            )
         }
     }
 }
