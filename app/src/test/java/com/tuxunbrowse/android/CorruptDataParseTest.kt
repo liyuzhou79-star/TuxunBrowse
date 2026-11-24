@@ -165,8 +165,6 @@ class CorruptDataParseTest {
     }
 
     @Test
-
-    @Test
     fun genericParserSkipsElementsWhoseParseThrows() {
         val parsed = parseJsonObjectList(
             "[{\"n\":1},{\"n\":\"boom\"},{\"n\":3}]"

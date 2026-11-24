@@ -118,10 +118,6 @@ class ResolveInputTest {
     }
 
     @Test
-
-    @Test
-
-    @Test
     fun urlLikeMirrorMatchesResolver() {
         assertTrue(isUrlLikeInput("https://example.com"))
         assertTrue(isUrlLikeInput("example.com"))
@@ -693,16 +689,6 @@ class ExtractFirstWebUrlTest {
     @Test
     fun schemeOnlyIsNotAUrl() {
         assertEquals(null, extractFirstWebUrl("https:// 后面什么都没有"))
-    }
-}
-
-    @Test
-    fun missingWebViewPackageIsShownAsUnknown() {
-        val info = sampleInfo().copy(
-            webViewPackageName = null, webViewVersionName = null
-        )
-        val lines = diagnosticText(info).lines()
-        assertEquals("系统 WebView：未知", lines[3])
     }
 }
 
