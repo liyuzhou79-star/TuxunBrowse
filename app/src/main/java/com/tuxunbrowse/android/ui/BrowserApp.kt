@@ -8000,8 +8000,13 @@ private fun DownloadsScreen(
     // 0 = all, 1 = in progress (queued / running / paused),
     // 2 = completed, 3 = failed.
     var statusFilter by remember { mutableStateOf(0) }
+    // Page-local filename search (v0.64.0), same shape as the
+    // bookmark/history page searches: memory only, never persisted,
+    // and it survives filter changes and list refreshes because
+    // nothing below ever resets it.
+    var downloadQuery by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
-    LaunchedEffect(statusFilter) {
+    LaunchedEffect(statusFilter, downloadQuery) {
         listState.scrollToItem(0)
     }
     // Presentation filter, memoised on the inputs (v0.23.0): there
@@ -8009,7 +8014,15 @@ private fun DownloadsScreen(
     // refreshTick bumps (screen entry, delete, retry) — and with
     // remember the filter no longer re-runs on unrelated
     // recompositions while the list is being scrolled.
-    val visibleEntries = remember(entries, statusFilter) {
+    // Single pipeline for what the DownloadManager list shows
+    // (v0.64.0): status filter first, then the filename search on
+    // top of it (case-insensitive substring on the file name).
+    // Everything display-side reads this one list; everything
+    // destructive (bulk clear counts and target ids below) keeps
+    // reading the full [entries] list, so a search can never
+    // shrink what a bulk clear actually removes.
+    val visibleEntries = remember(entries, statusFilter, downloadQuery) {
+        val query = downloadQuery.trim()
         entries.filter { entry ->
             when (statusFilter) {
                 1 -> entry.status == android.app.DownloadManager.STATUS_PENDING ||
@@ -8019,6 +8032,8 @@ private fun DownloadsScreen(
                 3 -> entry.status == android.app.DownloadManager.STATUS_FAILED
                 else -> true
             }
+        }.filter { entry ->
+            query.isEmpty() || entry.title.contains(query, ignoreCase = true)
         }
     }
 
@@ -8035,6 +8050,21 @@ private fun DownloadsScreen(
     }
     val geckoTimeFormat = remember {
         java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+    }
+    // The Gecko section follows the same filename search
+    // (v0.64.0): same case-insensitive substring rule on the file
+    // name. Display reads this filtered list; single delete, open
+    // and the clear-this-section action keep working on the full
+    // [geckoRecords] list, exactly like the bulk clear above.
+    val visibleGeckoRecords = remember(geckoRecords, downloadQuery) {
+        val query = downloadQuery.trim()
+        if (query.isEmpty()) {
+            geckoRecords
+        } else {
+            geckoRecords.filter {
+                it.fileName.contains(query, ignoreCase = true)
+            }
+        }
     }
     var pendingGeckoDelete by remember {
         mutableStateOf<GeckoDownloadRecord?>(null)
@@ -8599,6 +8629,22 @@ private fun DownloadsScreen(
                 bottom = 24.dp
             )
         ) {
+            if (entries.isNotEmpty() || geckoRecords.isNotEmpty()) {
+                item {
+                    OutlinedTextField(
+                        value = downloadQuery,
+                        onValueChange = { downloadQuery = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        singleLine = true,
+                        placeholder = { Text("搜索下载（文件名）") },
+                        leadingIcon = {
+                            Icon(Icons.Filled.Search, contentDescription = null)
+                        }
+                    )
+                }
+            }
             item {
                 Row(
                     modifier = Modifier
@@ -8619,6 +8665,19 @@ private fun DownloadsScreen(
             if (entries.isEmpty() && geckoRecords.isEmpty()) {
                 item {
                     EmptyState(Icons.Filled.Download, "还没有下载记录。")
+                }
+            } else if (downloadQuery.isNotBlank() &&
+                visibleEntries.isEmpty() && visibleGeckoRecords.isEmpty()
+            ) {
+                // Search found nothing in either list (v0.64.0):
+                // its own wording, distinct from both the
+                // no-records-at-all state above and the
+                // per-status empty states below.
+                item {
+                    EmptyState(
+                        Icons.Filled.Search,
+                        "没有找到包含『${downloadQuery.trim()}』的下载"
+                    )
                 }
             } else if (entries.isNotEmpty() && visibleEntries.isEmpty()) {
                 item {
@@ -8708,7 +8767,7 @@ private fun DownloadsScreen(
                 )
                 HorizontalDivider()
             }
-            if (geckoRecords.isNotEmpty()) {
+            if (visibleGeckoRecords.isNotEmpty()) {
                 item {
                     // Section header for the Gecko records
                     // (v0.57.0). Kept apart from the DownloadManager
@@ -8739,7 +8798,7 @@ private fun DownloadsScreen(
                     }
                 }
                 items(
-                    geckoRecords,
+                    visibleGeckoRecords,
                     key = { "gecko-${it.time}-${it.contentUri ?: it.filePath ?: it.fileName}" }
                 ) { record ->
                     ListItem(
