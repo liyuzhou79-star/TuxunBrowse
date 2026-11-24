@@ -1606,6 +1606,30 @@ class BrowserTab(
         view.settings.mixedContentMode =
             android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
         view.settings.setGeolocationEnabled(false)
+        // Second hardening pass (v0.113.0 audit): four more switches
+        // that used to ride on platform defaults are now pinned to
+        // those same defaults explicitly, so an OEM WebView cannot
+        // drift them. Every value below equals the platform default
+        // on current Android, so this block changes no behaviour:
+        // - JavaScript may not open windows on its own
+        //   (javaScriptCanOpenWindowsAutomatically defaults to
+        //   false). Window.open needs a user gesture path instead.
+        // - Multiple windows stay OFF (the default). The
+        //   onCreateWindow handler below is therefore not reached
+        //   today: a target=_blank / window.open navigation loads
+        //   as a top-level navigation in this same tab instead of
+        //   opening a new tab. Turning the gate on would change
+        //   that visible site behaviour, so it stays off pending a
+        //   product decision (recorded in the v0.113.0 checkpoint).
+        // - The legacy WebSQL database stays off (the default):
+        //   domStorage above is the storage pages actually use.
+        // - Password saving stays off: the setter is deprecated
+        //   and a no-op on current Android (WebView no longer
+        //   saves passwords itself), pinned only for the record.
+        view.settings.javaScriptCanOpenWindowsAutomatically = false
+        view.settings.setSupportMultipleWindows(false)
+        view.settings.databaseEnabled = false
+        view.settings.savePassword = false
         view.settings.builtInZoomControls = true
         view.settings.displayZoomControls = false
         view.settings.textZoom = textZoomProvider()
