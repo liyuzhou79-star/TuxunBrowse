@@ -609,6 +609,69 @@ fun dirSizeBytes(file: java.io.File?): Long? {
     return total
 }
 
+/**
+ * The GeckoView version this build ships (v0.74.0). It is the exact
+ * version string of the org.mozilla.geckoview dependency in
+ * app/build.gradle.kts, named here so the diagnostics card and the
+ * build file have one agreed value to point at — when the
+ * dependency is bumped, this constant must be bumped with it.
+ */
+const val GECKOVIEW_VERSION = "132.0.20241110192737"
+
+/**
+ * Everything the diagnostics card on the About page shows
+ * (v0.74.0). Deliberately ONLY non-private fields: version numbers,
+ * counts and a storage total. There is no URL, title or history
+ * content field in this type at all, so the assembled text cannot
+ * leak browsing content by construction — [diagnosticText] has no
+ * parameter through which such data could even reach it.
+ */
+data class DiagnosticInfo(
+    val appVersionName: String,
+    val appVersionCode: Long,
+    val geckoVersion: String,
+    val webViewPackageName: String?,
+    val webViewVersionName: String?,
+    val androidRelease: String,
+    val androidSdk: Int,
+    val storageText: String,
+    val bookmarkCount: Int,
+    val historyCount: Int,
+    val readingCount: Int,
+    val speedDialCount: Int,
+    val totalBlocked: Long
+)
+
+/**
+ * Assemble the diagnostics card's rows as one plain text
+ * (v0.74.0): exactly the lines the card shows, in the same order,
+ * so "copy diagnostics" copies what the user just read — nothing
+ * more. An unknown system WebView is stated as unknown, never
+ * invented.
+ */
+fun diagnosticText(info: DiagnosticInfo): String {
+    val webViewText = if (info.webViewPackageName.isNullOrBlank()) {
+        "未知"
+    } else {
+        val version = info.webViewVersionName
+            ?.takeIf { it.isNotBlank() } ?: "未知"
+        "${info.webViewPackageName} $version"
+    }
+    return listOf(
+        "TuxunBrowse 诊断信息",
+        "应用版本：${info.appVersionName}（版本号 ${info.appVersionCode}）",
+        "火狐内核（GeckoView）版本：${info.geckoVersion}",
+        "系统 WebView：$webViewText",
+        "Android 版本：${info.androidRelease}（API ${info.androidSdk}）",
+        "应用存储占用：${info.storageText}",
+        "书签：${info.bookmarkCount} 条",
+        "历史记录：${info.historyCount} 条",
+        "阅读列表：${info.readingCount} 条",
+        "首页快捷方式：${info.speedDialCount} 条",
+        "广告拦截累计：${info.totalBlocked} 个"
+    ).joinToString("\n")
+}
+
 /** Plain-language size text: "—" for unknown, otherwise B/KB/MB/GB. */
 fun formatStorageSize(bytes: Long?): String {
     if (bytes == null) return "—"
@@ -888,6 +951,8 @@ val SETTINGS_SEARCH_INDEX: List<SettingsIndexEntry> = listOf(
     SettingsIndexEntry("最近 7 天", "adblock", "广告拦截"),
     // 关于 (about)
     SettingsIndexEntry("检查更新", "about", "关于"),
+    SettingsIndexEntry("诊断信息", "about", "关于"),
+    SettingsIndexEntry("复制诊断信息", "about", "关于"),
     SettingsIndexEntry("关于 TuxunBrowse", "about", "关于")
 )
 
@@ -1168,6 +1233,36 @@ class Store(context: Context) {
                 .putString(KEY_BLOCKED_DAILY, dailyObj.toString())
                 .apply()
         }
+    }
+
+    /**
+     * Restore the blocked counters from a backup (v0.74.0): the
+     * lifetime total and the per-day map are replaced by the backed-
+     * up values (a restore means "bring back what was backed up",
+     * the same overwrite treatment the settings slice gets — the
+     * lists merge, settings and statistics overwrite). The daily
+     * map is pruned to the kept window on the way in, exactly like
+     * a normal load, and both memory caches are updated so readers
+     * see the restored values at once.
+     */
+    fun restoreBlockedStats(total: Long, daily: Map<String, Long>) {
+        val cleanTotal = total.coerceAtLeast(0L)
+        val cleanDaily = pruneBlockedDaily(
+            daily.filterValues { it > 0 }, java.time.LocalDate.now()
+        )
+        totalBlockedMemory = cleanTotal
+        blockedDailyMemory = cleanDaily.toMutableMap()
+        blockedPendingFlush = 0
+        blockedLastFlushAt = System.currentTimeMillis()
+        val editor = prefs.edit().putLong(KEY_TOTAL_BLOCKED, cleanTotal)
+        if (cleanDaily.isEmpty()) {
+            editor.remove(KEY_BLOCKED_DAILY)
+        } else {
+            val dailyObj = JSONObject()
+            cleanDaily.forEach { (day, count) -> dailyObj.put(day, count) }
+            editor.putString(KEY_BLOCKED_DAILY, dailyObj.toString())
+        }
+        editor.apply()
     }
 
     /** Reset the lifetime blocked counter and the per-day counts, effective at once. */
@@ -1504,7 +1599,9 @@ const val BACKUP_FORMAT = "tuxunbrowse-backup"
  * bookmark folders follow the same rule: the per-bookmark "folder"
  * field and the top-level "bookmarkFolders" list are both additive
  * and read tolerantly, so the version stays 1 and pre-v0.72.0
- * backups import exactly as before.)
+ * backups import exactly as before. The v0.74.0 "blockedStats"
+ * object follows the same rule again: additive, read tolerantly,
+ * absent = leave the current counters alone.)
  */
 const val BACKUP_FORMAT_VERSION = 1
 
@@ -1598,7 +1695,24 @@ data class BackupData(
      * the backup predates v0.73.0. Purely additive optional field,
      * so the backup format version stays 1 (the v0.51.0 rule).
      */
-    val readerSites: List<String> = emptyList()
+    val readerSites: List<String> = emptyList(),
+    /**
+     * Lifetime blocked-request total (v0.74.0 backup audit). The
+     * v0.74.0 audit of every persisted key found the two blocked
+     * counters were the only user-accumulated data missing from
+     * the backup: they cannot be rebuilt (a new device starts at
+     * zero), so they belong in it. Null when the backup predates
+     * v0.74.0 — the current counters are then left untouched.
+     * On import the backed-up values OVERWRITE the current ones
+     * (restore semantics, like the settings slice).
+     */
+    val totalBlocked: Long? = null,
+    /**
+     * Per-day blocked counts (v0.74.0), yyyy-MM-dd -> count.
+     * Pruned to the kept window at parse time. Empty when the
+     * backup predates v0.74.0 or carries no daily counts.
+     */
+    val blockedDaily: Map<String, Long> = emptyMap()
 )
 
 /** Serialize a full backup (lists + main settings) to one JSON text. */
@@ -1611,7 +1725,9 @@ fun backupToJson(
     compatSites: List<String> = emptyList(),
     desktopSites: List<String> = emptyList(),
     bookmarkFolders: List<String> = emptyList(),
-    readerSites: List<String> = emptyList()
+    readerSites: List<String> = emptyList(),
+    totalBlocked: Long? = null,
+    blockedDaily: Map<String, Long> = emptyMap()
 ): String {
     val bookmarkArr = JSONArray()
     bookmarks.forEach {
@@ -1678,7 +1794,7 @@ fun backupToJson(
     val folderArr = JSONArray()
     bookmarkFolders.map { it.trim() }.filter { it.isNotEmpty() }
         .distinct().forEach { folderArr.put(it) }
-    return JSONObject()
+    val root = JSONObject()
         .put("format", BACKUP_FORMAT)
         .put("version", BACKUP_FORMAT_VERSION)
         .put("bookmarks", bookmarkArr)
@@ -1690,7 +1806,19 @@ fun backupToJson(
         .put("readerSites", readerArr)
         .put("bookmarkFolders", folderArr)
         .put("settings", settingsObj)
-        .toString(2)
+    // Blocked statistics (v0.74.0): written only when the caller
+    // supplies a total, as one "blockedStats" object. Purely
+    // additive — older app versions reading this file simply
+    // ignore the unknown key, and the format version stays 1.
+    totalBlocked?.let { total ->
+        val dailyObj = JSONObject()
+        blockedDaily.forEach { (day, count) -> dailyObj.put(day, count) }
+        root.put(
+            "blockedStats",
+            JSONObject().put("total", total).put("daily", dailyObj)
+        )
+    }
+    return root.toString(2)
 }
 
 /**
@@ -1892,9 +2020,38 @@ fun parseBackup(raw: String): BackupData? {
             }
         }.distinct()
     }
+    // Blocked statistics (v0.74.0): absent in older backups — the
+    // total stays null (import then leaves the current counters
+    // alone) and the daily map stays empty. A present daily map is
+    // pruned to the kept window here, so a stale or hand-crafted
+    // file cannot resurrect long-gone days.
+    val statsObj = obj.optJSONObject("blockedStats")
+    val parsedTotalBlocked: Long? =
+        if (statsObj != null && statsObj.has("total")) {
+            statsObj.optLong("total").coerceAtLeast(0L)
+        } else {
+            null
+        }
+    val parsedBlockedDaily: Map<String, Long> = run {
+        val dailyObj = statsObj?.optJSONObject("daily")
+        if (dailyObj == null) {
+            emptyMap()
+        } else {
+            val loaded = mutableMapOf<String, Long>()
+            val keys = dailyObj.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val count = dailyObj.optLong(key, 0L)
+                if (count > 0) loaded[key] = count
+            }
+            pruneBlockedDaily(loaded, java.time.LocalDate.now())
+        }
+    }
     return BackupData(
         bookmarks, history, reading, dials, settings, compatSites,
-        desktopSites, bookmarkFolders, readerSites
+        desktopSites, bookmarkFolders, readerSites,
+        totalBlocked = parsedTotalBlocked,
+        blockedDaily = parsedBlockedDaily
     )
 }
 

@@ -27,6 +27,9 @@ import com.tuxunbrowse.android.data.compareVersionNames
 import com.tuxunbrowse.android.data.pruneBlockedDaily
 import com.tuxunbrowse.android.data.recentBlockedSeries
 import com.tuxunbrowse.android.data.extractFirstWebUrl
+import com.tuxunbrowse.android.data.DiagnosticInfo
+import com.tuxunbrowse.android.data.GECKOVIEW_VERSION
+import com.tuxunbrowse.android.data.diagnosticText
 import com.tuxunbrowse.android.data.isReaderHost
 import com.tuxunbrowse.android.data.isUrlLikeInput
 import com.tuxunbrowse.android.data.matchSuggestions
@@ -949,5 +952,141 @@ class ReaderHostMatchTest {
         val data = parseBackup(raw)
         assertTrue(data != null)
         assertEquals(listOf("ok.example"), data!!.readerSites)
+    }
+}
+
+/**
+ * v0.74.0: the backup audit found the blocked counters were the
+ * only user-accumulated data missing from the full backup. These
+ * tests pin the round trip, the pre-v0.74.0 shape (no blockedStats
+ * key at all — the counters must come back "absent", not zero, so
+ * an import leaves the current counters untouched) and the
+ * parse-time pruning of the daily map.
+ */
+class BlockedStatsBackupTest {
+
+    @Test
+    fun blockedStatsSurviveBackupRoundTrip() {
+        val today = blockedDayKey(java.time.LocalDate.now())
+        val json = backupToJson(
+            emptyList(), emptyList(), emptyList(), emptyList(),
+            BackupSettings(),
+            totalBlocked = 1234L,
+            blockedDaily = mapOf(today to 42L)
+        )
+        val data = parseBackup(json)
+        assertTrue(data != null)
+        assertEquals(1234L, data!!.totalBlocked)
+        assertEquals(mapOf(today to 42L), data.blockedDaily)
+    }
+
+    @Test
+    fun oldBackupWithoutBlockedStatsParsesAsAbsent() {
+        val raw = """
+            {"format":"tuxunbrowse-backup","version":1,"bookmarks":[]}
+        """.trimIndent()
+        val data = parseBackup(raw)
+        assertTrue(data != null)
+        assertEquals(null, data!!.totalBlocked)
+        assertTrue(data.blockedDaily.isEmpty())
+    }
+
+    @Test
+    fun backupWrittenWithoutStatsOmitsThem() {
+        val json = backupToJson(
+            emptyList(), emptyList(), emptyList(), emptyList(),
+            BackupSettings()
+        )
+        val data = parseBackup(json)
+        assertTrue(data != null)
+        assertEquals(null, data!!.totalBlocked)
+        assertTrue(data.blockedDaily.isEmpty())
+    }
+
+    @Test
+    fun blockedDailyIsPrunedAndSanitizedOnParse() {
+        val today = java.time.LocalDate.now()
+        val todayKey = blockedDayKey(today)
+        val staleKey = blockedDayKey(today.minusDays(60))
+        val raw = """
+            {"format":"tuxunbrowse-backup","version":1,
+             "bookmarks":[],
+             "blockedStats":{"total":99,
+               "daily":{"$todayKey":7,"$staleKey":500,"not-a-date":3,
+                        "${blockedDayKey(today.minusDays(1))}":0}}}
+        """.trimIndent()
+        val data = parseBackup(raw)
+        assertTrue(data != null)
+        assertEquals(99L, data!!.totalBlocked)
+        // Only today's positive count survives: the 60-day-old day
+        // is outside the kept window, the unparseable key is
+        // dropped by the prune, and the zero count is not stored.
+        assertEquals(mapOf(todayKey to 7L), data.blockedDaily)
+    }
+}
+
+/**
+ * v0.74.0: the diagnostics text is assembled from DiagnosticInfo,
+ * a type that carries ONLY version numbers, counts and a storage
+ * total — no URL, title or history field exists in it, so browsing
+ * content cannot reach the text by construction. These tests pin
+ * the exact line set and the honest "unknown" for a missing
+ * system WebView.
+ */
+class DiagnosticTextTest {
+
+    private fun sampleInfo() = DiagnosticInfo(
+        appVersionName = "0.74.0",
+        appVersionCode = 74L,
+        geckoVersion = GECKOVIEW_VERSION,
+        webViewPackageName = "com.google.android.webview",
+        webViewVersionName = "120.0.6099.43",
+        androidRelease = "14",
+        androidSdk = 34,
+        storageText = "312.4 MB",
+        bookmarkCount = 12,
+        historyCount = 34,
+        readingCount = 5,
+        speedDialCount = 6,
+        totalBlocked = 789L
+    )
+
+    @Test
+    fun diagnosticTextHasExactlyTheExpectedLines() {
+        val lines = diagnosticText(sampleInfo()).lines()
+        assertEquals(11, lines.size)
+        assertEquals("TuxunBrowse 诊断信息", lines[0])
+        assertEquals("应用版本：0.74.0（版本号 74）", lines[1])
+        assertEquals(
+            "火狐内核（GeckoView）版本：$GECKOVIEW_VERSION", lines[2]
+        )
+        assertEquals(
+            "系统 WebView：com.google.android.webview 120.0.6099.43",
+            lines[3]
+        )
+        assertEquals("Android 版本：14（API 34）", lines[4])
+        assertEquals("应用存储占用：312.4 MB", lines[5])
+        assertEquals("书签：12 条", lines[6])
+        assertEquals("历史记录：34 条", lines[7])
+        assertEquals("阅读列表：5 条", lines[8])
+        assertEquals("首页快捷方式：6 条", lines[9])
+        assertEquals("广告拦截累计：789 个", lines[10])
+    }
+
+    @Test
+    fun diagnosticTextContainsNoUrlLikeContent() {
+        val text = diagnosticText(sampleInfo())
+        assertFalse(text.contains("http://"))
+        assertFalse(text.contains("https://"))
+        assertFalse(text.contains("www."))
+    }
+
+    @Test
+    fun missingWebViewPackageIsShownAsUnknown() {
+        val info = sampleInfo().copy(
+            webViewPackageName = null, webViewVersionName = null
+        )
+        val lines = diagnosticText(info).lines()
+        assertEquals("系统 WebView：未知", lines[3])
     }
 }

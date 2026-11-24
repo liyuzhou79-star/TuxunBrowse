@@ -214,6 +214,9 @@ import com.tuxunbrowse.android.data.isCompatHost
 import com.tuxunbrowse.android.data.isDesktopHost
 import com.tuxunbrowse.android.data.isReaderHost
 import com.tuxunbrowse.android.data.extractFirstWebUrl
+import com.tuxunbrowse.android.data.DiagnosticInfo
+import com.tuxunbrowse.android.data.GECKOVIEW_VERSION
+import com.tuxunbrowse.android.data.diagnosticText
 import com.tuxunbrowse.android.data.hasBlockedPageScheme
 import com.tuxunbrowse.android.data.isAllowedPageUrl
 import com.tuxunbrowse.android.data.SEARCH_SUGGESTION_DEBOUNCE_MS
@@ -1819,7 +1822,9 @@ fun BrowserApp(
             compatSites = store.loadCompatSites().sorted(),
             desktopSites = store.loadDesktopSites().sorted(),
             bookmarkFolders = allBookmarkFolders(bookmarks, bookmarkFolders),
-            readerSites = store.loadReaderSites().sorted()
+            readerSites = store.loadReaderSites().sorted(),
+            totalBlocked = store.totalBlocked,
+            blockedDaily = store.blockedDailyCounts()
         )
         val fileName = "tuxunbrowse-backup.json"
         try {
@@ -2000,8 +2005,17 @@ fun BrowserApp(
             }
         }
         if (addedFolders > 0) store.saveBookmarkFolders(bookmarkFolders)
+        // Blocked statistics (v0.74.0): a backup that carries them
+        // restores them by overwrite (see BackupData.totalBlocked);
+        // a backup without them leaves the current counters alone.
+        var restoredBlocked = false
+        data.totalBlocked?.let { total ->
+            store.restoreBlockedStats(total, data.blockedDaily)
+            restoredBlocked = true
+        }
         if (data.settings.overwriteSummary().isNotEmpty() ||
-            addedCompat > 0 || addedDesktop > 0 || addedReader > 0
+            addedCompat > 0 || addedDesktop > 0 || addedReader > 0 ||
+            restoredBlocked
         ) {
             // The store was just rewritten behind the settings
             // page's back: sync this level's search-engine mirror at
@@ -2018,7 +2032,8 @@ fun BrowserApp(
             (if (addedCompat > 0) "、兼容名单 +$addedCompat 个" else "") +
             (if (addedDesktop > 0) "、桌面模式站点 +$addedDesktop 个" else "") +
             (if (addedReader > 0) "、阅读模式站点 +$addedReader 个" else "") +
-            (if (addedFolders > 0) "、书签文件夹 +$addedFolders 个" else "")
+            (if (addedFolders > 0) "、书签文件夹 +$addedFolders 个" else "") +
+            (if (restoredBlocked) "、拦截统计已按备份恢复" else "")
     }
 
     // Backup import: system file picker. The file is validated by
@@ -3313,6 +3328,10 @@ fun BrowserApp(
         Screen.SETTINGS -> SettingsScreen(
             store = store,
             refreshTick = settingsRefreshTick,
+            bookmarkCount = bookmarks.size,
+            historyCount = history.size,
+            readingCount = readingList.size,
+            speedDialCount = speedDials.size,
             onOpenReleaseUrl = { url -> openUrl(url) },
             onBack = { screen = Screen.BROWSER },
             onClearHistory = {
@@ -10721,6 +10740,10 @@ private fun ClearDataScreen(
 private fun SettingsScreen(
     store: Store,
     refreshTick: Int = 0,
+    bookmarkCount: Int = 0,
+    historyCount: Int = 0,
+    readingCount: Int = 0,
+    speedDialCount: Int = 0,
     onOpenReleaseUrl: (String) -> Unit = {},
     onBack: () -> Unit,
     onClearHistory: () -> Unit,
@@ -10825,6 +10848,61 @@ private fun SettingsScreen(
                 .getPackageInfo(settingsContext.packageName, 0).versionName ?: ""
         } catch (t: Throwable) {
             ""
+        }
+    }
+    // Diagnostics card data (v0.74.0): the app version code and the
+    // system WebView's own package info, read once. The WebView
+    // package can genuinely be absent (no WebView provider on the
+    // device) — that case is shown as "unknown", never invented.
+    val versionCode = remember {
+        try {
+            val info = settingsContext.packageManager
+                .getPackageInfo(settingsContext.packageName, 0)
+            if (android.os.Build.VERSION.SDK_INT >= 28) {
+                info.longVersionCode
+            } else {
+                @Suppress("DEPRECATION") info.versionCode.toLong()
+            }
+        } catch (t: Throwable) {
+            0L
+        }
+    }
+    val webViewPackageInfo = remember {
+        try {
+            android.webkit.WebView.getCurrentWebViewPackage(settingsContext)
+        } catch (t: Throwable) {
+            null
+        }
+    }
+    // App storage for the diagnostics card: the same three-part
+    // measure the clear-data page has used since v0.20.0 (app cache
+    // + WebView data + Firefox data), summed. Measured off the main
+    // thread the first time the About page is shown.
+    var diagnosticsStorageText by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(settingsPage) {
+        if (settingsPage == "about" && diagnosticsStorageText == null) {
+            diagnosticsStorageText =
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    val cache = dirSizeBytes(settingsContext.cacheDir) ?: 0L
+                    val dataDir =
+                        java.io.File(settingsContext.applicationInfo.dataDir)
+                    val webviewData =
+                        dirSizeBytes(java.io.File(dataDir, "app_webview")) ?: 0L
+                    val geckoDirs = try {
+                        settingsContext.filesDir.listFiles()?.filter {
+                            it.isDirectory &&
+                                (it.name.contains("gecko", ignoreCase = true) ||
+                                    it.name.contains("mozilla", ignoreCase = true))
+                        } ?: emptyList()
+                    } catch (t: Throwable) {
+                        emptyList()
+                    }
+                    var geckoData = 0L
+                    for (dir in geckoDirs) {
+                        geckoData += dirSizeBytes(dir) ?: 0L
+                    }
+                    formatStorageSize(cache + webviewData + geckoData)
+                }
         }
     }
     // Manual update check: nothing touches the network until the
@@ -12020,6 +12098,98 @@ private fun SettingsScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 4.dp)
                         )
+                    }
+                }
+            }
+            item {
+                // Diagnostics card (v0.74.0): versions, counts and
+                // the blocked total only — no URLs, titles or any
+                // browsing content (DiagnosticInfo has no field that
+                // could carry any). The counts come from the very
+                // lists BrowserApp holds and applyBackup writes, so
+                // what is shown here always matches the live data.
+                val diagnosticInfo = DiagnosticInfo(
+                    appVersionName = versionName,
+                    appVersionCode = versionCode,
+                    geckoVersion = GECKOVIEW_VERSION,
+                    webViewPackageName = webViewPackageInfo?.packageName,
+                    webViewVersionName = webViewPackageInfo?.versionName,
+                    androidRelease = android.os.Build.VERSION.RELEASE ?: "未知",
+                    androidSdk = android.os.Build.VERSION.SDK_INT,
+                    storageText = diagnosticsStorageText ?: "正在计算…",
+                    bookmarkCount = bookmarkCount,
+                    historyCount = historyCount,
+                    readingCount = readingCount,
+                    speedDialCount = speedDialCount,
+                    totalBlocked = totalBlocked
+                )
+                val diagnosticRows = listOf(
+                    "应用版本" to
+                        "${diagnosticInfo.appVersionName}（版本号 ${diagnosticInfo.appVersionCode}）",
+                    "火狐内核（GeckoView）版本" to diagnosticInfo.geckoVersion,
+                    "系统 WebView" to (
+                        if (diagnosticInfo.webViewPackageName.isNullOrBlank()) {
+                            "未知"
+                        } else {
+                            "${diagnosticInfo.webViewPackageName} " +
+                                (diagnosticInfo.webViewVersionName
+                                    ?.takeIf { it.isNotBlank() } ?: "未知")
+                        }
+                        ),
+                    "Android 版本" to
+                        "${diagnosticInfo.androidRelease}（API ${diagnosticInfo.androidSdk}）",
+                    "应用存储占用" to diagnosticInfo.storageText,
+                    "书签" to "${diagnosticInfo.bookmarkCount} 条",
+                    "历史记录" to "${diagnosticInfo.historyCount} 条",
+                    "阅读列表" to "${diagnosticInfo.readingCount} 条",
+                    "首页快捷方式" to "${diagnosticInfo.speedDialCount} 条",
+                    "广告拦截累计" to "${diagnosticInfo.totalBlocked} 个"
+                )
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(vertical = 8.dp)) {
+                        Text(
+                            "诊断信息",
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.padding(
+                                horizontal = 16.dp, vertical = 4.dp
+                            )
+                        )
+                        diagnosticRows.forEach { (label, value) ->
+                            ListItem(
+                                headlineContent = { Text(label) },
+                                trailingContent = { Text(value) }
+                            )
+                        }
+                        Text(
+                            "这里只有版本号、条数和统计数字，没有任何网址、标题或浏览内容。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(
+                                horizontal = 16.dp, vertical = 4.dp
+                            )
+                        )
+                        Button(
+                            onClick = {
+                                val copied = copyTextToClipboard(
+                                    settingsContext, "诊断信息",
+                                    diagnosticText(diagnosticInfo)
+                                )
+                                android.widget.Toast.makeText(
+                                    settingsContext,
+                                    if (copied) {
+                                        "诊断信息已复制"
+                                    } else {
+                                        "复制失败，请重试"
+                                    },
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                        ) {
+                            Text("复制诊断信息")
+                        }
                     }
                 }
             }
