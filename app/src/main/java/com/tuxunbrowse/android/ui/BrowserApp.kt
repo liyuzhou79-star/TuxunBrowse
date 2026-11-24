@@ -23,8 +23,15 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -186,7 +193,10 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -210,6 +220,7 @@ import com.tuxunbrowse.android.data.SavedTab
 import com.tuxunbrowse.android.data.SearchEngine
 import com.tuxunbrowse.android.data.Store
 import com.tuxunbrowse.android.data.ThemeMode
+import com.tuxunbrowse.android.data.TrackingProtectionLevel
 import com.tuxunbrowse.android.data.dirSizeBytes
 import com.tuxunbrowse.android.data.formatStorageSize
 import com.tuxunbrowse.android.data.WEBVIEW_CACHE_AUTO_CLEAR_THRESHOLD_BYTES
@@ -272,6 +283,7 @@ import com.tuxunbrowse.android.engine.otherEngineOpenLabel
 import com.tuxunbrowse.android.engine.GeckoJsPromptKind
 import com.tuxunbrowse.android.engine.GeckoSelectionMenu
 import com.tuxunbrowse.android.engine.HttpAuthRequestInfo
+import com.tuxunbrowse.android.engine.PrivacySignals
 import com.tuxunbrowse.android.engine.EngineSleepCandidate
 import com.tuxunbrowse.android.engine.TabContent
 import com.tuxunbrowse.android.engine.selectSleepVictims
@@ -1230,7 +1242,19 @@ fun BrowserApp(
             },
             isAdHideSlotsEnabled = { store.adBlockEnabled },
             onBlockedRequest = { store.noteBlocked() },
-            guardScriptProvider = { store.guardScriptEnabled }
+            guardScriptProvider = { store.guardScriptEnabled },
+            privacySignalsProvider = {
+                PrivacySignals(
+                    doNotTrack = store.doNotTrackEnabled,
+                    globalPrivacyControl =
+                        store.globalPrivacyControlEnabled,
+                    webRtcDisabled = store.webRtcDisabled
+                )
+            },
+            trackingStrictProvider = {
+                store.trackingProtectionLevel ==
+                    TrackingProtectionLevel.STRICT
+            }
         )
         created = tab
         return tab
@@ -1998,7 +2022,12 @@ fun BrowserApp(
                 readerFontSize = store.readerFontSize,
                 readerBackground = store.readerBackground,
                 httpsFirstEnabled = store.httpsFirstEnabled,
-                guardScriptEnabled = store.guardScriptEnabled
+                guardScriptEnabled = store.guardScriptEnabled,
+                trackingProtectionLevel = store.trackingProtectionLevel,
+                doNotTrackEnabled = store.doNotTrackEnabled,
+                globalPrivacyControlEnabled =
+                    store.globalPrivacyControlEnabled,
+                webRtcDisabled = store.webRtcDisabled
             ),
             compatSites = store.loadCompatSites().sorted(),
             desktopSites = store.loadDesktopSites().sorted(),
@@ -2107,6 +2136,20 @@ fun BrowserApp(
         // settings-page switch writes it.
         s.httpsFirstEnabled?.let { store.httpsFirstEnabled = it }
         s.guardScriptEnabled?.let { store.guardScriptEnabled = it }
+        // Privacy section (v0.92.0): plain Store writes — WebView
+        // tabs read the signals live at page start / load, and the
+        // Gecko runtime is re-applied from prefs right away.
+        s.trackingProtectionLevel?.let { store.trackingProtectionLevel = it }
+        s.doNotTrackEnabled?.let { store.doNotTrackEnabled = it }
+        s.globalPrivacyControlEnabled?.let {
+            store.globalPrivacyControlEnabled = it
+        }
+        s.webRtcDisabled?.let { store.webRtcDisabled = it }
+        if (s.trackingProtectionLevel != null ||
+            s.globalPrivacyControlEnabled != null
+        ) {
+            GeckoHolder.applyPrivacySettings(context)
+        }
         if (s.readerFontSize != null || s.readerBackground != null) {
             tabs.forEach { it.applyReaderStyle() }
         }
@@ -5703,24 +5746,112 @@ private fun BrowserScreen(
     Scaffold(
         topBar = {
             if (!chromeHidden) {
-            TopAppBar(
-                title = {
-                    Text(
-                        text = when {
-                            activeTab == null || activeTab.isHome -> "TuxunBrowse"
-                            else -> activeTab.title.ifBlank { "TuxunBrowse" }
-                        },
-                        maxLines = 1
+            // Merged toolbar (v0.92.0): the browser chrome used
+            // to be two layers — a 64dp TopAppBar (page title,
+            // star, menu) over a 56dp address row (back, forward,
+            // field, engine switch, reload) — 120dp in total.
+            // It is ONE 56dp row now: back, the address field
+            // (site icon at its head, the bookmark star inside
+            // its tail), the engine switch and the menu. Forward
+            // and reload moved into the menu (pull-to-refresh
+            // also reloads); the page title still shows in the
+            // tab switcher. Every remaining button keeps its
+            // 48dp touch target.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(horizontal = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .combinedClickable(
+                            enabled = activeTab != null && !activeTab.isHome,
+                            onClick = {
+                                if (activeTab?.canGoBack == true) {
+                                    activeTab?.goBack()
+                                }
+                            },
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "后退",
+                        tint = if (activeTab?.canGoBack == true) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                        }
                     )
-                },
-                actions = {
-                    IconButton(onClick = onToggleBookmark) {
+                }
+                OutlinedTextField(
+                    value = addressValue,
+                    onValueChange = { addressValue = it },
+                    modifier = Modifier
+                        .weight(1f)
+                        .onFocusChanged { addressFocused = it.isFocused },
+                    singleLine = true,
+                    placeholder = {
+                        // Never wrap: a wrapped placeholder in a
+                        // squeezed field renders one character per
+                        // line (the vertical-text bug from the user's
+                        // screenshot).
+                        Text("输入网址或搜索", maxLines = 1, softWrap = false)
+                    },
+                    leadingIcon = {
+                        // Tapping the status icon opens the site-info
+                        // sheet (for the home page it shows the
+                        // internal-page info, so the icon always does
+                        // something when tapped).
+                        IconButton(onClick = { showSiteInfo = true }) {
+                            when {
+                                activeTab == null || activeTab.isHome ->
+                                    Icon(Icons.Filled.Search, contentDescription = "页面信息")
+                                activeTab.url.startsWith("https://") ->
+                                    Icon(Icons.Filled.Lock, contentDescription = "安全连接，点按看网站信息")
+                                else ->
+                                    Icon(Icons.Filled.Warning, contentDescription = "非安全连接，点按看网站信息")
+                            }
+                        }
+                    },
+                    trailingIcon = {
+                        // The bookmark star moved into the
+                        // field itself in the v0.92.0 toolbar
+                        // merge: still one tap, still always
+                        // visible, no separate title bar needed.
+                        IconButton(onClick = onToggleBookmark) {
+                            Icon(
+                                if (isBookmarked) Icons.Filled.Star else Icons.Filled.StarBorder,
+                                contentDescription =
+                                    if (isBookmarked) "已加入书签，点按取消书签" else "加入书签"
+                            )
+                        }
+                    },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                    keyboardActions = KeyboardActions(
+                        onGo = { submitAddress() }
+                    )
+                )
+                if (activeTab != null) {
+                    // A narrow icon button, not a labelled chip: the
+                    // chip's text ate the address field's width on
+                    // narrow screens and squeezed its placeholder into
+                    // a vertical strip. The switch dialog still shows
+                    // which engine is current.
+                    IconButton(onClick = { showEngineSwitch = true }) {
                         Icon(
-                            if (isBookmarked) Icons.Filled.Star else Icons.Filled.StarBorder,
-                            contentDescription =
-                                if (isBookmarked) "已加入书签，点按取消书签" else "加入书签"
+                            Icons.Filled.SwapHoriz,
+                            contentDescription = "切换内核（现在是" +
+                                if (activeTab.engine == Engine.GECKO) "火狐）" else "系统 WebView）"
                         )
                     }
+                }
+                Box {
                     IconButton(onClick = { showMenu = true }) {
                         Icon(Icons.Filled.MoreVert, contentDescription = "菜单")
                     }
@@ -5729,6 +5860,19 @@ private fun BrowserScreen(
                         // frequency items only. The ad-block status
                         // line moved to the settings ad-block page;
                         // low-frequency tools live under "更多工具".
+                        DropdownMenuItem(
+                            text = { Text("重新加载") },
+                            leadingIcon = { Icon(Icons.Filled.Refresh, contentDescription = null) },
+                            onClick = { showMenu = false; activeTab?.reload() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("前进") },
+                            leadingIcon = {
+                                Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null)
+                            },
+                            enabled = activeTab?.canGoForward == true,
+                            onClick = { showMenu = false; activeTab?.goForward() }
+                        )
                         DropdownMenuItem(
                             text = { Text("新建标签页") },
                             leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
@@ -5917,12 +6061,30 @@ private fun BrowserScreen(
                         )
                     }
                 }
-            )
+            }
             }
         },
         bottomBar = {
             if (!chromeHidden) {
-            NavigationBar {
+            NavigationBar(
+                // Compact height (v0.92.0): the stock bar is
+                // 80dp; constraining the official component's
+                // container to 64dp hands 16dp back to the web
+                // page while every item's touch target stays
+                // 64dp tall, above the 48dp minimum. The
+                // system navigation-bar inset is padded
+                // OUTSIDE that height (and the component's own
+                // insets are zeroed), so the bar never slides
+                // under the system buttons on 3-button devices.
+                modifier = Modifier
+                    .windowInsetsPadding(
+                        WindowInsets.navigationBars.only(
+                            WindowInsetsSides.Bottom
+                        )
+                    )
+                    .height(64.dp),
+                windowInsets = WindowInsets(0, 0, 0, 0)
+            ) {
                 NavigationBarItem(
                     selected = false,
                     onClick = { onTabsOpened(); tabQuery = ""; showTabs = true },
@@ -6041,113 +6203,6 @@ private fun BrowserScreen(
                 .padding(padding)
         ) {
             if (!chromeHidden) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                // Back/forward buttons: Boxes with combinedClickable
-                // sized like the neighbouring icon buttons.
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .combinedClickable(
-                            enabled = activeTab != null && !activeTab.isHome,
-                            onClick = {
-                                if (activeTab?.canGoBack == true) {
-                                    activeTab?.goBack()
-                                }
-                            },
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "后退",
-                        tint = if (activeTab?.canGoBack == true) {
-                            MaterialTheme.colorScheme.onSurface
-                        } else {
-                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                        }
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .combinedClickable(
-                            enabled = activeTab != null && !activeTab.isHome,
-                            onClick = {
-                                if (activeTab?.canGoForward == true) {
-                                    activeTab?.goForward()
-                                }
-                            },
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowForward,
-                        contentDescription = "前进",
-                        tint = if (activeTab?.canGoForward == true) {
-                            MaterialTheme.colorScheme.onSurface
-                        } else {
-                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                        }
-                    )
-                }
-                OutlinedTextField(
-                    value = addressValue,
-                    onValueChange = { addressValue = it },
-                    modifier = Modifier
-                        .weight(1f)
-                        .onFocusChanged { addressFocused = it.isFocused },
-                    singleLine = true,
-                    placeholder = {
-                        // Never wrap: a wrapped placeholder in a
-                        // squeezed field renders one character per
-                        // line (the vertical-text bug from the user's
-                        // screenshot).
-                        Text("输入网址或搜索", maxLines = 1, softWrap = false)
-                    },
-                    leadingIcon = {
-                        // Tapping the status icon opens the site-info
-                        // sheet (for the home page it shows the
-                        // internal-page info, so the icon always does
-                        // something when tapped).
-                        IconButton(onClick = { showSiteInfo = true }) {
-                            when {
-                                activeTab == null || activeTab.isHome ->
-                                    Icon(Icons.Filled.Search, contentDescription = "页面信息")
-                                activeTab.url.startsWith("https://") ->
-                                    Icon(Icons.Filled.Lock, contentDescription = "安全连接，点按看网站信息")
-                                else ->
-                                    Icon(Icons.Filled.Warning, contentDescription = "非安全连接，点按看网站信息")
-                            }
-                        }
-                    },
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                    keyboardActions = KeyboardActions(
-                        onGo = { submitAddress() }
-                    )
-                )
-                if (activeTab != null) {
-                    // A narrow icon button, not a labelled chip: the
-                    // chip's text ate the address field's width on
-                    // narrow screens and squeezed its placeholder into
-                    // a vertical strip. The switch dialog still shows
-                    // which engine is current.
-                    IconButton(onClick = { showEngineSwitch = true }) {
-                        Icon(
-                            Icons.Filled.SwapHoriz,
-                            contentDescription = "切换内核（现在是" +
-                                if (activeTab.engine == Engine.GECKO) "火狐）" else "系统 WebView）"
-                        )
-                    }
-                }
-                IconButton(onClick = { activeTab?.reload() }) {
-                    Icon(Icons.Filled.Refresh, contentDescription = "刷新")
-                }
-            }
             // Loading progress: the bar fades/slides in and out and
             // its value animates smoothly instead of jumping in steps.
             val rawProgress = activeTab?.progress ?: 100
@@ -10560,6 +10615,21 @@ private fun SettingsScreen(
     var httpsFirst by remember(refreshTick) {
         mutableStateOf(store.httpsFirstEnabled)
     }
+    // Privacy section (v0.92.0): tracking-protection level plus
+    // the three signal switches. All read the Store live, exactly
+    // like the states above.
+    var tpLevel by remember(refreshTick) {
+        mutableStateOf(store.trackingProtectionLevel)
+    }
+    var doNotTrack by remember(refreshTick) {
+        mutableStateOf(store.doNotTrackEnabled)
+    }
+    var gpcSignal by remember(refreshTick) {
+        mutableStateOf(store.globalPrivacyControlEnabled)
+    }
+    var webRtcOff by remember(refreshTick) {
+        mutableStateOf(store.webRtcDisabled)
+    }
     var downloadMode by remember(refreshTick) { mutableStateOf(store.downloadMode) }
     var historyRetention by remember(refreshTick) { mutableStateOf(store.historyRetention) }
     var themeMode by remember(refreshTick) { mutableStateOf(store.themeMode) }
@@ -11368,6 +11438,106 @@ private fun SettingsScreen(
             }
             if (settingsPage == "privacy") {
             item {
+                Text("跟踪保护", style = MaterialTheme.typography.titleMedium)
+            }
+            items(TrackingProtectionLevel.entries) { level ->
+                ElevatedCard(
+                    onClick = {
+                        tpLevel = level
+                        store.trackingProtectionLevel = level
+                        GeckoHolder.applyPrivacySettings(settingsContext)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    ListItem(
+                        headlineContent = {
+                            Text("增强跟踪保护 · ${level.label}")
+                        },
+                        supportingContent = {
+                            Text(
+                                if (level ==
+                                    TrackingProtectionLevel.STRICT
+                                ) {
+                                    "多拦指纹追踪、挖矿脚本和更多跟踪；" +
+                                        "少数网站可能显示不正常。"
+                                } else {
+                                    "拦截常见广告与跟踪，网站一般都能正常用。"
+                                }
+                            )
+                        },
+                        trailingContent = {
+                            RadioButton(
+                                selected = tpLevel == level,
+                                onClick = {
+                                    tpLevel = level
+                                    store.trackingProtectionLevel = level
+                                    GeckoHolder.applyPrivacySettings(
+                                        settingsContext
+                                    )
+                                }
+                            )
+                        }
+                    )
+                }
+            }
+            item {
+                ListItem(
+                    headlineContent = { Text("不要追踪") },
+                    supportingContent = {
+                        Text("告诉网站不要追踪你；只对系统 WebView 有效。")
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = doNotTrack,
+                            onCheckedChange = {
+                                doNotTrack = it
+                                store.doNotTrackEnabled = it
+                            }
+                        )
+                    }
+                )
+            }
+            item {
+                ListItem(
+                    headlineContent = { Text("不出售或分享资料") },
+                    supportingContent = {
+                        Text("告诉网站不要出售或分享你的个人资料。")
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = gpcSignal,
+                            onCheckedChange = {
+                                gpcSignal = it
+                                store.globalPrivacyControlEnabled = it
+                                GeckoHolder.applyPrivacySettings(
+                                    settingsContext
+                                )
+                            }
+                        )
+                    }
+                )
+            }
+            item {
+                ListItem(
+                    headlineContent = { Text("停用 WebRTC") },
+                    supportingContent = {
+                        Text(
+                            "防止网站查到你的真实 IP 地址；" +
+                                "只对系统 WebView 有效。"
+                        )
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = webRtcOff,
+                            onCheckedChange = {
+                                webRtcOff = it
+                                store.webRtcDisabled = it
+                            }
+                        )
+                    }
+                )
+            }
+            item {
                 Text("隐私", style = MaterialTheme.typography.titleMedium)
                 Text(
                     "过期记录在下次打开应用时自动清除；无痕标签不记历史。",
@@ -11469,27 +11639,123 @@ private fun SettingsScreen(
             }
             if (settingsPage == "about") {
             item {
-                Card(
+                // Brand header (v0.92.0), laid out after the
+                // TuxunGram About page the user supplied: brand
+                // name, the WeChat Pay support card (the very same
+                // image asset as TuxunGram's — one person, one
+                // code), the "-支持我们-" caption, then the plain
+                // info lines below. The diagnostics long-press
+                // target moved here from the old About card: the
+                // header is still the page's top block, and the
+                // hidden-until-long-press rule is unchanged.
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .combinedClickable(
                             onClick = {},
                             onLongClick = { showDiagnostics = true }
                         )
+                        .padding(top = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("关于 TuxunBrowse", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Tuxun",
+                        style = MaterialTheme.typography.displaySmall,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 0.5.sp
+                    )
+                    Spacer(modifier = Modifier.height(24.dp))
+                    FoundationImage(
+                        painter = androidx.compose.ui.res.painterResource(
+                            com.tuxunbrowse.android.R.drawable
+                                .about_support_qr
+                        ),
+                        contentDescription = "微信支付收款码",
+                        modifier = Modifier
+                            .width(280.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        "-支持我们-",
+                        style = MaterialTheme.typography.bodyMedium,
+                        letterSpacing = 1.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            item {
+                // Info lines: label (secondary) + value (primary),
+                // the same hierarchy as the reference page. The
+                // version is read live from the package, so it can
+                // never drift from the shipped build.
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row {
                         Text(
-                            "版本 $versionName。免费开源双内核浏览器，内核由用户自选；" +
-                                "两个内核的登录状态互不相通。",
-                            style = MaterialTheme.typography.bodyMedium
+                            "版本号：",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        Text(
+                            versionName,
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                    Row {
+                        Text(
+                            "我们的作者：",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            "LZQ",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                    Row {
+                        Text(
+                            "Github：",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            "https://github.com/liyuzhou79-star/TuxunBrowse",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.clickable {
+                                try {
+                                    settingsContext.startActivity(
+                                        android.content.Intent(
+                                            android.content.Intent.ACTION_VIEW,
+                                            android.net.Uri.parse(
+                                                "https://github.com/liyuzhou79-star/TuxunBrowse"
+                                            )
+                                        )
+                                    )
+                                } catch (t: Throwable) {
+                                    android.widget.Toast.makeText(
+                                        settingsContext,
+                                        "没有能打开链接的应用",
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
                         OutlinedButton(
                             onClick = { checkForUpdate() },
                             enabled = !checkingUpdate,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 12.dp)
+                            modifier = Modifier.fillMaxWidth()
                         ) {
                             Text(if (checkingUpdate) "正在检查…" else "检查更新")
                         }

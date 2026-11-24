@@ -580,6 +580,24 @@ fun webViewCacheSizeBytes(cacheDir: java.io.File?, dataDir: java.io.File): Long 
     return total
 }
 
+/**
+ * Enhanced tracking protection level (v0.92.0), modelled on
+ * Firefox's standard / strict choice. Both levels share the base
+ * block list and the engines' built-in anti-tracking; STRICT adds
+ * the strict host list on the WebView side and, on the Gecko side,
+ * the kernel's STRICT category set (which adds content trackers,
+ * cryptominers and fingerprinters) plus fingerprinting protection.
+ */
+enum class TrackingProtectionLevel(val id: String, val label: String) {
+    STANDARD("standard", "标准"),
+    STRICT("strict", "严格");
+
+    companion object {
+        fun fromId(id: String?): TrackingProtectionLevel =
+            entries.firstOrNull { it.id == id } ?: STANDARD
+    }
+}
+
 /** How long normal (never incognito) history is kept. days = 0 means forever. */
 enum class HistoryRetention(val id: String, val label: String, val days: Int) {
     FOREVER("forever", "永久保留", 0),
@@ -1053,6 +1071,53 @@ class Store(context: Context) {
         get() = safeBoolean(KEY_GUARD_SCRIPT, true)
         set(value) = prefs.edit().putBoolean(KEY_GUARD_SCRIPT, value).apply()
 
+    /**
+     * Enhanced tracking protection level (v0.92.0). Default
+     * STANDARD, which is exactly the pre-v0.92.0 behaviour (base
+     * block list + Gecko anti-tracking DEFAULT). STRICT widens
+     * both engines — see [TrackingProtectionLevel].
+     */
+    var trackingProtectionLevel: TrackingProtectionLevel
+        get() = TrackingProtectionLevel.fromId(safeString(KEY_TP_LEVEL, null))
+        set(value) = prefs.edit().putString(KEY_TP_LEVEL, value.id).apply()
+
+    /**
+     * Do Not Track (v0.92.0), default OFF. WebView tabs only:
+     * app-initiated loads carry a `DNT: 1` header and pages see
+     * `navigator.doNotTrack == "1"` through the privacy-signals
+     * script. GeckoView 132 exposes no DNT API at all (verified
+     * against the AAR), so Gecko tabs cannot send it — the
+     * settings copy says so instead of pretending otherwise.
+     */
+    var doNotTrackEnabled: Boolean
+        get() = safeBoolean(KEY_DNT, false)
+        set(value) = prefs.edit().putBoolean(KEY_DNT, value).apply()
+
+    /**
+     * Global Privacy Control (v0.92.0), default OFF: tell sites
+     * not to sell or share personal data. Both engines have a real
+     * path — Gecko has a native runtime setting (it sends the
+     * `Sec-GPC: 1` header and sets `navigator.globalPrivacyControl`
+     * itself); WebView tabs get the header on app-initiated loads
+     * plus the same JS property via the privacy-signals script.
+     */
+    var globalPrivacyControlEnabled: Boolean
+        get() = safeBoolean(KEY_GPC, false)
+        set(value) = prefs.edit().putBoolean(KEY_GPC, value).apply()
+
+    /**
+     * Disable WebRTC (v0.92.0), default OFF: stops pages from
+     * opening peer connections, which can reveal the real IP
+     * address behind a VPN. WebView tabs only, via the
+     * privacy-signals script replacing `RTCPeerConnection` with a
+     * stub that always fails. GeckoView 132 exposes no WebRTC
+     * switch and no script-injection path, so Gecko tabs cannot
+     * honour it — the settings copy says so.
+     */
+    var webRtcDisabled: Boolean
+        get() = safeBoolean(KEY_WEBRTC_OFF, false)
+        set(value) = prefs.edit().putBoolean(KEY_WEBRTC_OFF, value).apply()
+
     /** Web page text size in percent: 85 / 100 / 115 / 130. */
     var textZoomPercent: Int
         get() = safeInt(KEY_TEXT_ZOOM, 100)
@@ -1349,6 +1414,10 @@ class Store(context: Context) {
         private const val KEY_AD_BLOCK = "ad_block"
         private const val KEY_HTTPS_FIRST = "https_first"
         private const val KEY_GUARD_SCRIPT = "guard_script"
+        private const val KEY_TP_LEVEL = "tp_level"
+        private const val KEY_DNT = "dnt"
+        private const val KEY_GPC = "gpc"
+        private const val KEY_WEBRTC_OFF = "webrtc_off"
         private const val KEY_COMPAT_SITES = "compat_sites"
         private const val KEY_DESKTOP_SITES = "desktop_sites"
         private const val KEY_BOOKMARKS = "bookmarks"
@@ -1435,7 +1504,14 @@ data class BackupSettings(
     val httpsFirstEnabled: Boolean? = null,
     // Added in v0.91.0: built-in page-guard script switch. Same
     // optional-on-read treatment as the v0.51.0 additions.
-    val guardScriptEnabled: Boolean? = null
+    val guardScriptEnabled: Boolean? = null,
+    // Added in v0.92.0: the privacy section (tracking protection
+    // level, Do Not Track, Global Privacy Control, WebRTC off).
+    // Same optional-on-read treatment as the v0.51.0 additions.
+    val trackingProtectionLevel: TrackingProtectionLevel? = null,
+    val doNotTrackEnabled: Boolean? = null,
+    val globalPrivacyControlEnabled: Boolean? = null,
+    val webRtcDisabled: Boolean? = null
 ) {
     /** Plain-language list of what applying these settings would overwrite. */
     fun overwriteSummary(): List<String> {
@@ -1454,6 +1530,10 @@ data class BackupSettings(
         if (readerBackground != null) out.add("阅读背景")
         if (httpsFirstEnabled != null) out.add("优先用 HTTPS 打开网站")
         if (guardScriptEnabled != null) out.add("内置净化脚本开关")
+        if (trackingProtectionLevel != null) out.add("增强跟踪保护等级")
+        if (doNotTrackEnabled != null) out.add("不要追踪开关")
+        if (globalPrivacyControlEnabled != null) out.add("不出售或分享资料开关")
+        if (webRtcDisabled != null) out.add("停用 WebRTC 开关")
         return out
     }
 }
@@ -1541,6 +1621,18 @@ fun backupToJson(
     }
     settings.guardScriptEnabled?.let {
         settingsObj.put("guardScriptEnabled", it)
+    }
+    settings.trackingProtectionLevel?.let {
+        settingsObj.put("trackingProtectionLevel", it.id)
+    }
+    settings.doNotTrackEnabled?.let {
+        settingsObj.put("doNotTrackEnabled", it)
+    }
+    settings.globalPrivacyControlEnabled?.let {
+        settingsObj.put("globalPrivacyControlEnabled", it)
+    }
+    settings.webRtcDisabled?.let {
+        settingsObj.put("webRtcDisabled", it)
     }
     val compatArr = JSONArray()
     compatSites.forEach { compatArr.put(it) }
@@ -1693,6 +1785,24 @@ fun parseBackup(raw: String): BackupData? {
             },
             guardScriptEnabled = if (s.has("guardScriptEnabled")) {
                 s.optBoolean("guardScriptEnabled")
+            } else {
+                null
+            },
+            trackingProtectionLevel = s.optString("trackingProtectionLevel")
+                .takeIf { it.isNotBlank() }
+                ?.let { TrackingProtectionLevel.fromId(it) },
+            doNotTrackEnabled = if (s.has("doNotTrackEnabled")) {
+                s.optBoolean("doNotTrackEnabled")
+            } else {
+                null
+            },
+            globalPrivacyControlEnabled = if (s.has("globalPrivacyControlEnabled")) {
+                s.optBoolean("globalPrivacyControlEnabled")
+            } else {
+                null
+            },
+            webRtcDisabled = if (s.has("webRtcDisabled")) {
+                s.optBoolean("webRtcDisabled")
             } else {
                 null
             }

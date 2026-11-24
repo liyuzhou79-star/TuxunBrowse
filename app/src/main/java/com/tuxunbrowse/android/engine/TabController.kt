@@ -77,15 +77,9 @@ object GeckoHolder {
         if (runtime != null) return runtime
         return try {
             runtime = GeckoRuntime.create(context.applicationContext)
-            // Firefox-side ad/tracker protection: GeckoView's own content
-            // blocking with its default anti-tracking categories. Guarded:
-            // if this ever fails, browsing must still work.
-            try {
-                runtime?.settings?.contentBlocking
-                    ?.setAntiTracking(ContentBlocking.AntiTracking.DEFAULT)
-            } catch (t: Throwable) {
-                // Content blocking is best-effort only.
-            }
+            // Firefox-side tracker protection and privacy signals,
+            // honouring the user's saved choices (v0.92.0).
+            applyPrivacySettings(context)
             // Apply the user's saved text size (Store key "text_zoom").
             try {
                 val zoom = context.getSharedPreferences(
@@ -104,6 +98,47 @@ object GeckoHolder {
 
     val hasRuntime: Boolean
         get() = runtime != null
+
+    /**
+     * Apply the user's privacy choices to the Gecko runtime
+     * (v0.92.0), read straight from the shared preferences — the
+     * same direct-prefs pattern as the text-zoom application in
+     * [ensure], so it works at runtime creation (background
+     * warm-up included) without a Store instance. The settings
+     * page calls it again whenever a choice changes; a runtime
+     * that does not exist yet picks the values up in [ensure].
+     *
+     * All three are real GeckoView 132 APIs, verified against the
+     * AAR with javap: ContentBlocking.setAntiTracking takes the
+     * DEFAULT (46) / STRICT (766) anti-tracking category sets —
+     * STRICT adds content trackers, cryptominers, fingerprinters,
+     * social-tracking protection and email trackers — and
+     * GeckoRuntimeSettings carries setGlobalPrivacyControl and
+     * setFingerprintingProtection. There is deliberately no DNT
+     * or WebRTC line here: GeckoView 132 exposes neither (also
+     * verified), so Gecko tabs cannot honour those two switches.
+     */
+    fun applyPrivacySettings(context: Context) {
+        val rt = runtime ?: return
+        try {
+            val prefs = context.getSharedPreferences(
+                "tuxunbrowse", Context.MODE_PRIVATE
+            )
+            val strict = prefs.getString("tp_level", null) == "strict"
+            val gpc = prefs.getBoolean("gpc", false)
+            rt.settings.contentBlocking.setAntiTracking(
+                if (strict) {
+                    ContentBlocking.AntiTracking.STRICT
+                } else {
+                    ContentBlocking.AntiTracking.DEFAULT
+                }
+            )
+            rt.settings.setFingerprintingProtection(strict)
+            rt.settings.setGlobalPrivacyControl(gpc)
+        } catch (t: Throwable) {
+            // Privacy settings are best-effort only.
+        }
+    }
 
     /** GeckoRuntimeSettings.setFontSizeFactor, verified in the 132 AAR. */
     fun applyFontSizeFactor(factor: Float) {
@@ -722,7 +757,23 @@ class BrowserTab(
     // tabs never see this. Incognito and JavaScript-disabled
     // tabs are excluded on top of this switch (see
     // guardScriptWanted).
-    private val guardScriptProvider: () -> Boolean = { false }
+    private val guardScriptProvider: () -> Boolean = { false },
+    // The user's privacy signals (v0.92.0, see PrivacyScript):
+    // Do Not Track, Global Privacy Control and WebRTC disabling.
+    // Read live from the Store by the app; consulted at WebView
+    // creation, at every page start and on every app-initiated
+    // load (which is where the DNT / Sec-GPC headers ride).
+    // WebView tabs only — Gecko honours GPC through its own
+    // runtime setting and has no path for the other two.
+    // Incognito tabs DO get the signals: they set nothing in
+    // storage and only ever reduce what a page can learn.
+    private val privacySignalsProvider: () -> PrivacySignals =
+        { PrivacySignals() },
+    // Whether the STRICT tracking-protection level is in force
+    // (v0.92.0): widens this tab's WebView request interception to
+    // AdBlocker's strict host list. Gecko tabs ignore it — their
+    // level lives in the runtime's content-blocking categories.
+    private val trackingStrictProvider: () -> Boolean = { false }
 ) {
     val id: Int = nextTabId++
     var url by mutableStateOf(startUrl)
@@ -942,6 +993,16 @@ class BrowserTab(
     private var guardScriptHandler: ScriptHandler? = null
 
     /**
+     * The document-start handler for the privacy-signals script
+     * (v0.92.0), plus the exact payload it was registered with:
+     * the payload depends on three independent switches, so a
+     * changed payload at page start means remove + re-register.
+     * Null when no signal is on.
+     */
+    private var privacyScriptHandler: ScriptHandler? = null
+    private var privacyScriptPayload: String? = null
+
+    /**
      * Lazy engine creation (v0.23.0): a tab starts out as data only
      * — url, title, engine choice and desktop-mode flag. Its engine
      * view (WebView or GeckoSession+GeckoView) is created the first
@@ -1026,7 +1087,20 @@ class BrowserTab(
         // engines must never try to load its internal URL.
         if (target == HOME_URL) return
         when (engine) {
-            Engine.WEBVIEW -> webView?.loadUrl(target)
+            Engine.WEBVIEW -> {
+                // Privacy headers (v0.92.0): loads the APP initiates
+                // (address bar, home shortcuts, tab restore) carry
+                // the DNT / Sec-GPC headers the user switched on.
+                // Navigations a page starts itself are the engine's
+                // own and cannot take headers — those are covered
+                // by the JS signals instead (see PrivacyScript).
+                val headers = privacySignalsProvider().headers()
+                if (headers.isEmpty()) {
+                    webView?.loadUrl(target)
+                } else {
+                    webView?.loadUrl(target, headers)
+                }
+            }
             Engine.GECKO -> geckoSession?.loadUri(target)
         }
     }
@@ -1259,6 +1333,7 @@ class BrowserTab(
         thumbnail = null
         // The guard-script handler belongs to the WebView below.
         removeGuardScriptHandler()
+        removePrivacyScriptHandler()
         exitFullscreen()
         popupChild?.let {
             try {
@@ -1335,6 +1410,7 @@ class BrowserTab(
         // The guard-script handler belongs to the WebView being
         // destroyed; a woken tab re-registers at creation.
         removeGuardScriptHandler()
+        removePrivacyScriptHandler()
         customViewCallback = null
         popupChild?.let {
             try {
@@ -1604,7 +1680,9 @@ class BrowserTab(
                 request: android.webkit.WebResourceRequest
             ): android.webkit.WebResourceResponse? {
                 val target = request.url?.toString() ?: return null
-                return if (isAdBlockEnabled() && AdBlocker.isAdRequest(target)) {
+                return if (isAdBlockEnabled() &&
+                    AdBlocker.isAdRequest(target, trackingStrictProvider())
+                ) {
                     // Count it on the main thread: this callback runs
                     // on a background thread, the counter is UI state.
                     // The lifetime total rides the very same post, so
@@ -1681,6 +1759,9 @@ class BrowserTab(
                 // Page-guard script (v0.91.0): reconcile the
                 // injection channels with the user's switch.
                 syncGuardScript(wv)
+                // Privacy signals (v0.92.0): same reconciliation
+                // for the DNT / GPC / WebRTC script.
+                syncPrivacyScript(wv)
                 // A fresh load is under way; any earlier failure is over.
                 loadError = null
                 // The blocked-request counter belongs to one page.
@@ -1969,7 +2050,18 @@ class BrowserTab(
         // must be registered BEFORE the first loadUrl, or the
         // first page would miss the earliest channel.
         registerGuardScriptHandler(view)
-        if (url.isNotBlank() && url != HOME_URL) view.loadUrl(url)
+        // Privacy signals (v0.92.0): same earliest-channel rule.
+        registerPrivacyScriptHandler(view)
+        if (url.isNotBlank() && url != HOME_URL) {
+            // The first load is app-initiated too, so the privacy
+            // headers ride on it exactly like on BrowserTab.load.
+            val headers = privacySignalsProvider().headers()
+            if (headers.isEmpty()) {
+                view.loadUrl(url)
+            } else {
+                view.loadUrl(url, headers)
+            }
+        }
         return view
     }
 
@@ -2062,6 +2154,80 @@ class BrowserTab(
         } else if (want) {
             try {
                 wv.evaluateJavascript(GuardScript.payload(wv.context), null)
+            } catch (t: Throwable) {
+                // Best-effort only.
+            }
+        }
+    }
+
+    /** Register the privacy-signals document-start handler. */
+    private fun registerPrivacyScriptHandler(view: WebView) {
+        val payload = PrivacyScript.payload(privacySignalsProvider())
+            ?: return
+        if (!guardDocumentStartSupported()) return
+        if (privacyScriptHandler != null &&
+            privacyScriptPayload == payload
+        ) {
+            return
+        }
+        removePrivacyScriptHandler()
+        privacyScriptHandler = try {
+            WebViewCompat.addDocumentStartJavaScript(
+                view, payload, setOf("*")
+            )
+        } catch (t: Throwable) {
+            null
+        }
+        privacyScriptPayload =
+            if (privacyScriptHandler != null) payload else null
+    }
+
+    /** Drop the privacy-signals handler, if one is registered. */
+    private fun removePrivacyScriptHandler() {
+        try {
+            privacyScriptHandler?.remove()
+        } catch (t: Throwable) {
+            // The WebView may already be gone; nothing to clean up.
+        }
+        privacyScriptHandler = null
+        privacyScriptPayload = null
+    }
+
+    /**
+     * Reconcile the privacy-signals script with the switches at
+     * every page start (v0.92.0). The payload is rebuilt from the
+     * live switches each time: all-off removes the handler;
+     * a changed payload re-registers; on WebViews without the
+     * document-start channel the payload goes through
+     * evaluateJavascript here, exactly like the guard script's
+     * fallback. A page that already ran without a signal keeps
+     * that state until it navigates — injected code cannot be
+     * un-injected.
+     */
+    private fun syncPrivacyScript(wv: WebView) {
+        val payload = PrivacyScript.payload(privacySignalsProvider())
+        if (payload == null) {
+            removePrivacyScriptHandler()
+            return
+        }
+        if (guardDocumentStartSupported()) {
+            if (privacyScriptHandler == null ||
+                privacyScriptPayload != payload
+            ) {
+                registerPrivacyScriptHandler(wv)
+                if (privacyScriptHandler == null) {
+                    // Registration failed just now: still give this
+                    // page its signals through the late channel.
+                    try {
+                        wv.evaluateJavascript(payload, null)
+                    } catch (t: Throwable) {
+                        // Best-effort only.
+                    }
+                }
+            }
+        } else {
+            try {
+                wv.evaluateJavascript(payload, null)
             } catch (t: Throwable) {
                 // Best-effort only.
             }

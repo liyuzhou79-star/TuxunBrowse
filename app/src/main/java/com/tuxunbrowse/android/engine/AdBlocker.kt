@@ -132,23 +132,65 @@ object AdBlocker {
         "ipinyou.com", "adups.com", "adways.com"
     )
 
+    /**
+     * Extra hosts blocked only at the STRICT tracking-protection
+     * level (v0.92.0): browser-fingerprinting services,
+     * cryptomining pools/scripts and a second tier of analytics /
+     * session-replay collectors. Same list discipline as the base
+     * list — dedicated-purpose domains only, never a domain that
+     * also serves normal content. Kept separate so STANDARD stays
+     * exactly the pre-v0.92.0 behaviour and the level choice has a
+     * real, countable difference on the WebView side (on the Gecko
+     * side the difference is the kernel's own STRICT category set).
+     */
+    val strictHostList: List<String> = listOf(
+        // Fingerprinting services (identification is their product;
+        // fraud-scoring and captcha domains are deliberately NOT
+        // here — blocking those breaks logins and checkouts).
+        "fingerprintjs.com", "fingerprint.com", "fpjs.io",
+        "deviceandbrowserinfo.com",
+        // In-browser cryptominers (script hosts from public miner
+        // blocklists; mining-pool user sites are not listed).
+        "coinhive.com", "authedmine.com", "coinimp.com",
+        "cryptoloot.pro", "crypto-loot.com", "minero.cc",
+        "coinnebula.com", "webmine.pro", "jsecoin.com",
+        "nerohut.com", "hashunited.com", "minemytraffic.com",
+        // Second-tier analytics / session replay / heatmaps.
+        "hotjar.com", "static.hotjar.com", "logrocket.com",
+        "cdn.logrocket.io", "smartlook.com", "rec.smartlook.com",
+        "sessioncam.com", "clicktale.net", "contentsquare.net",
+        "uxcam.com", "glassboxdigital.io", "quantummetric.com",
+        "decibel.com", "heap.io", "mixpanel.com",
+        "amplitude.com", "segment.com", "api.segment.io",
+        "pendo.io", "woopra.com", "chartbeat.com",
+        "parsely.com", "statcounter.com", "histats.com",
+        "clicky.com", "getclicky.com", "gosquared.com"
+    )
+
     private val blockedHosts: Set<String> = blockedHostList.toSet()
+    private val strictHosts: Set<String> = strictHostList.toSet()
 
     /** How many hosts the built-in list carries (read by the settings page). */
     val blockedHostCount: Int
         get() = blockedHosts.size
+
+    /** How many extra hosts the STRICT level adds (v0.92.0). */
+    val strictHostCount: Int
+        get() = strictHosts.size
 
     /**
      * Blocked when [url]'s host is a listed domain or a subdomain of
      * one. Lookup walks the host's own suffixes (at most a handful of
      * labels) against the set, so it stays O(1)-ish per request no
      * matter how large the list grows — it never scans the list.
+     * With [strict] the strict list is consulted as well.
      */
-    fun isAdRequest(url: String): Boolean {
+    fun isAdRequest(url: String, strict: Boolean = false): Boolean {
         val host = hostOf(url) ?: return false
         var candidate = host
         while (true) {
             if (candidate in blockedHosts) return true
+            if (strict && candidate in strictHosts) return true
             val dot = candidate.indexOf('.')
             if (dot < 0) return false
             candidate = candidate.substring(dot + 1)
