@@ -200,6 +200,8 @@ import com.tuxunbrowse.android.data.SavedTab
 import com.tuxunbrowse.android.data.SearchEngine
 import com.tuxunbrowse.android.data.Store
 import com.tuxunbrowse.android.data.ThemeMode
+import com.tuxunbrowse.android.data.UaPreset
+import com.tuxunbrowse.android.data.presetUserAgent
 import com.tuxunbrowse.android.data.dirSizeBytes
 import com.tuxunbrowse.android.data.formatStorageSize
 import com.tuxunbrowse.android.data.WEBVIEW_CACHE_AUTO_CLEAR_THRESHOLD_BYTES
@@ -490,6 +492,17 @@ fun BrowserApp(
 ) {
     val context = LocalContext.current
     val store = remember { Store(context) }
+    // This device's system default WebView UA, read once (v0.80.0):
+    // the UA presets build their strings out of its real fragments
+    // (Android version, model, Chrome version — see presetUserAgent),
+    // and every tab's UA provider closes over this value.
+    val systemDefaultUserAgent = remember {
+        try {
+            android.webkit.WebSettings.getDefaultUserAgent(context)
+        } catch (t: Throwable) {
+            null
+        }
+    }
     var screen by remember {
         mutableStateOf(if (store.mainEngineChosen) Screen.BROWSER else Screen.PICKER)
     }
@@ -1150,6 +1163,9 @@ fun BrowserApp(
             },
             textZoomProvider = { store.textZoomPercent },
             webDarkProvider = { store.webDarkMode },
+            userAgentProvider = {
+                presetUserAgent(store.uaPreset, systemDefaultUserAgent)
+            },
             thirdPartyCookiesProvider = { store.allowThirdPartyCookies },
             blockImagesProvider = { store.blockImages },
             disableJavaScriptProvider = { store.disableJavaScript },
@@ -2019,7 +2035,8 @@ fun BrowserApp(
                 readerFontSize = store.readerFontSize,
                 readerBackground = store.readerBackground,
                 bookmarkSortOrder = store.bookmarkSortOrder,
-                httpsFirstEnabled = store.httpsFirstEnabled
+                httpsFirstEnabled = store.httpsFirstEnabled,
+                uaPreset = store.uaPreset
             ),
             compatSites = store.loadCompatSites().sorted(),
             desktopSites = store.loadDesktopSites().sorted(),
@@ -2170,6 +2187,14 @@ fun BrowserApp(
         // inbound paths read it at open time, exactly like the
         // settings-page switch writes it.
         s.httpsFirstEnabled?.let { store.httpsFirstEnabled = it }
+        // UA preset (v0.80.0): Store write plus the same live push
+        // the settings page uses, so created engines switch identity
+        // at once (for their next load), exactly like flipping the
+        // radio by hand.
+        s.uaPreset?.let { preset ->
+            store.uaPreset = preset
+            tabs.forEach { it.applyUserAgent() }
+        }
         if (s.readerFontSize != null || s.readerBackground != null) {
             tabs.forEach { it.applyReaderStyle() }
         }
@@ -3667,6 +3692,9 @@ fun BrowserApp(
             onWebDarkChange = { enabled ->
                 tabs.forEach { it.applyWebDark(enabled) }
             },
+            onUserAgentChange = {
+                tabs.forEach { it.applyUserAgent() }
+            },
             onThirdPartyCookiesChange = { enabled ->
                 tabs.forEach { it.applyThirdPartyCookies(enabled) }
             },
@@ -3722,6 +3750,28 @@ fun BrowserApp(
                 }
             },
             onDownloadAll = { list ->
+                downloadBatchWithMode(
+                    list.map { it.url },
+                    fromIncognito =
+                        tabs.firstOrNull { t -> t.id == sniffTabId }?.incognito == true
+                ) {
+                    list.forEach {
+                        startSystemDownload(
+                            context, it.url, null, null, null,
+                            referer = tabs.firstOrNull { t -> t.id == sniffTabId }?.url
+                        )
+                    }
+                }
+            },
+            onDownloadSelected = { list ->
+                // Same dispatch as "download all" above, word for
+                // word (v0.80.0): the batch entry point is the one
+                // existing multi-item path — its system fallback
+                // enqueues every item through the exact single-item
+                // startSystemDownload call, ask mode asks once for
+                // the whole selection and TuxunDown gets one share,
+                // where per-item downloadWithMode calls would stack
+                // N ask dialogs / N shares. No new download path.
                 downloadBatchWithMode(
                     list.map { it.url },
                     fromIncognito =
@@ -9932,7 +9982,10 @@ private fun ReadingListScreen(
  * this screen — the menu entry explains why). Runs the collection
  * script once when the screen appears, then lists what was found
  * grouped by kind, each row downloadable through the existing
- * system-download path.
+ * system-download path. Multi-select (v0.80.0) lets the user pick
+ * a subset and start them all through the same batch dispatch the
+ * "download all" button uses; the entry only exists when the
+ * result list is non-empty (it lives in the non-empty branch).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -9940,11 +9993,33 @@ private fun SniffScreen(
     tab: BrowserTab?,
     onBack: () -> Unit,
     onDownload: (SniffedResource) -> Unit,
-    onDownloadAll: (List<SniffedResource>) -> Unit
+    onDownloadAll: (List<SniffedResource>) -> Unit,
+    onDownloadSelected: (List<SniffedResource>) -> Unit = {}
 ) {
+    val context = LocalContext.current
     var loading by remember(tab?.id) { mutableStateOf(true) }
     var resources by remember(tab?.id) {
         mutableStateOf<List<SniffedResource>>(emptyList())
+    }
+    // Multi-select mode (v0.80.0): same shape as the bookmarks
+    // batch mode and the tab multi-select — an explicit mode, an
+    // official Checkbox per row, a live "已选 N 个" count. Every
+    // sniffed kind (file / image / media) is selectable: all of
+    // them are downloadable through the single-item path already.
+    var selectMode by remember(tab?.id) { mutableStateOf(false) }
+    var selectedUrls by remember(tab?.id) {
+        mutableStateOf<Set<String>>(emptySet())
+    }
+    fun toggleSniffSelected(url: String) {
+        selectedUrls = if (url in selectedUrls) {
+            selectedUrls - url
+        } else {
+            selectedUrls + url
+        }
+    }
+    fun exitSniffSelectMode() {
+        selectMode = false
+        selectedUrls = emptySet()
     }
     LaunchedEffect(tab?.id) {
         val target = tab
@@ -10001,17 +10076,97 @@ private fun SniffScreen(
                     }
                 }
                 else -> {
-                    Button(
-                        onClick = { onDownloadAll(resources) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp)
-                    ) {
-                        Icon(Icons.Filled.Download, contentDescription = null)
-                        Text(
-                            "全部下载（${resources.size} 个）",
-                            modifier = Modifier.padding(start = 8.dp)
-                        )
+                    if (selectMode) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "已选 ${selectedUrls.size} 个",
+                                style = MaterialTheme.typography.titleMedium,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .semantics {
+                                        liveRegion = LiveRegionMode.Polite
+                                    }
+                            )
+                            TextButton(
+                                onClick = {
+                                    selectedUrls = if (
+                                        selectedUrls.size == resources.size
+                                    ) {
+                                        emptySet()
+                                    } else {
+                                        resources.map { it.url }.toSet()
+                                    }
+                                }
+                            ) {
+                                Text(
+                                    if (selectedUrls.size == resources.size) {
+                                        "取消全选"
+                                    } else {
+                                        "全选"
+                                    }
+                                )
+                            }
+                            TextButton(onClick = { exitSniffSelectMode() }) {
+                                Text("退出多选")
+                            }
+                        }
+                        Button(
+                            enabled = selectedUrls.isNotEmpty(),
+                            onClick = {
+                                val chosen = resources.filter {
+                                    it.url in selectedUrls
+                                }
+                                if (chosen.isNotEmpty()) {
+                                    onDownloadSelected(chosen)
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        "已开始下载 ${chosen.size} 个",
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
+                                    exitSniffSelectMode()
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                        ) {
+                            Icon(Icons.Filled.Download, contentDescription = null)
+                            Text(
+                                "下载所选（${selectedUrls.size} 个）",
+                                modifier = Modifier.padding(start = 8.dp)
+                            )
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = { onDownloadAll(resources) },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    Icons.Filled.Download,
+                                    contentDescription = null
+                                )
+                                Text(
+                                    "全部下载（${resources.size} 个）",
+                                    modifier = Modifier.padding(start = 8.dp)
+                                )
+                            }
+                            OutlinedButton(
+                                onClick = { selectMode = true }
+                            ) {
+                                Text("多选下载")
+                            }
+                        }
                     }
                     val groups = listOf(
                         SniffKind.FILE to "文件",
@@ -10044,27 +10199,49 @@ private fun SniffScreen(
                                             )
                                         },
                                         leadingContent = {
-                                            Icon(
-                                                when (kind) {
-                                                    SniffKind.FILE ->
-                                                        Icons.Filled.InsertDriveFile
-                                                    SniffKind.IMAGE ->
-                                                        Icons.Filled.Image
-                                                    SniffKind.MEDIA ->
-                                                        Icons.Filled.Movie
-                                                },
-                                                contentDescription = label
-                                            )
-                                        },
-                                        trailingContent = {
-                                            IconButton(
-                                                onClick = { onDownload(res) }
-                                            ) {
+                                            if (selectMode) {
+                                                Checkbox(
+                                                    checked = res.url in selectedUrls,
+                                                    onCheckedChange = {
+                                                        toggleSniffSelected(res.url)
+                                                    },
+                                                    modifier = Modifier.semantics {
+                                                        contentDescription =
+                                                            "选择 ${res.name}"
+                                                    }
+                                                )
+                                            } else {
                                                 Icon(
-                                                    Icons.Filled.Download,
-                                                    contentDescription = "下载"
+                                                    when (kind) {
+                                                        SniffKind.FILE ->
+                                                            Icons.Filled.InsertDriveFile
+                                                        SniffKind.IMAGE ->
+                                                            Icons.Filled.Image
+                                                        SniffKind.MEDIA ->
+                                                            Icons.Filled.Movie
+                                                    },
+                                                    contentDescription = label
                                                 )
                                             }
+                                        },
+                                        trailingContent = {
+                                            if (!selectMode) {
+                                                IconButton(
+                                                    onClick = { onDownload(res) }
+                                                ) {
+                                                    Icon(
+                                                        Icons.Filled.Download,
+                                                        contentDescription = "下载"
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        modifier = if (selectMode) {
+                                            Modifier.clickable {
+                                                toggleSniffSelected(res.url)
+                                            }
+                                        } else {
+                                            Modifier
                                         }
                                     )
                                 }
@@ -11509,6 +11686,7 @@ private fun SettingsScreen(
     onSearchEngineChange: () -> Unit = {},
     onTextZoomChange: (Int) -> Unit,
     onWebDarkChange: (Boolean) -> Unit,
+    onUserAgentChange: () -> Unit = {},
     onThirdPartyCookiesChange: (Boolean) -> Unit = {},
     onBlockImagesChange: (Boolean) -> Unit = {},
     onDisableJavaScriptChange: (Boolean) -> Unit = {},
@@ -11538,6 +11716,7 @@ private fun SettingsScreen(
     var showResetBlockedConfirm by remember { mutableStateOf(false) }
     var textZoom by remember(refreshTick) { mutableStateOf(store.textZoomPercent) }
     var webDark by remember(refreshTick) { mutableStateOf(store.webDarkMode) }
+    var uaPreset by remember(refreshTick) { mutableStateOf(store.uaPreset) }
     var startupRestore by remember(refreshTick) { mutableStateOf(store.startupRestore) }
     var allowThirdPartyCookies by remember(refreshTick) {
         mutableStateOf(store.allowThirdPartyCookies)
@@ -12384,6 +12563,55 @@ private fun SettingsScreen(
                         )
                     }
                 )
+            }
+            item {
+                Text("用户代理（UA）", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "网站靠「用户代理」判断你用的是什么浏览器、什么设备，再决定给你手机版还是电脑版页面。" +
+                        "在这里可以换一个身份，全局生效。两个内核都支持：系统 WebView 直接换，" +
+                        "火狐走 GeckoView 官方的 UA 覆盖通路。已经打开的页面要刷新或新开标签才换过来；" +
+                        "改回「跟随系统默认」就恢复这台设备本来的 UA。" +
+                        "注意：这和菜单里按网站开的「桌面版网站」是两回事——那个是单个网站的开关，优先级更高，开了桌面版的网站不受这里影响。",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            items(UaPreset.entries) { preset ->
+                ElevatedCard(
+                    onClick = {
+                        uaPreset = preset
+                        store.uaPreset = preset
+                        onUserAgentChange()
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    ListItem(
+                        headlineContent = { Text("用户代理 · ${preset.label}") },
+                        supportingContent = {
+                            Text(
+                                when (preset) {
+                                    UaPreset.SYSTEM ->
+                                        "不改：网站看到的是这台设备系统默认的浏览器身份"
+                                    UaPreset.ANDROID_PHONE ->
+                                        "网站看到的是安卓手机上的 Chrome（用本机真实的安卓版本和机型拼）"
+                                    UaPreset.DESKTOP ->
+                                        "网站看到的是桌面电脑上的 Chrome，常用来让网站给电脑版页面"
+                                    UaPreset.IPHONE ->
+                                        "网站看到的是 iPhone 上的 Safari"
+                                }
+                            )
+                        },
+                        trailingContent = {
+                            RadioButton(
+                                selected = uaPreset == preset,
+                                onClick = {
+                                    uaPreset = preset
+                                    store.uaPreset = preset
+                                    onUserAgentChange()
+                                }
+                            )
+                        }
+                    )
+                }
             }
             item {
                 Text("阅读模式", style = MaterialTheme.typography.titleMedium)

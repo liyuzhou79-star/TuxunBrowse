@@ -582,6 +582,15 @@ class BrowserTab(
     private val onGeckoClipboardPermissionGone: () -> Unit = {},
     private val textZoomProvider: () -> Int = { 100 },
     private val webDarkProvider: () -> Boolean = { false },
+    // Custom user-agent preset (v0.80.0): the UA string the app's
+    // preset builds for this device (see presetUserAgent in the
+    // data layer), or null for "no override". Read at engine
+    // creation for BOTH engines — WebView setUserAgentString,
+    // Gecko GeckoSessionSettings user-agent override — and again
+    // by applyUserAgent when the setting changes. A desktopMode
+    // tab ignores it: per-site desktop mode keeps its own UA on
+    // both engines, exactly as before the preset existed.
+    private val userAgentProvider: () -> String? = { null },
     // Whether third-party cookies are allowed in this tab's WebView
     // (v0.39.0). Read live from the Store by the app at obtain time;
     // later changes are pushed to created WebViews via
@@ -1177,6 +1186,40 @@ class BrowserTab(
         webView?.settings?.textZoom = percent
     }
 
+    /**
+     * Push the UA preset to this tab's already created engine
+     * (v0.80.0), mirroring [applyBlockImages]. Both engines go
+     * through their official live setters (javap/doc-verified):
+     * - WebView: settings.userAgentString — the platform docs say
+     *   a null (or empty) value restores the system default UA,
+     *   which is exactly the "follow system" preset, so the
+     *   provider result is passed straight through, null included.
+     * - Gecko: GeckoSessionSettings.setUserAgentOverride takes a
+     *   @Nullable String (AAR-verified) and its key is not
+     *   init-only, so the live setter reaches the running session
+     *   the same way setAllowJavascript does; null clears the
+     *   override back to Gecko's default UA.
+     * The new UA applies to loads that start after the change; a
+     * page already on screen keeps the identity it loaded with
+     * until it is refreshed or a new page loads — the settings
+     * text says exactly that. Desktop-mode tabs are skipped: their
+     * per-site desktop UA wins over the global preset. Tabs whose
+     * engine is not created yet read the provider at creation.
+     */
+    fun applyUserAgent() {
+        if (desktopMode) return
+        try {
+            webView?.settings?.userAgentString = userAgentProvider()
+        } catch (t: Throwable) {
+            // Engine already gone; nothing to apply.
+        }
+        try {
+            geckoSession?.settings?.setUserAgentOverride(userAgentProvider())
+        } catch (t: Throwable) {
+            // Engine already gone; nothing to apply.
+        }
+    }
+
     fun applyWebDark(enabled: Boolean) {
         // While this tab is in reader mode its page colours come from
         // the reader stylesheet, and darkening stays off (see
@@ -1585,6 +1628,12 @@ class BrowserTab(
         view.settings.loadWithOverviewMode = true
         if (desktopMode) {
             view.settings.userAgentString = DESKTOP_USER_AGENT
+        } else {
+            // UA preset (v0.80.0): a null provider result leaves
+            // the platform default UA completely untouched.
+            userAgentProvider()?.let { presetUa ->
+                view.settings.userAgentString = presetUa
+            }
         }
         view.setOnLongClickListener { v ->
             val wv = v as WebView
@@ -2033,6 +2082,15 @@ class BrowserTab(
             settingsBuilder
                 .userAgentMode(GeckoSessionSettings.USER_AGENT_MODE_DESKTOP)
                 .viewportMode(GeckoSessionSettings.VIEWPORT_MODE_DESKTOP)
+        } else {
+            // UA preset (v0.80.0): GeckoView 132's official
+            // user-agent override (Builder.userAgentOverride,
+            // javap-verified against the AAR). A null provider
+            // result sets nothing — the session keeps Gecko's own
+            // default UA for its user-agent mode.
+            userAgentProvider()?.let { presetUa ->
+                settingsBuilder.userAgentOverride(presetUa)
+            }
         }
         return settingsBuilder.build()
     }

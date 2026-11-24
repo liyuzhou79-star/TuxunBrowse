@@ -631,6 +631,124 @@ enum class ThemeMode(val id: String, val label: String) {
 }
 
 /**
+ * Custom user-agent preset (v0.80.0): which browser identity web
+ * pages see. SYSTEM means "do not override anything" — each engine
+ * keeps its own default UA. The other three build a UA string with
+ * [presetUserAgent]. Applies to BOTH engines: WebView through
+ * WebSettings.setUserAgentString, Gecko through GeckoView 132's
+ * official GeckoSessionSettings user-agent override (AAR-audited:
+ * Builder.userAgentOverride(String) and the live
+ * setUserAgentOverride(@Nullable String) both exist, the key is
+ * not init-only, and null clears the override). A tab's per-site
+ * desktop mode still wins over the preset (see TabController).
+ */
+enum class UaPreset(val id: String, val label: String) {
+    SYSTEM("system", "跟随系统默认"),
+    ANDROID_PHONE("android_phone", "安卓手机"),
+    DESKTOP("desktop", "桌面电脑"),
+    IPHONE("iphone", "iPhone");
+
+    companion object {
+        fun fromId(id: String?): UaPreset =
+            entries.firstOrNull { it.id == id } ?: SYSTEM
+    }
+}
+
+/**
+ * The iPhone preset's UA: the public, standard Mobile Safari
+ * format. No fragment of it can come from this device (an Android
+ * phone has no iOS version to borrow), so the whole string is the
+ * well-known template, exactly as published in Apple's and
+ * MDN's examples — nothing about the user's own device in it.
+ */
+const val IPHONE_USER_AGENT =
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) " +
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 " +
+        "Mobile/15E148 Safari/604.1"
+
+/** Platform segment of the public standard desktop-Chrome UA. */
+const val DESKTOP_UA_PLATFORM = "Windows NT 10.0; Win64; x64"
+
+private val UA_WEBKIT_REGEX = Regex("""AppleWebKit/([0-9.]+)""")
+private val UA_CHROME_REGEX = Regex("""Chrome/([0-9.]+)""")
+private val UA_VERSION_SEGMENT_REGEX = Regex("""Version/[0-9.]+ """)
+
+/**
+ * Replace the parenthesised platform segment of [ua] (the part
+ * between the first '(' and its ')') with [platform]; a UA with
+ * no parentheses comes back unchanged.
+ */
+fun swapUaPlatformSegment(ua: String, platform: String): String {
+    val open = ua.indexOf('(')
+    val close = ua.indexOf(')', open + 1)
+    if (open < 0 || close < 0) return ua
+    return ua.substring(0, open + 1) + platform + ua.substring(close)
+}
+
+/**
+ * Build the UA string for a preset, or null when no override
+ * should be applied. Pure: every version number in the Android /
+ * desktop results is copied out of the device's own current
+ * default UA ([systemDefaultUa] — WebSettings.getDefaultUserAgent
+ * on this device), never invented: the Android version and model
+ * in the platform segment are the device's real ones (only the
+ * "; wv" WebView marker is dropped, because a standalone Chrome
+ * does not carry it), and the Chrome version is the default UA's
+ * own Chrome version. The desktop result swaps in the standard
+ * desktop-Chrome platform segment and drops the Mobile token.
+ *
+ * Returns null for SYSTEM (no override at all), and also for
+ * ANDROID_PHONE / DESKTOP when [systemDefaultUa] is blank — with
+ * no real fragments to build from, guessing a UA would be worse
+ * than leaving the default alone. IPHONE never needs the default
+ * (see [IPHONE_USER_AGENT]).
+ *
+ * Fallback when the default UA carries no Chrome token (some
+ * OEM WebViews): keep the default UA's own tail verbatim and
+ * only swap the platform segment (plus, for desktop, drop the
+ * "Version/x" segment and the Mobile token) — still no invented
+ * version numbers.
+ */
+fun presetUserAgent(preset: UaPreset, systemDefaultUa: String?): String? {
+    if (preset == UaPreset.SYSTEM) return null
+    if (preset == UaPreset.IPHONE) return IPHONE_USER_AGENT
+    val base = systemDefaultUa?.trim().orEmpty()
+    if (base.isEmpty()) return null
+    val webkit = UA_WEBKIT_REGEX.find(base)?.groupValues?.get(1)
+        ?: "537.36"
+    val chrome = UA_CHROME_REGEX.find(base)?.groupValues?.get(1)
+    val platform = base.substringAfter('(', "").substringBefore(')')
+    return when (preset) {
+        UaPreset.ANDROID_PHONE -> {
+            val cleaned = platform.replace("; wv", "").trim()
+                .ifBlank { "Linux; Android" }
+            if (chrome != null) {
+                "Mozilla/5.0 ($cleaned) AppleWebKit/$webkit " +
+                    "(KHTML, like Gecko) Chrome/$chrome Mobile Safari/$webkit"
+            } else {
+                val swapped = swapUaPlatformSegment(base, cleaned)
+                if (swapped.contains(" Mobile Safari/")) {
+                    swapped
+                } else {
+                    swapped.replace(" Safari/", " Mobile Safari/")
+                }
+            }
+        }
+        UaPreset.DESKTOP -> {
+            if (chrome != null) {
+                "Mozilla/5.0 ($DESKTOP_UA_PLATFORM) AppleWebKit/$webkit " +
+                    "(KHTML, like Gecko) Chrome/$chrome Safari/$webkit"
+            } else {
+                swapUaPlatformSegment(base, DESKTOP_UA_PLATFORM)
+                    .replace(UA_VERSION_SEGMENT_REGEX, "")
+                    .replace(" Mobile Safari/", " Safari/")
+            }
+        }
+        else -> null
+    }
+}
+
+/**
  * Total size in bytes of a file or directory tree, or null when the
  * path does not exist (the UI shows "—" instead of inventing a number).
  */
@@ -1060,6 +1178,11 @@ val SETTINGS_SEARCH_INDEX: List<SettingsIndexEntry> = listOf(
     SettingsIndexEntry("文字大小 · 大（115%）", "appearance", "外观与字体"),
     SettingsIndexEntry("文字大小 · 特大（130%）", "appearance", "外观与字体"),
     SettingsIndexEntry("网页深色模式", "appearance", "外观与字体"),
+    SettingsIndexEntry("用户代理 · 跟随系统默认", "appearance", "外观与字体"),
+    SettingsIndexEntry("用户代理 · 安卓手机", "appearance", "外观与字体"),
+    SettingsIndexEntry("用户代理 · 桌面电脑", "appearance", "外观与字体"),
+    SettingsIndexEntry("用户代理 · iPhone", "appearance", "外观与字体"),
+    SettingsIndexEntry("自定义用户代理（UA）预设", "appearance", "外观与字体"),
     SettingsIndexEntry("阅读字号 · 小（15px）", "appearance", "外观与字体"),
     SettingsIndexEntry("阅读字号 · 标准（17px）", "appearance", "外观与字体"),
     SettingsIndexEntry("阅读字号 · 大（19px）", "appearance", "外观与字体"),
@@ -1239,6 +1362,18 @@ class Store(context: Context) {
     var webDarkMode: Boolean
         get() = safeBoolean(KEY_WEB_DARK, false)
         set(value) = prefs.edit().putBoolean(KEY_WEB_DARK, value).apply()
+
+    /**
+     * Custom user-agent preset (v0.80.0); see [UaPreset] and
+     * [presetUserAgent]. Default SYSTEM = no override anywhere.
+     * Read live by the app's per-tab UA provider at engine
+     * creation; changes are pushed to created engines through
+     * BrowserTab.applyUserAgent, the same live path the other
+     * appearance settings use.
+     */
+    var uaPreset: UaPreset
+        get() = UaPreset.fromId(safeString(KEY_UA_PRESET, null))
+        set(value) = prefs.edit().putString(KEY_UA_PRESET, value.id).apply()
 
     /**
      * Allow third-party cookies in system WebView tabs (v0.39.0).
@@ -1716,6 +1851,7 @@ class Store(context: Context) {
         private const val KEY_READER_FONT_SIZE = "reader_font_size"
         private const val KEY_READER_BACKGROUND = "reader_background"
         private const val KEY_WEB_DARK = "web_dark"
+        private const val KEY_UA_PRESET = "ua_preset"
         private const val KEY_STARTUP_RESTORE = "startup_restore"
         private const val KEY_DOWNLOAD_MODE = "download_mode"
         private const val KEY_HISTORY_RETENTION = "history_retention"
@@ -1798,7 +1934,10 @@ data class BackupSettings(
     val bookmarkSortOrder: BookmarkSortOrder? = null,
     // Added in v0.77.0: HTTPS-first switch. Same optional-on-read
     // treatment as the v0.51.0 additions.
-    val httpsFirstEnabled: Boolean? = null
+    val httpsFirstEnabled: Boolean? = null,
+    // Added in v0.80.0: custom user-agent preset. Same
+    // optional-on-read treatment as the v0.51.0 additions.
+    val uaPreset: UaPreset? = null
 ) {
     /** Plain-language list of what applying these settings would overwrite. */
     fun overwriteSummary(): List<String> {
@@ -1822,6 +1961,7 @@ data class BackupSettings(
         if (readerBackground != null) out.add("阅读背景")
         if (bookmarkSortOrder != null) out.add("书签排序（默认顺序 / 按名称）")
         if (httpsFirstEnabled != null) out.add("优先用 HTTPS 打开网站")
+        if (uaPreset != null) out.add("用户代理（UA）预设")
         return out
     }
 }
@@ -1953,6 +2093,7 @@ fun backupToJson(
     settings.httpsFirstEnabled?.let {
         settingsObj.put("httpsFirstEnabled", it)
     }
+    settings.uaPreset?.let { settingsObj.put("uaPreset", it.id) }
     val compatArr = JSONArray()
     compatSites.forEach { compatArr.put(it) }
     val desktopArr = JSONArray()
@@ -2127,7 +2268,9 @@ fun parseBackup(raw: String): BackupData? {
                 s.optBoolean("httpsFirstEnabled")
             } else {
                 null
-            }
+            },
+            uaPreset = s.optString("uaPreset")
+                .takeIf { it.isNotBlank() }?.let { UaPreset.fromId(it) }
         )
     }
     // Compat sites (v0.51.0): plain host names only — anything with
