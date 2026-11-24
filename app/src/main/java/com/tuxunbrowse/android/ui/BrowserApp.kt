@@ -10869,7 +10869,7 @@ private fun SettingsScreen(
     }
     val webViewPackageInfo = remember {
         try {
-            android.webkit.WebView.getCurrentWebViewPackage(settingsContext)
+            android.webkit.WebView.getCurrentWebViewPackage()
         } catch (t: Throwable) {
             null
         }
