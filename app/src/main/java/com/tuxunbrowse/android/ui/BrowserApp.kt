@@ -11860,7 +11860,7 @@ private fun SettingsScreen(
                         ListItem(
                             headlineContent = { Text("下载有应用内记录") },
                             supportingContent = {
-                                Text("下好的文件会记进下载页的「火狐下载」一节，点按可打开")
+                                Text("下载时能在下载页看到进度、也能取消；下好的文件会记进下载页的「火狐下载」一节，点按可打开")
                             }
                         )
                         HorizontalDivider()
