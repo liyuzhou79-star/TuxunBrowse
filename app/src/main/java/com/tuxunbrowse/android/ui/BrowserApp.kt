@@ -181,6 +181,9 @@ import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -191,6 +194,7 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
@@ -364,6 +368,30 @@ private fun readImportFileText(
         }
     }
     return sb.toString()
+}
+
+/**
+ * Accessibility touch-target expansion (v0.99.0 audit): measure
+ * the child at [touchSize] but report only [visualSize] to the
+ * parent layout, centring the larger child so its interactive
+ * area overflows the reported box evenly on every side. The
+ * visual result is pixel-identical to a [visualSize] box (the
+ * child's own content stays centred), the layout footprint keeps
+ * the small size, and the clickable inside the child keeps the
+ * full [touchSize] hit area — the standard way to give a compact
+ * 40dp icon button the 48dp minimum touch target without handing
+ * the layout space back.
+ */
+private fun Modifier.expandedTouchTarget(
+    visualSize: Dp,
+    touchSize: Dp
+): Modifier = this.layout { measurable, _ ->
+    val touchPx = touchSize.roundToPx()
+    val visualPx = visualSize.roundToPx()
+    val placeable = measurable.measure(Constraints.fixed(touchPx, touchPx))
+    layout(visualPx, visualPx) {
+        placeable.place(-(touchPx - visualPx) / 2, -(touchPx - visualPx) / 2)
+    }
 }
 
 /**
@@ -5863,11 +5891,17 @@ private fun BrowserScreen(
             // own padding is 4dp and the children sit gapless —
             // every button already carries its icon padding, so
             // the old 8dp + 4dp gaps only ate address-field width.
-            // The two icon buttons INSIDE the field are 40dp
-            // (their glyphs stay 24dp): at 360dp wide the field's
-            // text area grows from ~84dp to ~120dp, enough for the
-            // full placeholder; at 320dp it grows from ~44dp to
-            // ~80dp. The outside buttons stay 48dp.
+            // The two icon buttons INSIDE the field occupy 40dp
+            // of layout (their glyphs stay 24dp): at 360dp wide
+            // the field's text area grows from ~84dp to ~120dp,
+            // enough for the full placeholder; at 320dp it grows
+            // from ~44dp to ~80dp. The outside buttons stay 48dp.
+            // Touch targets (v0.99.0 accessibility audit): a plain
+            // Modifier.size(40.dp) also pinned the buttons' hit
+            // area to 40dp — below the 48dp minimum. They now go
+            // through expandedTouchTarget: 40dp of layout, a full
+            // 48dp hit area overflowing evenly into the field's
+            // own padding, visuals and widths unchanged.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -5881,7 +5915,17 @@ private fun BrowserScreen(
                     modifier = Modifier
                         .size(48.dp)
                         .combinedClickable(
-                            enabled = activeTab != null && !activeTab.isHome,
+                            // Enabled exactly when a back step
+                            // exists (v0.99.0 accessibility audit):
+                            // the old condition also enabled the
+                            // button on a first page where canGoBack
+                            // is false — TalkBack then offered an
+                            // active "back" button that did nothing,
+                            // while its tint already said disabled.
+                            // No long-press handler is registered,
+                            // so no long-press action is advertised
+                            // either; the description is just "后退".
+                            enabled = activeTab?.canGoBack == true,
                             onClick = {
                                 if (activeTab?.canGoBack == true) {
                                     activeTab?.goBack()
@@ -5921,7 +5965,7 @@ private fun BrowserScreen(
                         // something when tapped).
                         IconButton(
                             onClick = { showSiteInfo = true },
-                            modifier = Modifier.size(40.dp)
+                            modifier = Modifier.expandedTouchTarget(40.dp, 48.dp)
                         ) {
                             when {
                                 activeTab == null || activeTab.isHome ->
@@ -5940,7 +5984,7 @@ private fun BrowserScreen(
                         // visible, no separate title bar needed.
                         IconButton(
                             onClick = onToggleBookmark,
-                            modifier = Modifier.size(40.dp)
+                            modifier = Modifier.expandedTouchTarget(40.dp, 48.dp)
                         ) {
                             Icon(
                                 if (isBookmarked) Icons.Filled.Star else Icons.Filled.StarBorder,
@@ -7149,6 +7193,29 @@ private fun BrowserScreen(
                     ElevatedCard(
                         modifier = Modifier
                             .fillMaxWidth()
+                            // Selection state on the card itself
+                            // (v0.99.0 accessibility audit): in
+                            // multi-select a tap on the card toggles
+                            // the tab, but the card's semantics
+                            // carried no state — TalkBack users
+                            // heard the state only on the Checkbox.
+                            // stateDescription puts "已选 / 未选" on
+                            // the card stop as well; visuals and
+                            // behaviour are unchanged.
+                            .then(
+                                if (tabMultiSelect) {
+                                    Modifier.semantics {
+                                        stateDescription =
+                                            if (tab.id in selectedTabIds) {
+                                                "已选"
+                                            } else {
+                                                "未选"
+                                            }
+                                    }
+                                } else {
+                                    Modifier
+                                }
+                            )
                             .combinedClickable(
                                 onClick = {
                                     // Multi-select (v0.76.0): a tap
@@ -9345,9 +9412,31 @@ private fun SniffScreen(
                                             }
                                         },
                                         modifier = if (selectMode) {
-                                            Modifier.clickable {
-                                                toggleSniffSelected(res.url)
-                                            }
+                                            // Row stop carries the
+                                            // selection state too
+                                            // (v0.99.0 audit, same fix
+                                            // as the tab cards): the
+                                            // row tap toggles, so its
+                                            // semantics say 已选 / 未选
+                                            // instead of leaving the
+                                            // state to the Checkbox
+                                            // stop alone.
+                                            Modifier
+                                                .semantics {
+                                                    stateDescription =
+                                                        if (res.url in
+                                                            selectedUrls
+                                                        ) {
+                                                            "已选"
+                                                        } else {
+                                                            "未选"
+                                                        }
+                                                }
+                                                .clickable {
+                                                    toggleSniffSelected(
+                                                        res.url
+                                                    )
+                                                }
                                         } else {
                                             Modifier
                                         }
@@ -11655,15 +11744,20 @@ private fun SettingsScreen(
                             )
                         },
                         trailingContent = {
+                            // Passive indicator (v0.99.0
+                            // accessibility audit): the whole card
+                            // above is the one clickable, and a
+                            // live onClick here made TalkBack stop
+                            // twice on the same choice and read the
+                            // selection state twice. With onClick =
+                            // null the radio merges into the card's
+                            // semantics — one stop, the card reads
+                            // its label, description and selected
+                            // state once (same pattern as the
+                            // search-engine picker).
                             RadioButton(
                                 selected = tpLevel == level,
-                                onClick = {
-                                    tpLevel = level
-                                    store.trackingProtectionLevel = level
-                                    GeckoHolder.applyPrivacySettings(
-                                        settingsContext
-                                    )
-                                }
+                                onClick = null
                             )
                         }
                     )
@@ -11676,11 +11770,18 @@ private fun SettingsScreen(
                         Text("告诉网站不要追踪你；只对系统 WebView 有效。")
                     },
                     trailingContent = {
+                        // Named for TalkBack (v0.99.0 audit): a
+                        // bare Switch announces only its on/off
+                        // state, never which setting it belongs to
+                        // — the row's headline is a separate node.
                         Switch(
                             checked = doNotTrack,
                             onCheckedChange = {
                                 doNotTrack = it
                                 store.doNotTrackEnabled = it
+                            },
+                            modifier = Modifier.semantics {
+                                contentDescription = "不要追踪"
                             }
                         )
                     }
@@ -11701,6 +11802,9 @@ private fun SettingsScreen(
                                 GeckoHolder.applyPrivacySettings(
                                     settingsContext
                                 )
+                            },
+                            modifier = Modifier.semantics {
+                                contentDescription = "不出售或分享资料"
                             }
                         )
                     }
@@ -11721,6 +11825,9 @@ private fun SettingsScreen(
                             onCheckedChange = {
                                 webRtcOff = it
                                 store.webRtcDisabled = it
+                            },
+                            modifier = Modifier.semantics {
+                                contentDescription = "停用 WebRTC"
                             }
                         )
                     }
@@ -11882,7 +11989,17 @@ private fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Row {
+                    // Each info row merges into one semantics
+                    // node (v0.99.0 audit): TalkBack reads
+                    // "版本号：0.99.0" as one phrase instead of
+                    // stopping on the label and the value as two
+                    // unrelated stops. The GitHub row below keeps
+                    // its own clickable node (a text link).
+                    Row(
+                        modifier = Modifier.semantics(
+                            mergeDescendants = true
+                        ) {}
+                    ) {
                         Text(
                             "版本号：",
                             style = MaterialTheme.typography.bodyLarge,
@@ -11894,7 +12011,11 @@ private fun SettingsScreen(
                             fontWeight = FontWeight.Medium
                         )
                     }
-                    Row {
+                    Row(
+                        modifier = Modifier.semantics(
+                            mergeDescendants = true
+                        ) {}
+                    ) {
                         Text(
                             "我们的作者：",
                             style = MaterialTheme.typography.bodyLarge,
