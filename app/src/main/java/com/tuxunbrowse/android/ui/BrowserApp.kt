@@ -11020,7 +11020,22 @@ private fun SettingsScreen(
     var guardScript by remember(refreshTick) {
         mutableStateOf(store.guardScriptEnabled)
     }
-    var totalBlocked by remember(refreshTick) { mutableStateOf(store.totalBlocked) }
+    // The blocked total is NOT a remember snapshot like the states
+    // above (v0.108.0 mirror audit): it is the one value on this
+    // page that changes on its own — a WebView page still loading
+    // when the user opens settings keeps counting blocked requests
+    // through noteBlocked — so a snapshot frozen at composition
+    // (or at the last refreshTick bump) could show a stale number
+    // in both the ad-block row and the diagnostics card while the
+    // neighbouring bookmark/history counts, which arrive as live
+    // parameters, moved on. Reading the store straight in the
+    // composition body costs one cached-memory read and picks the
+    // current value up at every recomposition (returning to the
+    // ad-block sub-page, closing the reset dialog below, ...).
+    // The reset action needs no local assignment any more:
+    // resetTotalBlocked updates the same memory cache this reads,
+    // and closing its dialog recomposes this body.
+    val totalBlocked = store.totalBlocked
     var showResetBlockedConfirm by remember { mutableStateOf(false) }
     // Diagnostics stay hidden until the version row on the About
     // page is long-pressed (v0.91.0): they are a troubleshooting
@@ -12389,7 +12404,6 @@ private fun SettingsScreen(
                 Button(onClick = {
                     showResetBlockedConfirm = false
                     store.resetTotalBlocked()
-                    totalBlocked = 0L
                     android.widget.Toast.makeText(
                         settingsContext, "拦截统计已清零",
                         android.widget.Toast.LENGTH_SHORT
