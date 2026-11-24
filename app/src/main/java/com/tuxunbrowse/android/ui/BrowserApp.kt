@@ -8333,8 +8333,6 @@ private fun downloadFailedReasonText(reason: Int): String = when (reason) {
     else -> "原因码 $reason"
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
 /**
  * Run one DownloadManager [query] and map its rows to
  * [DownloadEntry]s, newest first. Shared by the downloads screen's
@@ -8407,6 +8405,8 @@ private fun readDownloadEntries(
     return loaded.reversed()
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
 private fun DownloadsScreen(
     onBack: () -> Unit,
     retryReferer: String? = null
