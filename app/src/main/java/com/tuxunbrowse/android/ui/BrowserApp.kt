@@ -66,6 +66,7 @@ import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
@@ -147,6 +148,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
@@ -283,6 +286,9 @@ import com.tuxunbrowse.android.engine.TabContent
 import com.tuxunbrowse.android.engine.selectSleepVictims
 import com.tuxunbrowse.android.engine.trimAliveLimit
 import com.tuxunbrowse.android.engine.savePageScreenshot
+import com.tuxunbrowse.android.engine.WEB_ARCHIVE_MIME_TYPE
+import com.tuxunbrowse.android.engine.archiveFileName
+import com.tuxunbrowse.android.engine.moveWebArchiveToDownloads
 import com.tuxunbrowse.android.engine.sharePageScreenshot
 import com.tuxunbrowse.android.engine.resolveDownloadFileName
 import com.tuxunbrowse.android.engine.SOURCE_DISPLAY_LIMIT
@@ -3191,6 +3197,100 @@ fun BrowserApp(
         fetchPageSource(tab)
     }
 
+    // Save web archive (v0.85.0): the active WebView tab's page as
+    // one .mhtml file. BrowserScreen only calls this for a WebView
+    // tab on a real page; the guards are repeated here so no other
+    // caller can start a save with nothing to save. A page that is
+    // still loading is refused in plain language — an archive of a
+    // half-loaded page would silently miss content, so the user is
+    // asked to wait for the load to finish instead.
+    fun savePageArchive() {
+        val tab = activeTab() ?: return
+        if (tab.isHome || tab.engine != Engine.WEBVIEW) return
+        if (tab.loadError != null) {
+            android.widget.Toast.makeText(
+                context, "这个网页没打开成功，先重新加载试试",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        if (tab.progress < 100) {
+            android.widget.Toast.makeText(
+                context, "网页还在加载，等它加载完再保存存档",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        val fileName = archiveFileName(
+            tab.title,
+            java.text.SimpleDateFormat(
+                "yyyyMMdd", java.util.Locale.US
+            ).format(java.util.Date())
+        )
+        val tempFile = java.io.File(
+            context.cacheDir,
+            "web-archive-" + System.currentTimeMillis() + ".mhtml"
+        )
+        val pageUrl = tab.url
+        val incognito = tab.incognito
+        tab.savePageArchive(tempFile) { saved ->
+            if (!saved) {
+                android.widget.Toast.makeText(
+                    context, "存档保存失败，请重试",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            } else {
+                moveWebArchiveToDownloads(
+                    context, tempFile, fileName
+                ) { savedName, contentUri, filePath, sizeBytes ->
+                    if (savedName == null) {
+                        android.widget.Toast.makeText(
+                            context, "存档保存失败，请重试",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        // Same in-app record shape as a Gecko download
+                        // (v0.57.0 list), so the archive is listed,
+                        // openable and deletable on the downloads
+                        // screen too. Incognito keeps the v0.57.0
+                        // rule: the file itself is saved (the user
+                        // asked for it), but no record is left behind.
+                        if (!incognito) {
+                            try {
+                                store.addGeckoDownload(
+                                    GeckoDownloadRecord(
+                                        fileName = savedName,
+                                        sourceUrl = pageUrl,
+                                        sizeBytes = sizeBytes,
+                                        mimeType = WEB_ARCHIVE_MIME_TYPE,
+                                        contentUri = contentUri,
+                                        filePath = filePath,
+                                        time = System.currentTimeMillis()
+                                    )
+                                )
+                            } catch (t: Throwable) {
+                                // Recording is best-effort; the file
+                                // itself is already saved.
+                            }
+                        }
+                        android.widget.Toast.makeText(
+                            context,
+                            when {
+                                filePath != null ->
+                                    "已保存存档：$savedName（在应用下载文件夹里）"
+                                incognito ->
+                                    "已保存存档：$savedName（在系统下载文件夹里）"
+                                else ->
+                                    "已保存存档：$savedName（在系统下载文件夹，下载页里也能找到）"
+                            },
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }
+        }
+    }
+
     BackHandler(enabled = fullscreenView != null) {
         activeTab()?.exitFullscreen()
         fullscreenView = null
@@ -3500,6 +3600,7 @@ fun BrowserApp(
                     }
                 },
                 onViewSource = { openPageSource() },
+                onSaveArchive = { savePageArchive() },
                 onScreenshot = {
                     val tab = activeTab()
                     when {
@@ -6249,6 +6350,7 @@ private fun BrowserScreen(
     onPrintPage: () -> Unit,
     onOpenSniffer: () -> Unit,
     onViewSource: () -> Unit = {},
+    onSaveArchive: () -> Unit = {},
     onScreenshot: () -> Unit,
     onOpenDownloads: () -> Unit,
     onOpenBookmarks: () -> Unit,
@@ -6265,8 +6367,21 @@ private fun BrowserScreen(
     // Tab sheet multi-select (v0.76.0): while on, card taps toggle
     // a check instead of switching tabs. Selection is a set of tab
     // ids, so it survives the sheet's search filtering untouched.
-    var tabMultiSelect by remember { mutableStateOf(false) }
-    var selectedTabIds by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    // Tab multi-select (v0.76.0) is saveable since v0.85.0 (the
+    // second configuration-change audit): rotation itself never
+    // recreates the activity (the v0.34.0 configChanges list), but
+    // an uncovered configuration change or a process death with
+    // state restore used to wipe a half-finished selection. The
+    // selected ids are saved as a plain list; tab ids are handed
+    // out in creation order, so a restored set still names the
+    // tabs the startup restore rebuilt from the archive.
+    var tabMultiSelect by rememberSaveable { mutableStateOf(false) }
+    var selectedTabIds by rememberSaveable(
+        saver = listSaver<Set<Int>, Int>(
+            save = { it.toList() },
+            restore = { it.toSet() }
+        )
+    ) { mutableStateOf<Set<Int>>(emptySet()) }
     fun exitTabMultiSelect() {
         tabMultiSelect = false
         selectedTabIds = emptySet()
@@ -6513,6 +6628,47 @@ private fun BrowserScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showGeckoSourceNote = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+    // Save web archive on a Gecko tab (v0.85.0): same honest
+    // degradation as view-source above — GeckoView has no channel
+    // for handing an archive of the page to the app, so the menu
+    // item explains that in plain language and offers the existing
+    // switch-engine path instead of a button that cannot work.
+    var showGeckoArchiveNote by remember { mutableStateOf(false) }
+    fun handleSaveArchive() {
+        val tab = activeTab
+        when {
+            tab == null || tab.isHome -> android.widget.Toast.makeText(
+                context, "先打开一个网页再保存存档",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+            tab.loadError != null -> android.widget.Toast.makeText(
+                context, "这个网页没打开成功，先重新加载试试",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+            tab.engine == Engine.GECKO -> showGeckoArchiveNote = true
+            else -> onSaveArchive()
+        }
+    }
+    if (showGeckoArchiveNote) {
+        AlertDialog(
+            onDismissRequest = { showGeckoArchiveNote = false },
+            title = { Text("火狐内核存不了网页存档") },
+            text = {
+                Text("火狐内核没有把整页存档交给应用的通路，这个标签页存不了存档。可以先用系统 WebView 打开这一页，再保存存档。")
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showGeckoArchiveNote = false
+                    onOpenInOtherEngine()
+                }) { Text("用 WebView 打开本页") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showGeckoArchiveNote = false }) {
                     Text("取消")
                 }
             }
@@ -7714,6 +7870,20 @@ private fun BrowserScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable { showMoreTools = false; handleViewSource() }
+                    )
+                }
+                item {
+                    ListItem(
+                        headlineContent = { Text("保存网页存档") },
+                        supportingContent = {
+                            Text("把整页存成一个文件，离线也能打开；只支持系统 WebView 标签页")
+                        },
+                        leadingContent = {
+                            Icon(Icons.Filled.Save, contentDescription = null)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showMoreTools = false; handleSaveArchive() }
                     )
                 }
                 item {
@@ -8954,7 +9124,12 @@ private fun BookmarksScreen(
             }
         )
     }
-    var bookmarkQuery by remember { mutableStateOf("") }
+    // Search word, folder filter and the batch selection are
+    // saveable since v0.85.0 (second configuration-change audit):
+    // they are work in progress, and an activity recreation
+    // (uncovered configuration change / process death with state
+    // restore) must not silently drop a half-finished selection.
+    var bookmarkQuery by rememberSaveable { mutableStateOf("") }
     // Folder filter (v0.72.0): page-local state, never persisted —
     // same precedent as the downloads-page search (v0.64.0). null =
     // 全部, "" = 未分类, anything else = that folder. The pipeline
@@ -8964,7 +9139,7 @@ private fun BookmarksScreen(
     // batch selection) is keyed by the entry itself, so filtering
     // can never point an action at an entry the user is not
     // looking at.
-    var folderFilter by remember { mutableStateOf<String?>(null) }
+    var folderFilter by rememberSaveable { mutableStateOf<String?>(null) }
     val folderFiltered = bookmarksInFolder(bookmarks, folderFilter)
     val visibleBookmarks = if (bookmarkQuery.isBlank()) {
         folderFiltered
@@ -9150,12 +9325,31 @@ private fun BookmarksScreen(
     // Batch-manage mode: checkboxes on every row, a delete-selected
     // button on top, and clear ways out (back key, the close icon
     // and the "完成" button all leave the mode).
-    var batchMode by remember { mutableStateOf(false) }
-    var selectedUrls by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var batchMode by rememberSaveable { mutableStateOf(false) }
+    var selectedUrls by rememberSaveable(
+        saver = listSaver<Set<String>, String>(
+            save = { it.toList() },
+            restore = { it.toSet() }
+        )
+    ) { mutableStateOf<Set<String>>(emptySet()) }
     // Switching the folder filter clears the batch selection
     // (v0.72.0): batch delete must only ever act on entries the
     // user can currently see selected.
-    LaunchedEffect(folderFilter) { selectedUrls = emptySet() }
+    // Changing the folder filter clears the batch selection (the
+    // selected rows may not even be visible under the new filter).
+    // The comparison against the last seen value matters since
+    // v0.85.0: filter and selection are both saveable now, and the
+    // effect's first run after a state restore must NOT wipe the
+    // just-restored selection — the remembered "last seen" starts
+    // at the restored filter, so only a genuine later change
+    // clears.
+    var lastFolderFilter by remember { mutableStateOf(folderFilter) }
+    LaunchedEffect(folderFilter) {
+        if (folderFilter != lastFolderFilter) {
+            lastFolderFilter = folderFilter
+            selectedUrls = emptySet()
+        }
+    }
     var showBatchDeleteConfirm by remember { mutableStateOf(false) }
     // Long-press menu target (v0.54.0, same shape as the history
     // page's v0.53.0 menu) and the pending single-delete
@@ -9709,7 +9903,10 @@ private fun HistoryScreen(
     clearCounts: Map<HistoryClearRange, Int>
 ) {
     var showClearDialog by remember { mutableStateOf(false) }
-    var query by remember { mutableStateOf("") }
+    // Search word and site filter are saveable since v0.85.0
+    // (second configuration-change audit), same rule as the
+    // downloads page: recreation must not silently reset them.
+    var query by rememberSaveable { mutableStateOf("") }
     // Long-press menu target (v0.53.0) and the pending "delete this
     // site's history" confirmation (host + live count). Both live
     // here in the screen: the list, the search query and the grouping
@@ -9727,7 +9924,7 @@ private fun HistoryScreen(
     // "delete this site's history" uses), then the search filter,
     // then the date bucketing below reads only the final list, so
     // group counts always describe what is actually shown.
-    var siteFilter by remember { mutableStateOf<String?>(null) }
+    var siteFilter by rememberSaveable { mutableStateOf<String?>(null) }
     val siteFiltered = if (siteFilter == null) {
         history
     } else {
@@ -10651,10 +10848,19 @@ private fun SniffScreen(
     // official Checkbox per row, a live "已选 N 个" count. Every
     // sniffed kind (file / image / media) is selectable: all of
     // them are downloadable through the single-item path already.
-    var selectMode by remember(tab?.id) { mutableStateOf(false) }
-    var selectedUrls by remember(tab?.id) {
-        mutableStateOf<Set<String>>(emptySet())
-    }
+    // Saveable since v0.85.0 (second configuration-change audit),
+    // still keyed by tab: a half-finished sniff selection survives
+    // an activity recreation, and the resources are re-collected
+    // for the same tab on the way back in, so the restored URLs
+    // still name rows of the same list.
+    var selectMode by rememberSaveable(tab?.id) { mutableStateOf(false) }
+    var selectedUrls by rememberSaveable(
+        tab?.id,
+        saver = listSaver<Set<String>, String>(
+            save = { it.toList() },
+            restore = { it.toSet() }
+        )
+    ) { mutableStateOf<Set<String>>(emptySet()) }
     fun toggleSniffSelected(url: String) {
         selectedUrls = if (url in selectedUrls) {
             selectedUrls - url
@@ -11088,12 +11294,18 @@ private fun DownloadsScreen(
     // above is unchanged, this just narrows what the list shows).
     // 0 = all, 1 = in progress (queued / running / paused),
     // 2 = completed, 3 = failed.
-    var statusFilter by remember { mutableStateOf(0) }
+    // Saveable since v0.85.0 (second configuration-change audit):
+    // a typed search word and a chosen filter are work in progress,
+    // not session confetti — an activity recreation (uncovered
+    // configuration change, process death with state restore) must
+    // not silently reset them. Rotation never recreated anyway
+    // (v0.34.0 configChanges); this covers the remaining paths.
+    var statusFilter by rememberSaveable { mutableStateOf(0) }
     // Page-local filename search (v0.64.0), same shape as the
     // bookmark/history page searches: memory only, never persisted,
     // and it survives filter changes and list refreshes because
     // nothing below ever resets it.
-    var downloadQuery by remember { mutableStateOf("") }
+    var downloadQuery by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
     LaunchedEffect(statusFilter, downloadQuery) {
         listState.scrollToItem(0)
@@ -11543,7 +11755,7 @@ private fun DownloadsScreen(
     if (toDeleteGecko != null) {
         AlertDialog(
             onDismissRequest = { pendingGeckoDelete = null },
-            title = { Text("删除这条火狐下载？") },
+            title = { Text("删除这条记录？") },
             text = {
                 Text(
                     "「${toDeleteGecko.fileName}」的记录会被删掉，" +
@@ -11578,7 +11790,7 @@ private fun DownloadsScreen(
     if (showClearGeckoConfirm) {
         AlertDialog(
             onDismissRequest = { showClearGeckoConfirm = false },
-            title = { Text("清空火狐下载记录？") },
+            title = { Text("清空本节记录？") },
             text = {
                 Text(
                     "将清除本节全部 ${geckoRecords.size} 条记录，" +
@@ -11997,12 +12209,13 @@ private fun DownloadsScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                "火狐下载",
+                                "应用内保存",
                                 style = MaterialTheme.typography.titleMedium
                             )
                             Text(
-                                "火狐标签下载的文件由浏览器直接保存，" +
-                                    "不走系统下载管理，所以单独列在这里。",
+                                "火狐标签下载的文件和 WebView 保存的网页存档" +
+                                    "由浏览器直接保存，不走系统下载管理，" +
+                                    "所以单独列在这里。",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -12069,8 +12282,8 @@ private fun DownloadsScreen(
                 Text(
                     text = "说明：同一个文件重复下载时，原来的文件不会被覆盖——" +
                         "系统可能给新文件自动改名保存，也可能提示「同名文件已经存在」。" +
-                        "火狐标签下载的文件会列在上面的「火狐下载」一节里；" +
-                        "无痕标签里的火狐下载只保存文件、不留记录，所以不会出现在这里。",
+                        "火狐标签下载的文件和 WebView 保存的网页存档会列在上面的「应用内保存」一节里；" +
+                        "无痕标签里的下载和存档只保存文件、不留记录，所以不会出现在这里。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
@@ -12430,7 +12643,11 @@ private fun SettingsScreen(
     // category cards for the matching index entries; clearing the
     // query (or tapping a result, which clears it too) brings the
     // categories back.
-    var settingsQuery by remember { mutableStateOf("") }
+    // Saveable since v0.85.0 (second configuration-change audit):
+    // a half-typed settings search survives an activity recreation
+    // (uncovered configuration change / process death with state
+    // restore) instead of silently resetting to the category list.
+    var settingsQuery by rememberSaveable { mutableStateOf("") }
     BackHandler(enabled = settingsPage != "home") { settingsPage = "home" }
     // From the settings home the same back key leaves settings for
     // the browser (v0.37.0): before this, no handler was enabled on
@@ -13541,7 +13758,7 @@ private fun SettingsScreen(
                         ListItem(
                             headlineContent = { Text("下载有应用内记录") },
                             supportingContent = {
-                                Text("下载时能在下载页看到进度、也能取消；下好的文件会记进下载页的「火狐下载」一节，点按可打开")
+                                Text("下载时能在下载页看到进度、也能取消；下好的文件会记进下载页的「应用内保存」一节，点按可打开")
                             }
                         )
                         HorizontalDivider()

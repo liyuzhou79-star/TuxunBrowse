@@ -279,6 +279,13 @@ data class SpeedDial(val title: String, val url: String)
  * still happens; the record is a stored trace, and incognito
  * leaves none). Records are deliberately NOT part of backups: they
  * reference files on this device only.
+ *
+ * Since v0.85.0 the same record shape also carries WebView web
+ * archives (.mhtml, mimeType multipart/related, sourceUrl = the
+ * archived page): the downloads screen's in-app section lists,
+ * opens and deletes both kinds through this one list, which is
+ * why that section is headed 「应用内保存」 rather than naming one
+ * engine. The incognito rule is the same for archives.
  */
 data class GeckoDownloadRecord(
     val fileName: String,

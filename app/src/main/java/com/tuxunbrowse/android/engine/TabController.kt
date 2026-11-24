@@ -420,6 +420,52 @@ fun isSourceTruncated(
     limit: Int = SOURCE_DISPLAY_LIMIT
 ): Boolean = source.length > limit
 
+/** MIME type of a WebView web archive (.mhtml) file (v0.85.0). */
+const val WEB_ARCHIVE_MIME_TYPE = "multipart/related"
+
+/**
+ * Cap on the title part of a web-archive file name (v0.85.0), so a
+ * page with a paragraph for a title cannot produce an unwieldy (or
+ * filesystem-rejected) name; the date suffix and extension are
+ * added on top of this cap, not counted inside it.
+ */
+const val ARCHIVE_TITLE_LIMIT = 60
+
+/**
+ * Clean a page title into the base of a web-archive file name
+ * (v0.85.0): whitespace runs collapse to single spaces, the
+ * characters common filesystems forbid (`\ / : * ? " < > |`) and
+ * control characters become underscores, and leading/trailing
+ * dots and spaces (which some filesystems strip or reject) are
+ * trimmed. A title that leaves nothing usable behind — blank,
+ * only punctuation, only forbidden characters — falls back to a
+ * plain-language placeholder instead of an empty or dot-only name.
+ */
+fun archiveFileBaseName(title: String): String {
+    var name = title.replace(Regex("\\s+"), " ").trim()
+    name = buildString(name.length) {
+        for (ch in name) {
+            append(
+                if (ch in "\\/:*?\"<>|" || ch.code < 0x20) '_' else ch
+            )
+        }
+    }
+    name = name.trim { it == '.' || it == ' ' }
+    if (name.length > ARCHIVE_TITLE_LIMIT) {
+        name = name.substring(0, ARCHIVE_TITLE_LIMIT)
+            .trim { it == '.' || it == ' ' }
+    }
+    return name.ifBlank { "网页存档" }
+}
+
+/**
+ * Full web-archive file name (v0.85.0): the cleaned page title, a
+ * date stamp and the .mhtml extension. [dateText] is supplied by
+ * the caller (formatted yyyyMMdd) so this stays a pure function.
+ */
+fun archiveFileName(title: String, dateText: String): String =
+    archiveFileBaseName(title) + "-" + dateText + ".mhtml"
+
 /** Plain-language reason for a WebView main-frame error code. */
 private fun webViewErrorReason(errorCode: Int): String = when (errorCode) {
     WebViewClient.ERROR_HOST_LOOKUP ->
@@ -1327,6 +1373,39 @@ class BrowserTab(
             }
         } catch (t: Throwable) {
             onResult(null)
+        }
+    }
+
+    /**
+     * Save the current page as a web archive (.mhtml) into
+     * [tempFile] (WebView only, v0.85.0). Completion semantics are
+     * the platform documentation's, verified against the official
+     * WebView reference before this was written: the three-argument
+     * saveWebArchive(basename, autoname, callback) invokes its
+     * ValueCallback AFTER the archive has been saved, with the
+     * file name it was saved under, or null when saving failed —
+     * so the callback IS the completion signal and no polling or
+     * file-size guessing is needed. autoname is false: [tempFile]
+     * is taken to be the exact destination file. The archive lands
+     * in a cache temp file first because saveWebArchive writes a
+     * plain filesystem path and cannot write to a MediaStore entry;
+     * [moveWebArchiveToDownloads] then moves it to where the user
+     * can actually reach it. Any failure — no WebView (Gecko tab or
+     * engine not created yet), an exception from the call itself,
+     * or a null callback value — reports false.
+     */
+    fun savePageArchive(tempFile: java.io.File, onResult: (Boolean) -> Unit) {
+        val view = webView
+        if (engine != Engine.WEBVIEW || view == null) {
+            onResult(false)
+            return
+        }
+        try {
+            view.saveWebArchive(tempFile.absolutePath, false) { saved ->
+                onResult(saved != null)
+            }
+        } catch (t: Throwable) {
+            onResult(false)
         }
     }
 
@@ -3308,6 +3387,146 @@ fun saveGeckoDownload(
         onFinished()
     }
     return downloadId
+}
+
+private val archiveMoveExecutor =
+    java.util.concurrent.Executors.newSingleThreadExecutor()
+
+/**
+ * Move a finished web archive from its cache temp file to where
+ * the user can reach it (v0.85.0), following the exact landing
+ * rules of [saveGeckoDownload] so every file this app saves on the
+ * user's behalf lands the same way: on Android 10+ a MediaStore
+ * entry in the public Downloads folder (no permission needed), on
+ * older systems the app's own download folder (no permission
+ * either). Runs on a background thread; [onDone] is posted back to
+ * the main thread with the name the file actually landed under
+ * (MediaStore may adjust it on a name clash — the landed name is
+ * queried back, like the Gecko path), the MediaStore entry URI or
+ * the file path, and the byte count. On any failure the partial
+ * destination is removed, the temp file is always deleted, and
+ * [onDone] receives a null name.
+ */
+fun moveWebArchiveToDownloads(
+    context: Context,
+    tempFile: java.io.File,
+    fileName: String,
+    onDone: (
+        savedName: String?,
+        contentUri: String?,
+        filePath: String?,
+        sizeBytes: Long
+    ) -> Unit
+) {
+    archiveMoveExecutor.execute {
+        var destUri: android.net.Uri? = null
+        var destFile: java.io.File? = null
+        var savedName: String? = null
+        var sizeBytes = 0L
+        try {
+            if (!tempFile.isFile || tempFile.length() <= 0L) {
+                throw java.io.IOException("web archive temp file missing or empty")
+            }
+            sizeBytes = tempFile.length()
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                val resolver = context.contentResolver
+                val values = android.content.ContentValues().apply {
+                    put(
+                        android.provider.MediaStore.Downloads.DISPLAY_NAME,
+                        fileName
+                    )
+                    put(
+                        android.provider.MediaStore.Downloads.MIME_TYPE,
+                        WEB_ARCHIVE_MIME_TYPE
+                    )
+                    put(
+                        android.provider.MediaStore.Downloads.RELATIVE_PATH,
+                        Environment.DIRECTORY_DOWNLOADS
+                    )
+                    put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
+                }
+                val dest = resolver.insert(
+                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                    values
+                ) ?: throw java.io.IOException("MediaStore insert failed")
+                destUri = dest
+                val copied = resolver.openOutputStream(dest)?.use { out ->
+                    tempFile.inputStream().use { input ->
+                        input.copyTo(out)
+                    }
+                } ?: throw java.io.IOException("MediaStore open failed")
+                if (copied <= 0L) {
+                    throw java.io.IOException("web archive copy produced no bytes")
+                }
+                val done = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
+                }
+                resolver.update(dest, done, null, null)
+                savedName = fileName
+                try {
+                    resolver.query(
+                        dest,
+                        arrayOf(
+                            android.provider.MediaStore.Downloads.DISPLAY_NAME
+                        ),
+                        null, null, null
+                    )?.use { cur ->
+                        if (cur.moveToFirst()) {
+                            val actual = cur.getString(0)
+                            if (!actual.isNullOrBlank()) savedName = actual
+                        }
+                    }
+                } catch (t: Throwable) {
+                    // Keep the requested name in the report.
+                }
+            } else {
+                val dir = context.getExternalFilesDir(
+                    Environment.DIRECTORY_DOWNLOADS
+                ) ?: context.filesDir
+                val file = java.io.File(dir, fileName)
+                destFile = file
+                val copied = file.outputStream().use { out ->
+                    tempFile.inputStream().use { input ->
+                        input.copyTo(out)
+                    }
+                }
+                if (copied <= 0L) {
+                    throw java.io.IOException("web archive copy produced no bytes")
+                }
+                savedName = fileName
+            }
+        } catch (t: Throwable) {
+            // Never leave a half-moved archive behind and call it
+            // saved: remove the partial destination.
+            try {
+                destUri?.let { context.contentResolver.delete(it, null, null) }
+            } catch (ignored: Throwable) {
+                // Best-effort cleanup.
+            }
+            try {
+                destFile?.delete()
+            } catch (ignored: Throwable) {
+                // Best-effort cleanup.
+            }
+            destUri = null
+            destFile = null
+            savedName = null
+            sizeBytes = 0L
+        } finally {
+            try {
+                tempFile.delete()
+            } catch (ignored: Throwable) {
+                // Cache file; the system reclaims cache eventually.
+            }
+        }
+        val reportName = savedName
+        val reportUri = destUri?.toString()
+        val reportPath = destFile?.absolutePath
+        val reportSize = sizeBytes
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            onDone(reportName, reportUri, reportPath, reportSize)
+        }
+    }
 }
 
 /**
