@@ -626,6 +626,49 @@ fun isDesktopHost(host: String?, sites: Set<String>): Boolean {
     return sites.any { site -> hostMatchesSite(host, site) }
 }
 
+/** How many days of per-day blocked counts are kept (v0.70.0). */
+const val BLOCKED_DAILY_KEEP_DAYS = 31
+
+/** Storage key for one day's blocked count: the ISO date, yyyy-MM-dd. */
+fun blockedDayKey(date: java.time.LocalDate): String = date.toString()
+
+/**
+ * Drop per-day blocked counts outside the most recent [keepDays]
+ * days ending at [today] (v0.70.0). Keys that do not parse as a
+ * date, and dates in the future, are dropped too — the stored map
+ * is app-private, so a bad key can only come from a corrupt write.
+ */
+fun pruneBlockedDaily(
+    counts: Map<String, Long>,
+    today: java.time.LocalDate,
+    keepDays: Int = BLOCKED_DAILY_KEEP_DAYS
+): Map<String, Long> {
+    val cutoff = today.minusDays((keepDays - 1).toLong())
+    return counts.filterKeys { key ->
+        val parsed = try {
+            java.time.LocalDate.parse(key)
+        } catch (e: Exception) {
+            null
+        }
+        parsed != null && !parsed.isBefore(cutoff) && !parsed.isAfter(today)
+    }
+}
+
+/**
+ * The last [days] days of blocked counts ending at [today], oldest
+ * first (v0.70.0). Days with no recorded blocks come back as zero,
+ * so the settings view can render a fixed-length series.
+ */
+fun recentBlockedSeries(
+    counts: Map<String, Long>,
+    today: java.time.LocalDate,
+    days: Int = 7
+): List<Pair<String, Long>> =
+    (days - 1 downTo 0).map { back ->
+        val key = blockedDayKey(today.minusDays(back.toLong()))
+        key to (counts[key] ?: 0L)
+    }
+
 /** Local persistence: engine choices, search engine, compat sites, bookmarks, history. */
 class Store(context: Context) {
     private val prefs: SharedPreferences =
@@ -835,27 +878,71 @@ class Store(context: Context) {
             return totalBlockedMemory
         }
 
+    // Per-day blocked counts (v0.70.0): same increment point and
+    // same throttled flush as the lifetime counter above — the day
+    // map rides along in the same preferences write, never a write
+    // of its own. Only the most recent BLOCKED_DAILY_KEEP_DAYS days
+    // are kept; older days are pruned whenever the map is loaded.
+    private var blockedDailyMemory: MutableMap<String, Long>? = null
+
+    /** Per-day blocked counts (yyyy-MM-dd -> count), pruned to the kept window. */
+    fun blockedDailyCounts(): Map<String, Long> = loadBlockedDaily()
+
+    private fun loadBlockedDaily(): MutableMap<String, Long> {
+        blockedDailyMemory?.let { return it }
+        val loaded = mutableMapOf<String, Long>()
+        val raw = safeString(KEY_BLOCKED_DAILY, null)
+        if (raw != null) {
+            try {
+                val obj = JSONObject(raw)
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    loaded[key] = obj.optLong(key, 0L)
+                }
+            } catch (e: Exception) {
+                // Corrupt payload: start over rather than crash.
+            }
+        }
+        val pruned = pruneBlockedDaily(loaded, java.time.LocalDate.now())
+            .toMutableMap()
+        blockedDailyMemory = pruned
+        return pruned
+    }
+
     /** Count one more blocked request (same call path as the per-page count). */
     fun noteBlocked() {
         val now = System.currentTimeMillis()
         val updated = totalBlocked + 1
         totalBlockedMemory = updated
+        val daily = loadBlockedDaily()
+        val todayKey = blockedDayKey(java.time.LocalDate.now())
+        daily[todayKey] = (daily[todayKey] ?: 0L) + 1
         blockedPendingFlush++
         if (blockedPendingFlush >= BLOCKED_FLUSH_EVERY ||
             now - blockedLastFlushAt >= BLOCKED_FLUSH_MS
         ) {
             blockedPendingFlush = 0
             blockedLastFlushAt = now
-            prefs.edit().putLong(KEY_TOTAL_BLOCKED, updated).apply()
+            val dailyObj = JSONObject()
+            daily.forEach { (day, count) -> dailyObj.put(day, count) }
+            prefs.edit()
+                .putLong(KEY_TOTAL_BLOCKED, updated)
+                .putString(KEY_BLOCKED_DAILY, dailyObj.toString())
+                .apply()
         }
     }
 
-    /** Reset the lifetime blocked counter to zero, effective at once. */
+    /** Reset the lifetime blocked counter and the per-day counts, effective at once. */
     fun resetTotalBlocked() {
         totalBlockedMemory = 0L
+        blockedDailyMemory = mutableMapOf()
         blockedPendingFlush = 0
         blockedLastFlushAt = System.currentTimeMillis()
-        prefs.edit().putLong(KEY_TOTAL_BLOCKED, 0L).apply()
+        prefs.edit()
+            .putLong(KEY_TOTAL_BLOCKED, 0L)
+            .remove(KEY_BLOCKED_DAILY)
+            .apply()
     }
 
     fun loadCompatSites(): MutableSet<String> {
@@ -1073,6 +1160,7 @@ class Store(context: Context) {
         private const val KEY_HISTORY_RETENTION = "history_retention"
         private const val KEY_SPEED_DIALS = "speed_dials"
         private const val KEY_TOTAL_BLOCKED = "total_blocked"
+        private const val KEY_BLOCKED_DAILY = "blocked_daily"
         private const val BLOCKED_FLUSH_EVERY = 20
         private const val BLOCKED_FLUSH_MS = 5_000L
     }

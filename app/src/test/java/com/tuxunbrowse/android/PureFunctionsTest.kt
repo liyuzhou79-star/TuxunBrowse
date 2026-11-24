@@ -4,8 +4,11 @@ import com.tuxunbrowse.android.data.Bookmark
 import com.tuxunbrowse.android.data.HOME_URL
 import com.tuxunbrowse.android.data.HistoryItem
 import com.tuxunbrowse.android.data.SearchEngine
+import com.tuxunbrowse.android.data.blockedDayKey
 import com.tuxunbrowse.android.data.bookmarksFromHtml
 import com.tuxunbrowse.android.data.compareVersionNames
+import com.tuxunbrowse.android.data.pruneBlockedDaily
+import com.tuxunbrowse.android.data.recentBlockedSeries
 import com.tuxunbrowse.android.data.isUrlLikeInput
 import com.tuxunbrowse.android.data.matchSuggestions
 import com.tuxunbrowse.android.data.resolveInput
@@ -362,5 +365,105 @@ class BookmarksFromHtmlTest {
         val html = """<DT><A HREF="https://example.com/">Example</A>"""
         val (list, _) = bookmarksFromHtml(html)
         assertFalse(list[0].pinned)
+    }
+}
+
+/**
+ * Per-day blocked-count helpers (v0.70.0): the ISO day key, the
+ * 31-day pruning window and the zero-filled last-7-days series the
+ * settings page renders.
+ */
+class BlockedDailyTest {
+
+    private val today: java.time.LocalDate =
+        java.time.LocalDate.of(2026, 11, 24)
+
+    @Test
+    fun dayKeyIsIsoDate() {
+        assertEquals("2026-11-24", blockedDayKey(today))
+        assertEquals(
+            "2026-01-05",
+            blockedDayKey(java.time.LocalDate.of(2026, 1, 5))
+        )
+    }
+
+    @Test
+    fun pruneKeepsTodayAndThirtyDaysBack() {
+        val counts = mapOf(
+            "2026-11-24" to 3L, // today
+            "2026-10-26" to 2L, // 29 days back
+            "2026-10-25" to 1L // 30 days back: last kept day
+        )
+        val pruned = pruneBlockedDaily(counts, today)
+        assertEquals(counts, pruned)
+    }
+
+    @Test
+    fun pruneDropsDayThirtyOneAndOlder() {
+        val counts = mapOf(
+            "2026-11-24" to 3L,
+            "2026-10-24" to 9L, // 31 days back: outside the window
+            "2025-01-01" to 9L
+        )
+        val pruned = pruneBlockedDaily(counts, today)
+        assertEquals(mapOf("2026-11-24" to 3L), pruned)
+    }
+
+    @Test
+    fun pruneDropsUnparseableAndFutureKeys() {
+        val counts = mapOf(
+            "2026-11-24" to 3L,
+            "not-a-date" to 5L,
+            "2026-12-01" to 5L // future relative to today
+        )
+        val pruned = pruneBlockedDaily(counts, today)
+        assertEquals(mapOf("2026-11-24" to 3L), pruned)
+    }
+
+    @Test
+    fun pruneHonoursCustomWindow() {
+        val counts = mapOf(
+            "2026-11-24" to 1L,
+            "2026-11-18" to 1L, // 6 days back
+            "2026-11-17" to 1L // 7 days back
+        )
+        val pruned = pruneBlockedDaily(counts, today, keepDays = 7)
+        assertEquals(
+            mapOf("2026-11-24" to 1L, "2026-11-18" to 1L),
+            pruned
+        )
+    }
+
+    @Test
+    fun seriesIsSevenDaysOldestFirstEndingToday() {
+        val series = recentBlockedSeries(emptyMap(), today)
+        assertEquals(7, series.size)
+        assertEquals("2026-11-18", series.first().first)
+        assertEquals("2026-11-24", series.last().first)
+    }
+
+    @Test
+    fun seriesZeroFillsMissingDaysAndCarriesCounts() {
+        val counts = mapOf(
+            "2026-11-24" to 7L,
+            "2026-11-20" to 2L,
+            "2026-11-10" to 99L // outside the 7-day window: ignored
+        )
+        val series = recentBlockedSeries(counts, today)
+        assertEquals(
+            listOf(0L, 0L, 2L, 0L, 0L, 0L, 7L),
+            series.map { it.second }
+        )
+    }
+
+    @Test
+    fun seriesCrossesMonthBoundary() {
+        val marchFirst = java.time.LocalDate.of(2026, 3, 1)
+        val series = recentBlockedSeries(
+            mapOf("2026-02-28" to 4L), marchFirst
+        )
+        assertEquals("2026-02-23", series.first().first)
+        assertEquals("2026-03-01", series.last().first)
+        assertEquals(4L, series[5].second)
     }
 }

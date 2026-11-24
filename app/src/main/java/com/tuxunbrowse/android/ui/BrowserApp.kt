@@ -126,9 +126,11 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.isActive
 import androidx.activity.compose.BackHandler
@@ -206,6 +208,8 @@ import com.tuxunbrowse.android.data.fetchSearchSuggestions
 import com.tuxunbrowse.android.data.mergedOnlineSuggestionRows
 import com.tuxunbrowse.android.data.shouldFetchOnlineSuggestions
 import com.tuxunbrowse.android.data.isUrlLikeInput
+import com.tuxunbrowse.android.data.blockedDayKey
+import com.tuxunbrowse.android.data.recentBlockedSeries
 import com.tuxunbrowse.android.data.matchRange
 import com.tuxunbrowse.android.data.matchSuggestions
 import com.tuxunbrowse.android.data.resolveInput
@@ -677,6 +681,72 @@ fun BrowserApp(
     }
 
     fun activeTab(): BrowserTab? = tabs.firstOrNull { it.id == activeTabId }
+
+    // ---- Auto-reload once when the network comes back (v0.70.0) ----
+    // A system network callback watches for the offline -> online
+    // transition. When it fires, if the ACTIVE tab is sitting on the
+    // app's load-error page, that tab reloads itself once — the user
+    // no longer has to notice the network is back and tap retry.
+    // The same error state (tab id + failed URL) never auto-retries
+    // twice: [autoReloadUsedKey] remembers the one shot, and it is
+    // reset when the user reloads manually (see the onReloadPage
+    // wiring at the BrowserScreen call site), so a fresh failure
+    // after a manual retry can earn one more automatic shot. The
+    // callback is registered and unregistered with this composition
+    // (DisposableEffect), so nothing leaks or keeps watching in the
+    // background. Incognito tabs are covered exactly the same way —
+    // the reload lives only in memory, nothing is persisted.
+    var networkRestoredTick by remember { mutableStateOf(0) }
+    var autoReloadUsedKey by remember { mutableStateOf<String?>(null) }
+    DisposableEffect(context) {
+        val connectivity = context.getSystemService(
+            android.content.Context.CONNECTIVITY_SERVICE
+        ) as? android.net.ConnectivityManager
+        if (connectivity == null) {
+            onDispose { }
+        } else {
+            var wasOffline = connectivity.activeNetwork == null
+            val callback = object : android.net.ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: android.net.Network) {
+                    if (wasOffline) {
+                        wasOffline = false
+                        networkRestoredTick++
+                    }
+                }
+
+                override fun onLost(network: android.net.Network) {
+                    // Only a full loss counts: losing one of two
+                    // networks (Wi-Fi + mobile) is not going offline.
+                    if (connectivity.activeNetwork == null) wasOffline = true
+                }
+
+                override fun onUnavailable() {
+                    wasOffline = true
+                }
+            }
+            try {
+                connectivity.registerDefaultNetworkCallback(callback)
+            } catch (t: Throwable) {
+                // No callback, no auto-reload; manual retry remains.
+            }
+            onDispose {
+                try {
+                    connectivity.unregisterNetworkCallback(callback)
+                } catch (t: Throwable) {
+                    // Already gone; nothing to clean up.
+                }
+            }
+        }
+    }
+    LaunchedEffect(networkRestoredTick) {
+        if (networkRestoredTick == 0) return@LaunchedEffect
+        val tab = activeTab() ?: return@LaunchedEffect
+        val error = tab.loadError ?: return@LaunchedEffect
+        val key = "${tab.id}|${error.failedUrl}"
+        if (autoReloadUsedKey == key) return@LaunchedEffect
+        autoReloadUsedKey = key
+        tab.reload()
+    }
 
     /**
      * Engine sleep pass (v0.41.0): keep at most [ALIVE_ENGINE_LIMIT]
@@ -2521,7 +2591,14 @@ fun BrowserApp(
                 customSearchName = store.customSearchName,
                 onOpenSuggestion = { url -> openUrl(url) },
                 onGoHome = { activeTab()?.load(HOME_URL) },
-                onReloadPage = { activeTab()?.reload() },
+                onReloadPage = {
+                    // A manual reload resets the network-restore
+                    // auto-reload shot (v0.70.0): if this load fails
+                    // into a fresh error state, it may auto-retry
+                    // once more when the network comes back.
+                    autoReloadUsedKey = null
+                    activeTab()?.reload()
+                },
                 onOpenInOtherEngine = {
                     val tab = activeTab()
                     val error = tab?.loadError
@@ -8258,6 +8335,78 @@ private fun downloadFailedReasonText(reason: Int): String = when (reason) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+/**
+ * Run one DownloadManager [query] and map its rows to
+ * [DownloadEntry]s, newest first. Shared by the downloads screen's
+ * full load (unfiltered query) and its once-a-second in-progress
+ * poll (query filtered by the active rows' ids) so both paths map
+ * rows exactly the same way (v0.70.0).
+ */
+private fun readDownloadEntries(
+    context: android.content.Context,
+    query: android.app.DownloadManager.Query
+): List<DownloadEntry> {
+    val manager = context.getSystemService(
+        android.content.Context.DOWNLOAD_SERVICE
+    ) as android.app.DownloadManager
+    val loaded = mutableListOf<DownloadEntry>()
+    try {
+        val cursor = manager.query(query)
+        cursor?.use { c ->
+            val idIdx = c.getColumnIndex(android.app.DownloadManager.COLUMN_ID)
+            val titleIdx = c.getColumnIndex(android.app.DownloadManager.COLUMN_TITLE)
+            val statusIdx = c.getColumnIndex(android.app.DownloadManager.COLUMN_STATUS)
+            val totalIdx =
+                c.getColumnIndex(android.app.DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
+            val doneIdx = c.getColumnIndex(
+                android.app.DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR
+            )
+            val typeIdx =
+                c.getColumnIndex(android.app.DownloadManager.COLUMN_MEDIA_TYPE)
+            val uriIdx = c.getColumnIndex(android.app.DownloadManager.COLUMN_URI)
+            val reasonIdx =
+                c.getColumnIndex(android.app.DownloadManager.COLUMN_REASON)
+            while (c.moveToNext()) {
+                val status = c.getInt(statusIdx)
+                val reason = if (reasonIdx >= 0) c.getInt(reasonIdx) else 0
+                // Never leave the user staring at a bare "排队中"
+                // or "失败": the system's reason code is mapped
+                // to plain language and appended.
+                val statusText = when (status) {
+                    android.app.DownloadManager.STATUS_SUCCESSFUL -> "已完成"
+                    android.app.DownloadManager.STATUS_FAILED ->
+                        "失败 · ${downloadFailedReasonText(reason)}"
+                    android.app.DownloadManager.STATUS_RUNNING -> "下载中"
+                    android.app.DownloadManager.STATUS_PAUSED ->
+                        "已暂停 · ${downloadPausedReasonText(reason)}"
+                    else -> "排队中 · ${downloadPausedReasonText(reason)}"
+                }
+                val total = c.getLong(totalIdx)
+                val done = c.getLong(doneIdx)
+                val sizeText = if (total > 0) {
+                    "${done / 1024} KB / ${total / 1024} KB"
+                } else {
+                    "${done / 1024} KB"
+                }
+                loaded.add(
+                    DownloadEntry(
+                        id = c.getLong(idIdx),
+                        title = c.getString(titleIdx) ?: "未命名文件",
+                        status = status,
+                        statusText = statusText,
+                        sizeText = sizeText,
+                        mediaType = c.getString(typeIdx),
+                        sourceUrl = c.getString(uriIdx)
+                    )
+                )
+            }
+        }
+    } catch (t: Throwable) {
+        // Download list is best-effort; an empty list is shown instead.
+    }
+    return loaded.reversed()
+}
+
 private fun DownloadsScreen(
     onBack: () -> Unit,
     retryReferer: String? = null
@@ -8266,65 +8415,44 @@ private fun DownloadsScreen(
     var entries by remember { mutableStateOf<List<DownloadEntry>>(emptyList()) }
     var refreshTick by remember { mutableStateOf(0) }
     LaunchedEffect(refreshTick) {
-        val manager = context.getSystemService(
-            android.content.Context.DOWNLOAD_SERVICE
-        ) as android.app.DownloadManager
-        val loaded = mutableListOf<DownloadEntry>()
-        try {
-            val cursor = manager.query(android.app.DownloadManager.Query())
-            cursor?.use { c ->
-                val idIdx = c.getColumnIndex(android.app.DownloadManager.COLUMN_ID)
-                val titleIdx = c.getColumnIndex(android.app.DownloadManager.COLUMN_TITLE)
-                val statusIdx = c.getColumnIndex(android.app.DownloadManager.COLUMN_STATUS)
-                val totalIdx =
-                    c.getColumnIndex(android.app.DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
-                val doneIdx = c.getColumnIndex(
-                    android.app.DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR
-                )
-                val typeIdx =
-                    c.getColumnIndex(android.app.DownloadManager.COLUMN_MEDIA_TYPE)
-                val uriIdx = c.getColumnIndex(android.app.DownloadManager.COLUMN_URI)
-                val reasonIdx =
-                    c.getColumnIndex(android.app.DownloadManager.COLUMN_REASON)
-                while (c.moveToNext()) {
-                    val status = c.getInt(statusIdx)
-                    val reason = if (reasonIdx >= 0) c.getInt(reasonIdx) else 0
-                    // Never leave the user staring at a bare "排队中"
-                    // or "失败": the system's reason code is mapped
-                    // to plain language and appended.
-                    val statusText = when (status) {
-                        android.app.DownloadManager.STATUS_SUCCESSFUL -> "已完成"
-                        android.app.DownloadManager.STATUS_FAILED ->
-                            "失败 · ${downloadFailedReasonText(reason)}"
-                        android.app.DownloadManager.STATUS_RUNNING -> "下载中"
-                        android.app.DownloadManager.STATUS_PAUSED ->
-                            "已暂停 · ${downloadPausedReasonText(reason)}"
-                        else -> "排队中 · ${downloadPausedReasonText(reason)}"
-                    }
-                    val total = c.getLong(totalIdx)
-                    val done = c.getLong(doneIdx)
-                    val sizeText = if (total > 0) {
-                        "${done / 1024} KB / ${total / 1024} KB"
-                    } else {
-                        "${done / 1024} KB"
-                    }
-                    loaded.add(
-                        DownloadEntry(
-                            id = c.getLong(idIdx),
-                            title = c.getString(titleIdx) ?: "未命名文件",
-                            status = status,
-                            statusText = statusText,
-                            sizeText = sizeText,
-                            mediaType = c.getString(typeIdx),
-                            sourceUrl = c.getString(uriIdx)
-                        )
-                    )
-                }
-            }
-        } catch (t: Throwable) {
-            // Download list is best-effort; an empty list is shown instead.
+        entries = readDownloadEntries(
+            context, android.app.DownloadManager.Query()
+        )
+    }
+
+    // Live refresh (v0.70.0): while this screen is visible, once a
+    // second re-query ONLY the rows that are still in progress,
+    // filtered by their ids — finished and failed history rows are
+    // never re-read, so the polling cost stays proportional to the
+    // number of active downloads, not the size of the history. The
+    // id filter ignores status, so a row that just finished still
+    // comes back carrying its final state. When nothing is in
+    // progress no query runs at all. Leaving the screen cancels
+    // this effect (it is composition-scoped), so there is no
+    // background polling. Gecko in-progress rows need no polling:
+    // GeckoDownloadTracker.active is a snapshot state list the copy
+    // loop publishes progress into (v0.69.0) — already reactive.
+    val entriesSnapshot = rememberUpdatedState(entries)
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1000)
+            val current = entriesSnapshot.value
+            val activeIds = current.filter {
+                it.status == android.app.DownloadManager.STATUS_PENDING ||
+                    it.status == android.app.DownloadManager.STATUS_RUNNING ||
+                    it.status == android.app.DownloadManager.STATUS_PAUSED
+            }.map { it.id }
+            if (activeIds.isEmpty()) continue
+            val fresh = readDownloadEntries(
+                context,
+                android.app.DownloadManager.Query()
+                    .setFilterById(*activeIds.toLongArray())
+            )
+            if (fresh.isEmpty()) continue
+            val freshById = fresh.associateBy { it.id }
+            val merged = current.map { freshById[it.id] ?: it }
+            if (merged != current) entries = merged
         }
-        entries = loaded.reversed()
     }
 
     // Status filter (presentation only — the DownloadManager query
@@ -8341,11 +8469,11 @@ private fun DownloadsScreen(
     LaunchedEffect(statusFilter, downloadQuery) {
         listState.scrollToItem(0)
     }
-    // Presentation filter, memoised on the inputs (v0.23.0): there
-    // is no polling timer on this screen — entries only change when
-    // refreshTick bumps (screen entry, delete, retry) — and with
+    // Presentation filter, memoised on the inputs (v0.23.0): with
     // remember the filter no longer re-runs on unrelated
-    // recompositions while the list is being scrolled.
+    // recompositions while the list is being scrolled. Entries
+    // change on refreshTick bumps (screen entry, delete, retry) and,
+    // since v0.70.0, on the once-a-second in-progress poll above.
     // Single pipeline for what the DownloadManager list shows
     // (v0.64.0): status filter first, then the filename search on
     // top of it (case-insensitive substring on the file name).
@@ -9617,6 +9745,10 @@ private fun SettingsScreen(
     var adBlock by remember(refreshTick) { mutableStateOf(store.adBlockEnabled) }
     var adHideSlots by remember(refreshTick) { mutableStateOf(store.adHideSlots) }
     var totalBlocked by remember(refreshTick) { mutableStateOf(store.totalBlocked) }
+    var blockedDaily by remember(refreshTick) {
+        mutableStateOf(store.blockedDailyCounts())
+    }
+    var showResetBlockedConfirm by remember { mutableStateOf(false) }
     var textZoom by remember(refreshTick) { mutableStateOf(store.textZoomPercent) }
     var webDark by remember(refreshTick) { mutableStateOf(store.webDarkMode) }
     var startupRestore by remember(refreshTick) { mutableStateOf(store.startupRestore) }
@@ -10104,14 +10236,7 @@ private fun SettingsScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f)
                     )
-                    TextButton(onClick = {
-                        store.resetTotalBlocked()
-                        totalBlocked = 0L
-                        android.widget.Toast.makeText(
-                            settingsContext, "累计拦截数已清零",
-                            android.widget.Toast.LENGTH_SHORT
-                        ).show()
-                    }) {
+                    TextButton(onClick = { showResetBlockedConfirm = true }) {
                         Text("清零")
                     }
                 }
@@ -10122,6 +10247,52 @@ private fun SettingsScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+            item {
+                // Last-7-days view (v0.70.0): one official ListItem
+                // per day, oldest first, today last. The bar under
+                // each day is scaled to the busiest day of the seven,
+                // so a quiet week still reads honestly. Days with no
+                // blocks recorded show 0 — the series is zero-filled
+                // by recentBlockedSeries.
+                val today = java.time.LocalDate.now()
+                val series = recentBlockedSeries(blockedDaily, today)
+                val maxInWeek = series.maxOf { it.second }
+                Column {
+                    Text(
+                        "最近 7 天",
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                    series.forEach { (dayKey, count) ->
+                        ListItem(
+                            headlineContent = {
+                                Text(
+                                    if (dayKey == blockedDayKey(today)) {
+                                        "$dayKey（今天）"
+                                    } else {
+                                        dayKey
+                                    }
+                                )
+                            },
+                            supportingContent = {
+                                LinearProgressIndicator(
+                                    progress = {
+                                        if (maxInWeek > 0) {
+                                            count.toFloat() / maxInWeek.toFloat()
+                                        } else {
+                                            0f
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 4.dp)
+                                )
+                            },
+                            trailingContent = { Text("$count 个") }
+                        )
+                    }
+                }
             }
             }
             if (settingsPage == "download") {
@@ -10758,6 +10929,35 @@ private fun SettingsScreen(
             dismissButton = {
                 TextButton(onClick = { updateAvailable = null }) {
                     Text("以后再说")
+                }
+            }
+        )
+    }
+    if (showResetBlockedConfirm) {
+        AlertDialog(
+            onDismissRequest = { showResetBlockedConfirm = false },
+            title = { Text("清零拦截统计？") },
+            text = {
+                Text(
+                    "累计拦截数和最近 31 天的按日统计会一起清零，" +
+                        "清完从 0 重新数，没法恢复。"
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showResetBlockedConfirm = false
+                    store.resetTotalBlocked()
+                    totalBlocked = 0L
+                    blockedDaily = emptyMap()
+                    android.widget.Toast.makeText(
+                        settingsContext, "拦截统计已清零",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }) { Text("清零") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetBlockedConfirm = false }) {
+                    Text("取消")
                 }
             }
         )

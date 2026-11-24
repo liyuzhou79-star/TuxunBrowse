@@ -2,6 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Normal permission (no runtime prompt): lets the app watch
+         for connectivity coming back so a page sitting on the load
+         error screen can reload itself once (v0.70.0). -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Only ever requested at runtime when a web page itself asks for
          the camera or microphone (scan pages, web calls); never asked
          on startup or in the background. -->
