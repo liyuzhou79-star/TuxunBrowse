@@ -24,7 +24,11 @@ class MatchRangeTest {
 
     @Test
     fun matchInMiddle() {
-        assertEquals(3..5, matchRange("www.github.com", "git"))
+        // "www.github.com": the dot is index 3, "git" starts at 4.
+        // (The original expectation of 3..5 was written in v0.68.0
+        // but never executed — the workflow did not run the tests —
+        // and was wrong; first run in v0.69.0 caught it.)
+        assertEquals(4..6, matchRange("www.github.com", "git"))
     }
 
     @Test
@@ -45,7 +49,7 @@ class MatchRangeTest {
 
     @Test
     fun queryIsTrimmedBeforeMatching() {
-        assertEquals(3..5, matchRange("www.github.com", "  git  "))
+        assertEquals(4..6, matchRange("www.github.com", "  git  "))
     }
 
     @Test

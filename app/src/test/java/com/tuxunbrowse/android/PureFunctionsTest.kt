@@ -185,7 +185,7 @@ class MatchSuggestionsTest {
     private val history = listOf(
         HistoryItem("GitHub Trending", "https://github.com/trending", 3L),
         HistoryItem("Example News", "https://news.example.com/latest", 2L),
-        HistoryItem("Unrelated", "https://other.example.org", 1L)
+        HistoryItem("Unrelated", "https://plain.site/page", 1L)
     )
 
     @Test
