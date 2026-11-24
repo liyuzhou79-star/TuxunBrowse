@@ -1747,74 +1747,67 @@ fun parseBackup(raw: String): BackupData? {
         }
     }
     val s = obj.optJSONObject("settings")
+    // Strictly typed settings reads (v0.101.0 backup audit). A
+    // backup is untrusted input, and the lenient opt* accessors
+    // misread wrong-typed values in ways that DESTROY data on
+    // apply: optInt on a string yields 0 (a "115" written as text
+    // would apply a 0% text zoom), optBoolean on a number yields
+    // false, and the fromId fallbacks turn an unknown id into a
+    // non-null default that then OVERWRITES the current setting
+    // (an old backup whose search engine was the since-removed
+    // "custom" would silently reset the current engine to the
+    // default). So: enum fields accept only a string that names
+    // a current entry, booleans accept only real JSON booleans,
+    // and the text zoom accepts only a number in a sane range —
+    // anything else parses as absent and leaves the current
+    // value alone, the same absent-field semantics every real
+    // backup relies on. backupToJson only ever writes these
+    // exact types, so real files are unaffected.
+    fun strOf(key: String): String? =
+        (s?.opt(key) as? String)?.takeIf { it.isNotBlank() }
+    fun boolOf(key: String): Boolean? = s?.opt(key) as? Boolean
     fun engineOf(key: String): Engine? =
-        s?.optString(key)?.takeIf { it.isNotBlank() }?.let { Engine.fromId(it) }
+        strOf(key)?.let { id -> Engine.entries.firstOrNull { it.id == id } }
     val settings = if (s == null) {
         BackupSettings()
     } else {
         BackupSettings(
             mainEngine = engineOf("mainEngine"),
             incognitoEngine = engineOf("incognitoEngine"),
-            searchEngine = s.optString("searchEngine")
-                .takeIf { it.isNotBlank() }?.let { SearchEngine.fromId(it) },
-            adBlockEnabled = if (s.has("adBlockEnabled")) {
-                s.optBoolean("adBlockEnabled")
-            } else {
-                null
+            searchEngine = strOf("searchEngine")?.let { id ->
+                SearchEngine.entries.firstOrNull { it.id == id }
             },
-            downloadMode = s.optString("downloadMode")
-                .takeIf { it.isNotBlank() }?.let { DownloadMode.fromId(it) },
-            historyRetention = s.optString("historyRetention")
-                .takeIf { it.isNotBlank() }?.let { HistoryRetention.fromId(it) },
-            textZoomPercent = if (s.has("textZoomPercent")) {
-                s.optInt("textZoomPercent")
-            } else {
-                null
+            adBlockEnabled = boolOf("adBlockEnabled"),
+            downloadMode = strOf("downloadMode")?.let { id ->
+                DownloadMode.entries.firstOrNull { it.id == id }
             },
-            startupRestore = if (s.has("startupRestore")) {
-                s.optBoolean("startupRestore")
-            } else {
-                null
+            historyRetention = strOf("historyRetention")?.let { id ->
+                HistoryRetention.entries.firstOrNull { it.id == id }
             },
-            themeMode = s.optString("themeMode")
-                .takeIf { it.isNotBlank() }?.let { ThemeMode.fromId(it) },
-            webDarkMode = if (s.has("webDarkMode")) {
-                s.optBoolean("webDarkMode")
-            } else {
-                null
+            textZoomPercent = (s.opt("textZoomPercent") as? Number)
+                ?.toInt()?.takeIf { it in 50..200 },
+            startupRestore = boolOf("startupRestore"),
+            themeMode = strOf("themeMode")?.let { id ->
+                ThemeMode.entries.firstOrNull { it.id == id }
             },
-            readerFontSize = s.optString("readerFontSize")
-                .takeIf { it.isNotBlank() }?.let { ReaderFontSize.fromId(it) },
-            readerBackground = s.optString("readerBackground")
-                .takeIf { it.isNotBlank() }?.let { ReaderBackground.fromId(it) },
-            httpsFirstEnabled = if (s.has("httpsFirstEnabled")) {
-                s.optBoolean("httpsFirstEnabled")
-            } else {
-                null
+            webDarkMode = boolOf("webDarkMode"),
+            readerFontSize = strOf("readerFontSize")?.let { id ->
+                ReaderFontSize.entries.firstOrNull { it.id == id }
             },
-            guardScriptEnabled = if (s.has("guardScriptEnabled")) {
-                s.optBoolean("guardScriptEnabled")
-            } else {
-                null
+            readerBackground = strOf("readerBackground")?.let { id ->
+                ReaderBackground.entries.firstOrNull { it.id == id }
             },
-            trackingProtectionLevel = s.optString("trackingProtectionLevel")
-                .takeIf { it.isNotBlank() }
-                ?.let { TrackingProtectionLevel.fromId(it) },
-            doNotTrackEnabled = if (s.has("doNotTrackEnabled")) {
-                s.optBoolean("doNotTrackEnabled")
-            } else {
-                null
-            },
-            globalPrivacyControlEnabled = if (s.has("globalPrivacyControlEnabled")) {
-                s.optBoolean("globalPrivacyControlEnabled")
-            } else {
-                null
-            },
-            webRtcDisabled = if (s.has("webRtcDisabled")) {
-                s.optBoolean("webRtcDisabled")
-            } else {
-                null
-            }
+            httpsFirstEnabled = boolOf("httpsFirstEnabled"),
+            guardScriptEnabled = boolOf("guardScriptEnabled"),
+            trackingProtectionLevel = strOf("trackingProtectionLevel")
+                ?.let { id ->
+                    TrackingProtectionLevel.entries
+                        .firstOrNull { it.id == id }
+                },
+            doNotTrackEnabled = boolOf("doNotTrackEnabled"),
+            globalPrivacyControlEnabled =
+                boolOf("globalPrivacyControlEnabled"),
+            webRtcDisabled = boolOf("webRtcDisabled")
         )
     }
     // Compat sites (v0.51.0): plain host names only — anything with
@@ -1826,7 +1819,11 @@ fun parseBackup(raw: String): BackupData? {
     } else {
         val count = minOf(compatArr.length(), MAX_IMPORT_ENTRIES)
         (0 until count).mapNotNull { i ->
-            val host = compatArr.optString(i).trim().lowercase()
+            // Real strings only (v0.101.0, same rule as the
+            // on-device site lists): optString would stringify a
+            // number into a plausible-looking host name.
+            val host = (compatArr.opt(i) as? String)
+                ?.trim()?.lowercase() ?: return@mapNotNull null
             host.takeIf {
                 it.isNotEmpty() && it.length <= 253 &&
                     !it.contains("://") && !it.contains("/") &&
@@ -1842,7 +1839,8 @@ fun parseBackup(raw: String): BackupData? {
     } else {
         val count = minOf(desktopArr.length(), MAX_IMPORT_ENTRIES)
         (0 until count).mapNotNull { i ->
-            val host = desktopArr.optString(i).trim().lowercase()
+            val host = (desktopArr.opt(i) as? String)
+                ?.trim()?.lowercase() ?: return@mapNotNull null
             host.takeIf {
                 it.isNotEmpty() && it.length <= 253 &&
                     !it.contains("://") && !it.contains("/") &&
@@ -1860,22 +1858,23 @@ fun parseBackup(raw: String): BackupData? {
     } else {
         val count = minOf(folderArr.length(), MAX_IMPORT_ENTRIES)
         (0 until count).mapNotNull { i ->
-            val name = folderArr.optString(i).trim()
+            val name = (folderArr.opt(i) as? String)?.trim()
+                ?: return@mapNotNull null
             name.takeIf { it.isNotEmpty() && it.length <= 60 }
         }.distinct()
     }
     // Blocked statistics (v0.74.0): absent in older backups — the
-    // total stays null (import then leaves the current counters
-    // alone) and the daily map stays empty. A present daily map is
-    // pruned to the kept window here, so a stale or hand-crafted
-    // file cannot resurrect long-gone days.
+    // total stays null and the import leaves the current counter
+    // alone. (The per-day map some pre-v0.91.0 backups carry is
+    // an unknown key now — the daily view was removed in v0.91.0 —
+    // and is ignored like every other unknown key.)
     val statsObj = obj.optJSONObject("blockedStats")
+    // Only a real JSON number counts (v0.101.0): optLong on a
+    // wrong-typed value yields 0, which on apply would wipe the
+    // current counter to zero — a wrong-typed total must parse
+    // as absent and leave the counter alone.
     val parsedTotalBlocked: Long? =
-        if (statsObj != null && statsObj.has("total")) {
-            statsObj.optLong("total").coerceAtLeast(0L)
-        } else {
-            null
-        }
+        (statsObj?.opt("total") as? Number)?.toLong()?.coerceAtLeast(0L)
     return BackupData(
         mergedBookmarks, history, settings, compatSites,
         desktopSites, bookmarkFolders,
