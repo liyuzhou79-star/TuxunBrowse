@@ -8178,18 +8178,31 @@ private fun BookmarksScreen(
     // can never point an action at an entry the user is not
     // looking at.
     var folderFilter by rememberSaveable { mutableStateOf<String?>(null) }
-    // Memoised on its inputs (v0.96.0 fluency pass): folder filter
-    // then search filter, the settled pipeline above — it used to
-    // re-run over the whole bookmark list on every recomposition of
-    // this screen. Same pipeline, same result.
-    val visibleBookmarks = remember(bookmarks, folderFilter, bookmarkQuery) {
-        val folderFiltered = bookmarksInFolder(bookmarks, folderFilter)
-        if (bookmarkQuery.isBlank()) {
-            folderFiltered
-        } else {
-            folderFiltered.filter {
-                it.title.contains(bookmarkQuery, ignoreCase = true) ||
-                    it.url.contains(bookmarkQuery, ignoreCase = true)
+    // Folder filter then search filter, the settled pipeline
+    // above, as a derived state (v0.118.0): the v0.96.0 fluency
+    // pass memoised this with remember(bookmarks, folderFilter,
+    // bookmarkQuery), but bookmarks is the ONE snapshot-state
+    // list instance the app keeps for its whole lifetime — its
+    // identity never changes, so whenever a folder filter or a
+    // search word was active the cached copy never re-ran while
+    // this screen stayed composed: deleting, editing, pinning or
+    // batch-deleting a bookmark from THIS page left the old row
+    // on screen until the page was left and re-entered (the same
+    // stale-cache class the v0.117.0 home audit fixed for the
+    // home grid). A derived state keeps the fluency property
+    // (the filter re-runs only when the bookmark list, the folder
+    // filter or the search word actually changes) and stays
+    // live. Same pipeline, same result.
+    val visibleBookmarks by remember {
+        derivedStateOf {
+            val folderFiltered = bookmarksInFolder(bookmarks, folderFilter)
+            if (bookmarkQuery.isBlank()) {
+                folderFiltered
+            } else {
+                folderFiltered.filter {
+                    it.title.contains(bookmarkQuery, ignoreCase = true) ||
+                        it.url.contains(bookmarkQuery, ignoreCase = true)
+                }
             }
         }
     }
@@ -8954,17 +8967,32 @@ private fun HistoryScreen(
     var siteDeleteTarget by remember {
         mutableStateOf<Pair<String, Int>?>(null)
     }
-    // Memoised on its inputs (v0.96.0 fluency pass): the grouping
-    // below was already remembered (v0.23.0), but this search filter
-    // itself still re-ran over the whole history list on every
-    // recomposition of the screen. Same pipeline, same result.
-    val filtered = remember(history, query) {
-        if (query.isBlank()) {
-            history
-        } else {
-            history.filter {
-                it.title.contains(query, ignoreCase = true) ||
-                    it.url.contains(query, ignoreCase = true)
+    // Search filter as a derived state (v0.118.0): the v0.96.0
+    // fluency pass memoised this with remember(history, query),
+    // but history is the ONE snapshot-state list instance the app
+    // keeps for its whole lifetime — its identity never changes,
+    // so with a search word typed the cached copy never re-ran
+    // while this screen stayed composed, and a deletion made
+    // from THIS page (row, menu, per-site, swipe commit) left
+    // the old row on screen until the page was left and
+    // re-entered (the same stale-cache class the v0.117.0 home
+    // audit fixed for the home grid). The blank-query branch
+    // returns a copy rather than the live list itself, so the
+    // derived value carries content semantics: the grouping
+    // below keys its remember on this list, and a same-identity
+    // live list would freeze that cache the same way. A derived
+    // state keeps the fluency property (the filter re-runs only
+    // when the history list or the search word actually
+    // changes) and stays live. Same pipeline, same result.
+    val filtered by remember {
+        derivedStateOf {
+            if (query.isBlank()) {
+                history.toList()
+            } else {
+                history.filter {
+                    it.title.contains(query, ignoreCase = true) ||
+                        it.url.contains(query, ignoreCase = true)
+                }
             }
         }
     }
@@ -8986,7 +9014,11 @@ private fun HistoryScreen(
     // that conversion up to three times per item (once per bucket
     // filter) whenever this screen recomposed. remember keeps the
     // result stable while the user scrolls; it is recomputed only
-    // when the filtered list or the calendar day changes.
+    // when the filtered list or the calendar day changes. Since
+    // v0.118.0 the filtered list is a derived-state value with
+    // content semantics (a fresh copy whenever its content
+    // changes), so this key comparison sees real content changes
+    // instead of one unchanging list identity.
     val groups = remember(filtered, today) {
         listOf("今天", "昨天", "更早")
             .map { bucket -> bucket to filtered.filter { bucketOf(it) == bucket } }
