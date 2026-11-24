@@ -11555,6 +11555,10 @@ private fun SettingsScreen(
                         ListItem(headlineContent = { Text("本页拦截计数") })
                         ListItem(headlineContent = { Text("广告位隐藏") })
                         ListItem(headlineContent = { Text("打印 / 存为 PDF") })
+                        ListItem(headlineContent = { Text("内置净化脚本") })
+                        ListItem(headlineContent = { Text("不要追踪") })
+                        ListItem(headlineContent = { Text("停用 WebRTC") })
+                        ListItem(headlineContent = { Text("网页深色模式") })
                         HorizontalDivider()
                         Text(
                             "火狐的特点",
@@ -11606,6 +11610,7 @@ private fun SettingsScreen(
                                 Text("文件上传、相机和麦克风、网站登录（基础认证）")
                             }
                         )
+                        ListItem(headlineContent = { Text("不出售或分享资料信号") })
                         ListItem(headlineContent = { Text("长按链接 / 图片菜单") })
                         ListItem(
                             headlineContent = { Text("下载") },
