@@ -463,6 +463,48 @@ fun BrowserApp(
     var startupDone by remember { mutableStateOf(false) }
     var fullscreenView by remember { mutableStateOf<android.view.View?>(null) }
     var geckoFullscreen by remember { mutableStateOf(false) }
+    // Keep-screen-on while fullscreen (v0.66.0): the ONLY place the
+    // window flag is touched. Both fullscreen states converge here —
+    // WebView's fullscreenView and Gecko's geckoFullscreen — and the
+    // flag is a pure derivation of "either one is active": every exit
+    // path that clears those states (onHideCustomView, the overlay
+    // exit button, either back handler, Gecko's onFullScreen(false))
+    // clears the flag on the next recomposition, and no path can set
+    // the flag without a fullscreen state behind it. Ordinary
+    // browsing, reader mode and windowed video never reach it. No
+    // setting: fullscreen keep-on is the industry default. No
+    // permission is needed for this window flag. Best-effort only:
+    // no activity window, no flag, no crash.
+    val anyFullscreen = fullscreenView != null || geckoFullscreen
+    LaunchedEffect(anyFullscreen) {
+        try {
+            val window = (context as? android.app.Activity)?.window
+            if (anyFullscreen) {
+                window?.addFlags(
+                    android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                )
+            } else {
+                window?.clearFlags(
+                    android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                )
+            }
+        } catch (t: Throwable) {
+            // Keep-screen-on is a comfort feature only; never crash.
+        }
+    }
+    // If the whole UI goes away mid-fullscreen (activity destroyed),
+    // do not leave the flag set on a dying window.
+    DisposableEffect(Unit) {
+        onDispose {
+            try {
+                (context as? android.app.Activity)?.window?.clearFlags(
+                    android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                )
+            } catch (t: Throwable) {
+                // Window already gone; nothing left to clear.
+            }
+        }
+    }
     var jsPromptRequest by remember { mutableStateOf<JsPromptState?>(null) }
     var authPromptRequest by remember { mutableStateOf<AuthPromptState?>(null) }
     var sslPromptRequest by remember { mutableStateOf<SslPromptState?>(null) }
