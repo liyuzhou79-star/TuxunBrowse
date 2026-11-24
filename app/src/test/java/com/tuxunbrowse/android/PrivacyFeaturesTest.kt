@@ -97,9 +97,30 @@ class PrivacyFeaturesTest {
         // Subdomains of strict hosts count too.
         assertTrue(
             AdBlocker.isAdRequest(
+                "https://cdn.clicktale.net/x.js", strict = true
+            )
+        )
+        // v0.94.0 false-positive review: parent domains whose
+        // subdomains (or apex) host the vendor's own customer app
+        // were withdrawn — suffix matching would break those apps.
+        assertFalse(
+            AdBlocker.isAdRequest(
                 "https://api.segment.com/v1", strict = true
             )
         )
+        assertFalse(
+            AdBlocker.isAdRequest(
+                "https://app.logrocket.com/x.js", strict = true
+            )
+        )
+        assertFalse(
+            AdBlocker.isAdRequest(
+                "https://mixpanel.com/x.js", strict = true
+            )
+        )
+        // api.segment.io needs no strict entry: the base list's
+        // segment.io suffix already covers it at every level.
+        assertTrue(AdBlocker.isAdRequest("https://api.segment.io/v1"))
         // Normal content is never blocked at either level.
         assertFalse(
             AdBlocker.isAdRequest("https://www.baidu.com/", strict = true)
@@ -112,7 +133,15 @@ class PrivacyFeaturesTest {
             AdBlocker.strictHostList.size,
             AdBlocker.strictHostList.toSet().size
         )
-        assertTrue(AdBlocker.strictHostList.size >= 40)
+        assertTrue(AdBlocker.strictHostList.size >= 20)
+        // No strict entry may be redundant: neither an exact base
+        // entry nor one already covered by a base suffix.
+        for (host in AdBlocker.strictHostList) {
+            assertFalse(
+                "strict entry already covered by base list: $host",
+                AdBlocker.isAdRequest("https://$host/")
+            )
+        }
     }
 
     @Test

@@ -2204,7 +2204,9 @@ class BrowserTab(
      * Reconcile the privacy-signals script with the switches at
      * every page start (v0.92.0). The payload is rebuilt from the
      * live switches each time: all-off removes the handler;
-     * a changed payload re-registers; on WebViews without the
+     * a changed payload re-registers (and is also evaluated once
+     * for the page that just started, since a registration made
+     * now only binds from the next load); on WebViews without the
      * document-start channel the payload goes through
      * evaluateJavascript here, exactly like the guard script's
      * fallback. A page that already ran without a signal keeps
@@ -2222,14 +2224,20 @@ class BrowserTab(
                 privacyScriptPayload != payload
             ) {
                 registerPrivacyScriptHandler(wv)
-                if (privacyScriptHandler == null) {
-                    // Registration failed just now: still give this
-                    // page its signals through the late channel.
-                    try {
-                        wv.evaluateJavascript(payload, null)
-                    } catch (t: Throwable) {
-                        // Best-effort only.
-                    }
+                // A handler (re)registered at page start only
+                // takes effect from the NEXT navigation — document-
+                // start scripts are bound when a load begins — so
+                // give THIS page its signals through the late
+                // channel as well, exactly like syncGuardScript
+                // does when it registers late. Running the payload
+                // twice on one page is harmless: every snippet is
+                // idempotent (configurable defineProperty, plain
+                // reassignment of the WebRTC stub), which the
+                // v0.94.0 coexistence audit verified.
+                try {
+                    wv.evaluateJavascript(payload, null)
+                } catch (t: Throwable) {
+                    // Best-effort only.
                 }
             }
         } else {

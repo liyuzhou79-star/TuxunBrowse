@@ -142,6 +142,23 @@ object AdBlocker {
      * exactly the pre-v0.92.0 behaviour and the level choice has a
      * real, countable difference on the WebView side (on the Gecko
      * side the difference is the kernel's own STRICT category set).
+     *
+     * v0.94.0 false-positive review: matching is by host suffix,
+     * so listing a parent domain also blocks every subdomain —
+     * including the vendor's own customer app where that lives on
+     * a subdomain (app.*, dash.*) or on the apex itself. Parent
+     * domains of that shape were withdrawn even though their
+     * collection endpoints are real trackers (when in doubt, do
+     * not block): hotjar.com, logrocket.com, smartlook.com,
+     * mixpanel.com, amplitude.com, segment.com, pendo.io,
+     * woopra.com, chartbeat.com, parsely.com, statcounter.com,
+     * histats.com, clicky.com, heap.io, uxcam.com,
+     * quantummetric.com, gosquared.com. Where a dedicated
+     * collection subdomain was already listed it stays and is now
+     * the operative entry (static.hotjar.com, cdn.logrocket.io,
+     * rec.smartlook.com, getclicky.com). One pure duplicate was
+     * also dropped: api.segment.io was already covered by the
+     * base list's segment.io suffix, at every level.
      */
     val strictHostList: List<String> = listOf(
         // Fingerprinting services (identification is their product;
@@ -155,16 +172,13 @@ object AdBlocker {
         "cryptoloot.pro", "crypto-loot.com", "minero.cc",
         "coinnebula.com", "webmine.pro", "jsecoin.com",
         "nerohut.com", "hashunited.com", "minemytraffic.com",
-        // Second-tier analytics / session replay / heatmaps.
-        "hotjar.com", "static.hotjar.com", "logrocket.com",
-        "cdn.logrocket.io", "smartlook.com", "rec.smartlook.com",
-        "sessioncam.com", "clicktale.net", "contentsquare.net",
-        "uxcam.com", "glassboxdigital.io", "quantummetric.com",
-        "decibel.com", "heap.io", "mixpanel.com",
-        "amplitude.com", "segment.com", "api.segment.io",
-        "pendo.io", "woopra.com", "chartbeat.com",
-        "parsely.com", "statcounter.com", "histats.com",
-        "clicky.com", "getclicky.com", "gosquared.com"
+        // Second-tier analytics / session replay / heatmaps:
+        // dedicated collection hosts only (see the review note
+        // above for the parent domains withdrawn in v0.94.0).
+        "static.hotjar.com", "cdn.logrocket.io",
+        "rec.smartlook.com", "sessioncam.com", "clicktale.net",
+        "contentsquare.net", "glassboxdigital.io", "decibel.com",
+        "getclicky.com"
     )
 
     private val blockedHosts: Set<String> = blockedHostList.toSet()

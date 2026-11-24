@@ -5815,13 +5815,22 @@ private fun BrowserScreen(
             // also reloads); the page title still shows in the
             // tab switcher. Every remaining button keeps its
             // 48dp touch target.
+            // Narrow-screen width pass (v0.94.0 audit): the row's
+            // own padding is 4dp and the children sit gapless —
+            // every button already carries its icon padding, so
+            // the old 8dp + 4dp gaps only ate address-field width.
+            // The two icon buttons INSIDE the field are 40dp
+            // (their glyphs stay 24dp): at 360dp wide the field's
+            // text area grows from ~84dp to ~120dp, enough for the
+            // full placeholder; at 320dp it grows from ~44dp to
+            // ~80dp. The outside buttons stay 48dp.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(MaterialTheme.colorScheme.surface)
                     .windowInsetsPadding(WindowInsets.statusBars)
-                    .padding(horizontal = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    .padding(horizontal = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(0.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
@@ -5866,7 +5875,10 @@ private fun BrowserScreen(
                         // sheet (for the home page it shows the
                         // internal-page info, so the icon always does
                         // something when tapped).
-                        IconButton(onClick = { showSiteInfo = true }) {
+                        IconButton(
+                            onClick = { showSiteInfo = true },
+                            modifier = Modifier.size(40.dp)
+                        ) {
                             when {
                                 activeTab == null || activeTab.isHome ->
                                     Icon(Icons.Filled.Search, contentDescription = "页面信息")
@@ -5882,7 +5894,10 @@ private fun BrowserScreen(
                         // field itself in the v0.92.0 toolbar
                         // merge: still one tap, still always
                         // visible, no separate title bar needed.
-                        IconButton(onClick = onToggleBookmark) {
+                        IconButton(
+                            onClick = onToggleBookmark,
+                            modifier = Modifier.size(40.dp)
+                        ) {
                             Icon(
                                 if (isBookmarked) Icons.Filled.Star else Icons.Filled.StarBorder,
                                 contentDescription =
