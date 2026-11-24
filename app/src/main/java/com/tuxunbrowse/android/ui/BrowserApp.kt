@@ -4782,6 +4782,13 @@ private fun HomeContent(
             }
         )
     }
+    // Home quick-access list, memoised on the bookmark list
+    // (v0.96.0 fluency pass): pinned first, at most eight. The sort
+    // used to re-run over the whole bookmark list (imports can hold
+    // thousands) on every recomposition of the home grid.
+    val homeBookmarks = remember(bookmarks) {
+        bookmarks.sortedByDescending { it.pinned }.take(8)
+    }
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
         modifier = Modifier
@@ -5029,7 +5036,7 @@ private fun HomeContent(
                 }
             }
             gridItems(
-                bookmarks.sortedByDescending { it.pinned }.take(8),
+                homeBookmarks,
                 key = { it.url }
             ) { bookmark ->
                 ElevatedCard(
@@ -7237,6 +7244,17 @@ private fun BrowserScreen(
                                 contentAlignment = Alignment.Center
                             ) {
                                 val thumb = tab.thumbnail
+                                // Convert once per thumbnail (v0.96.0
+                                // fluency pass): asImageBitmap() wraps
+                                // the Bitmap in a fresh ImageBitmap on
+                                // every call, and this card recomposes
+                                // on every selection toggle in the
+                                // sheet — without the remember, every
+                                // visible card re-wrapped its bitmap
+                                // each time.
+                                val thumbBitmap = remember(thumb) {
+                                    thumb?.asImageBitmap()
+                                }
                                 when {
                                     // Incognito tabs never show a
                                     // preview (v0.27.0): they are never
@@ -7263,8 +7281,8 @@ private fun BrowserScreen(
                                                 .onSurfaceVariant
                                         )
                                     }
-                                    thumb != null -> FoundationImage(
-                                        bitmap = thumb.asImageBitmap(),
+                                    thumbBitmap != null -> FoundationImage(
+                                        bitmap = thumbBitmap,
                                         contentDescription = "页面预览",
                                         contentScale = ContentScale.Crop,
                                         alignment = Alignment.TopCenter,
@@ -7879,13 +7897,19 @@ private fun BookmarksScreen(
     // can never point an action at an entry the user is not
     // looking at.
     var folderFilter by rememberSaveable { mutableStateOf<String?>(null) }
-    val folderFiltered = bookmarksInFolder(bookmarks, folderFilter)
-    val visibleBookmarks = if (bookmarkQuery.isBlank()) {
-        folderFiltered
-    } else {
-        folderFiltered.filter {
-            it.title.contains(bookmarkQuery, ignoreCase = true) ||
-                it.url.contains(bookmarkQuery, ignoreCase = true)
+    // Memoised on its inputs (v0.96.0 fluency pass): folder filter
+    // then search filter, the settled pipeline above — it used to
+    // re-run over the whole bookmark list on every recomposition of
+    // this screen. Same pipeline, same result.
+    val visibleBookmarks = remember(bookmarks, folderFilter, bookmarkQuery) {
+        val folderFiltered = bookmarksInFolder(bookmarks, folderFilter)
+        if (bookmarkQuery.isBlank()) {
+            folderFiltered
+        } else {
+            folderFiltered.filter {
+                it.title.contains(bookmarkQuery, ignoreCase = true) ||
+                    it.url.contains(bookmarkQuery, ignoreCase = true)
+            }
         }
     }
     // A filter naming a folder that no longer exists (renamed or
@@ -8603,12 +8627,18 @@ private fun HistoryScreen(
     var siteDeleteTarget by remember {
         mutableStateOf<Pair<String, Int>?>(null)
     }
-    val filtered = if (query.isBlank()) {
-        history
-    } else {
-        history.filter {
-            it.title.contains(query, ignoreCase = true) ||
-                it.url.contains(query, ignoreCase = true)
+    // Memoised on its inputs (v0.96.0 fluency pass): the grouping
+    // below was already remembered (v0.23.0), but this search filter
+    // itself still re-ran over the whole history list on every
+    // recomposition of the screen. Same pipeline, same result.
+    val filtered = remember(history, query) {
+        if (query.isBlank()) {
+            history
+        } else {
+            history.filter {
+                it.title.contains(query, ignoreCase = true) ||
+                    it.url.contains(query, ignoreCase = true)
+            }
         }
     }
     val zone = java.time.ZoneId.systemDefault()
@@ -9086,6 +9116,19 @@ private fun SniffScreen(
     // mutually exclusive by enabled.
     BackHandler(enabled = selectMode) { exitSniffSelectMode() }
     BackHandler(enabled = !selectMode) { onBack() }
+    // Kind groups, memoised on the collected list (v0.96.0 fluency
+    // pass): the three-way filter used to re-run inside the list's
+    // composition on every recomposition of this screen (selection
+    // toggles included). Same groups, same order.
+    val sniffGroups = remember(resources) {
+        listOf(
+            SniffKind.FILE to "文件",
+            SniffKind.IMAGE to "图片",
+            SniffKind.MEDIA to "音视频"
+        ).map { (kind, label) ->
+            Triple(kind, label, resources.filter { it.kind == kind })
+        }
+    }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -9239,14 +9282,8 @@ private fun SniffScreen(
                             }
                         }
                     }
-                    val groups = listOf(
-                        SniffKind.FILE to "文件",
-                        SniffKind.IMAGE to "图片",
-                        SniffKind.MEDIA to "音视频"
-                    )
                     LazyColumn(modifier = Modifier.fillMaxSize()) {
-                        groups.forEach { (kind, label) ->
-                            val inGroup = resources.filter { it.kind == kind }
+                        sniffGroups.forEach { (kind, label, inGroup) ->
                             if (inGroup.isNotEmpty()) {
                                 item(key = "sniff-head-$kind") {
                                     Text(
