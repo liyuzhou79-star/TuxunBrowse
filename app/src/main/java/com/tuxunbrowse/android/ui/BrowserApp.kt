@@ -4693,6 +4693,16 @@ private fun HomeContent(
     var showEnginePicker by remember { mutableStateOf(false) }
     var homeSearchFocused by remember { mutableStateOf(false) }
     val homeFocusManager = LocalFocusManager.current
+    // System back while the home search box is focused first
+    // drops the focus (v0.105.0 back audit): the suggestion list
+    // is derived from the focus state, so this collapses it and
+    // hides the keyboard — the same innermost-layer rule the
+    // address bar has had since v0.37.0. Before this, no handler
+    // was enabled on the home page and the key fell through and
+    // finished the activity mid-typing.
+    BackHandler(enabled = homeSearchFocused) {
+        homeFocusManager.clearFocus()
+    }
     val homeSuggestionQuery = query.trim()
     // Suggestions are bookmarks only (plus the search tail below):
     // history stays on the History page, exactly like the address bar.
@@ -8263,11 +8273,31 @@ private fun BookmarksScreen(
         selectedUrls = emptySet()
     }
     BackHandler(enabled = batchMode) { exitBatchMode() }
-    // Outside batch mode the same back key leaves the page itself
-    // (v0.37.0): before this, no handler was enabled here and the
-    // system finished the activity instead of returning to the
-    // browser. The two handlers are mutually exclusive by enabled.
-    BackHandler(enabled = !batchMode) { onBack() }
+    // Outside batch mode the key follows the settled page-level
+    // rule (v0.84.0, completed for this page in v0.105.0): first
+    // clear the search word, then the folder filter, and only
+    // then leave the page — the same layering the history and
+    // downloads pages already had; this page used to leave
+    // outright even with a search word or folder filter active.
+    // Leaving the page itself is the v0.37.0 handler: before it,
+    // no handler was enabled here and the system finished the
+    // activity instead of returning to the browser. All four
+    // handlers are mutually exclusive by enabled.
+    BackHandler(enabled = !batchMode && bookmarkQuery.isNotBlank()) {
+        bookmarkQuery = ""
+    }
+    BackHandler(
+        enabled = !batchMode && bookmarkQuery.isBlank() &&
+            folderFilter != null
+    ) {
+        folderFilter = null
+    }
+    BackHandler(
+        enabled = !batchMode && bookmarkQuery.isBlank() &&
+            folderFilter == null
+    ) {
+        onBack()
+    }
     if (showBatchDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { showBatchDeleteConfirm = false },
