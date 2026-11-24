@@ -146,6 +146,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextRange
@@ -202,6 +205,7 @@ import com.tuxunbrowse.android.data.fetchSearchSuggestions
 import com.tuxunbrowse.android.data.mergedOnlineSuggestionRows
 import com.tuxunbrowse.android.data.shouldFetchOnlineSuggestions
 import com.tuxunbrowse.android.data.isUrlLikeInput
+import com.tuxunbrowse.android.data.matchRange
 import com.tuxunbrowse.android.data.matchSuggestions
 import com.tuxunbrowse.android.data.resolveInput
 import com.tuxunbrowse.android.engine.ALIVE_ENGINE_LIMIT
@@ -358,6 +362,35 @@ private data class GeckoClipboardPermissionState(
     val uri: String,
     val respond: (Boolean) -> Unit
 )
+
+/**
+ * Suggestion-row text with the part matching what the user typed
+ * picked out in the theme colour at semi-bold weight (v0.68.0).
+ * The match itself is decided by the pure [matchRange] function
+ * (case-insensitive, first occurrence); with no match the text is
+ * returned unchanged. Used by every suggestion row on both
+ * surfaces — address bar and home search box: bookmark rows (title
+ * and URL), online suggestion rows and the "search this" tail row.
+ */
+private fun highlightMatchedText(
+    text: String,
+    query: String,
+    highlightColor: androidx.compose.ui.graphics.Color
+): AnnotatedString {
+    val range = matchRange(text, query) ?: return AnnotatedString(text)
+    return buildAnnotatedString {
+        append(text.substring(0, range.first))
+        withStyle(
+            SpanStyle(
+                color = highlightColor,
+                fontWeight = FontWeight.SemiBold
+            )
+        ) {
+            append(text.substring(range.first, range.last + 1))
+        }
+        append(text.substring(range.last + 1))
+    }
+}
 
 /** A WebView SSL certificate error waiting for the user's decision. */
 private data class SslPromptState(
@@ -4554,10 +4587,22 @@ private fun HomeContent(
                         homeBookmarkSuggestions.forEach { suggestion ->
                             ListItem(
                                 headlineContent = {
-                                    Text(suggestion.title, maxLines = 1)
+                                    Text(
+                                        highlightMatchedText(
+                                            suggestion.title, query,
+                                            MaterialTheme.colorScheme.primary
+                                        ),
+                                        maxLines = 1
+                                    )
                                 },
                                 supportingContent = {
-                                    Text(suggestion.url, maxLines = 1)
+                                    Text(
+                                        highlightMatchedText(
+                                            suggestion.url, query,
+                                            MaterialTheme.colorScheme.primary
+                                        ),
+                                        maxLines = 1
+                                    )
                                 },
                                 leadingContent = {
                                     Icon(
@@ -4583,7 +4628,13 @@ private fun HomeContent(
                         homeOnlineRows.forEach { word ->
                             ListItem(
                                 headlineContent = {
-                                    Text(word, maxLines = 1)
+                                    Text(
+                                        highlightMatchedText(
+                                            word, homeSuggestionQuery,
+                                            MaterialTheme.colorScheme.primary
+                                        ),
+                                        maxLines = 1
+                                    )
                                 },
                                 leadingContent = {
                                     Icon(
@@ -4604,7 +4655,11 @@ private fun HomeContent(
                             ListItem(
                                 headlineContent = {
                                     Text(
-                                        "用${engineShortName()}搜索「$homeSuggestionQuery」",
+                                        highlightMatchedText(
+                                            "用${engineShortName()}搜索「$homeSuggestionQuery」",
+                                            homeSuggestionQuery,
+                                            MaterialTheme.colorScheme.primary
+                                        ),
                                         maxLines = 1
                                     )
                                 },
@@ -5692,10 +5747,22 @@ private fun BrowserScreen(
                         items(suggestions, key = { it.url }) { suggestion ->
                             ListItem(
                                 headlineContent = {
-                                    Text(suggestion.title, maxLines = 1)
+                                    Text(
+                                        highlightMatchedText(
+                                            suggestion.title, addressText,
+                                            MaterialTheme.colorScheme.primary
+                                        ),
+                                        maxLines = 1
+                                    )
                                 },
                                 supportingContent = {
-                                    Text(suggestion.url, maxLines = 1)
+                                    Text(
+                                        highlightMatchedText(
+                                            suggestion.url, addressText,
+                                            MaterialTheme.colorScheme.primary
+                                        ),
+                                        maxLines = 1
+                                    )
                                 },
                                 leadingContent = {
                                     Icon(
@@ -5722,7 +5789,13 @@ private fun BrowserScreen(
                         items(onlineRows, key = { "online-$it" }) { word ->
                             ListItem(
                                 headlineContent = {
-                                    Text(word, maxLines = 1)
+                                    Text(
+                                        highlightMatchedText(
+                                            word, suggestionQuery,
+                                            MaterialTheme.colorScheme.primary
+                                        ),
+                                        maxLines = 1
+                                    )
                                 },
                                 leadingContent = {
                                     Icon(
@@ -5747,13 +5820,17 @@ private fun BrowserScreen(
                                 ListItem(
                                     headlineContent = {
                                         Text(
-                                            "用${
-                                                if (searchEngine == SearchEngine.CUSTOM) {
-                                                    customSearchName.ifBlank { "自定义" }
-                                                } else {
-                                                    searchEngine.label
-                                                }
-                                            }搜索「$trimmedAddress」",
+                                            highlightMatchedText(
+                                                "用${
+                                                    if (searchEngine == SearchEngine.CUSTOM) {
+                                                        customSearchName.ifBlank { "自定义" }
+                                                    } else {
+                                                        searchEngine.label
+                                                    }
+                                                }搜索「$trimmedAddress」",
+                                                trimmedAddress,
+                                                MaterialTheme.colorScheme.primary
+                                            ),
                                             maxLines = 1
                                         )
                                     },

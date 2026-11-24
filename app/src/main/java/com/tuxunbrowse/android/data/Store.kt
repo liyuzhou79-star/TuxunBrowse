@@ -204,6 +204,22 @@ fun matchSuggestions(
     return out
 }
 
+/**
+ * Range of the FIRST case-insensitive occurrence of [query] inside
+ * [text], for highlighting the matched part of a suggestion row
+ * (v0.68.0). The query is trimmed first; a blank query, blank text or
+ * no occurrence all return null, in which case the row renders its
+ * text unchanged. Pure and side-effect free so it can be unit-tested
+ * on the JVM.
+ */
+fun matchRange(text: String, query: String): IntRange? {
+    val q = query.trim()
+    if (q.isEmpty() || text.isEmpty()) return null
+    val start = text.indexOf(q, ignoreCase = true)
+    if (start < 0) return null
+    return start until start + q.length
+}
+
 /** Debounce before an address-bar keystroke may trigger a suggestion fetch. */
 const val SEARCH_SUGGESTION_DEBOUNCE_MS = 300L
 
