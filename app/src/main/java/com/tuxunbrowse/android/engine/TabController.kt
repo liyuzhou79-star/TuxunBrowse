@@ -3340,11 +3340,12 @@ fun saveGeckoDownload(
             } catch (t: Throwable) {
                 // The callback only clears a flag; never crash here.
             }
-            // The live progress entry dies with the copy (success,
-            // failure and cancel alike): a finished download is
-            // represented by its persisted record (on success) or by
-            // nothing at all — never by a stale progress row.
-            GeckoDownloadTracker.end(downloadId)
+            // The live progress entry is retired AFTER the record
+            // callback below, not here (v0.86.0 mirror audit): the
+            // downloads screen reloads its records when a tracker
+            // entry disappears, and retiring the entry first raced
+            // that reload ahead of the record write — the finished
+            // download briefly existed in neither section.
         }
         if (ok) {
             // Success point (v0.57.0): everything the in-app record
@@ -3367,6 +3368,11 @@ fun saveGeckoDownload(
                 // Recording must never break the download itself.
             }
         }
+        // The live progress entry dies now (success, failure and
+        // cancel alike): a finished download is represented by its
+        // persisted record (on success, written just above) or by
+        // nothing at all — never by a stale progress row.
+        GeckoDownloadTracker.end(downloadId)
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             Toast.makeText(
                 context,

@@ -44,6 +44,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AddToHomeScreen
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
@@ -167,7 +168,11 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.core.content.pm.ShortcutInfoCompat
+import androidx.core.content.pm.ShortcutManagerCompat
+import androidx.core.graphics.drawable.IconCompat
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
@@ -225,7 +230,11 @@ import com.tuxunbrowse.android.data.bookmarksFromJson
 import com.tuxunbrowse.android.data.bookmarksToJson
 import com.tuxunbrowse.android.data.MAX_IMPORT_FILE_CHARS
 import com.tuxunbrowse.android.data.isValidCustomSearchTemplate
+import com.tuxunbrowse.android.MainActivity
 import com.tuxunbrowse.android.data.hostOf
+import com.tuxunbrowse.android.data.pinnedShortcutId
+import com.tuxunbrowse.android.data.pinnedShortcutInitial
+import com.tuxunbrowse.android.data.pinnedShortcutLabel
 import com.tuxunbrowse.android.data.isAppDarkTheme
 import com.tuxunbrowse.android.data.hostMatchesSite
 import com.tuxunbrowse.android.data.isCompatHost
@@ -405,6 +414,48 @@ private fun copyTextToClipboard(
     true
 } catch (t: Throwable) {
     false
+}
+
+/**
+ * The generated icon for a pinned home-screen shortcut (v0.86.0):
+ * a filled circle in the theme's primary colour with the page
+ * label's first letter on it in the matching on-primary colour —
+ * the same "theme colour + first letter" device the home page's
+ * speed-dial tiles use. Deliberately NOT the site's favicon: the
+ * app never downloaded it, and a generated icon cannot pretend to
+ * be artwork it is not. 192×192 is comfortably above what
+ * launchers downscale from.
+ */
+private fun createPinnedShortcutIcon(
+    bgColor: Int,
+    fgColor: Int,
+    letter: String
+): android.graphics.Bitmap {
+    val size = 192
+    val bitmap = android.graphics.Bitmap.createBitmap(
+        size, size, android.graphics.Bitmap.Config.ARGB_8888
+    )
+    val canvas = android.graphics.Canvas(bitmap)
+    val circlePaint = android.graphics.Paint(
+        android.graphics.Paint.ANTI_ALIAS_FLAG
+    ).apply { color = bgColor }
+    canvas.drawCircle(
+        size / 2f, size / 2f, size / 2f, circlePaint
+    )
+    if (letter.isNotEmpty()) {
+        val textPaint = android.graphics.Paint(
+            android.graphics.Paint.ANTI_ALIAS_FLAG
+        ).apply {
+            color = fgColor
+            textAlign = android.graphics.Paint.Align.CENTER
+            textSize = size * 0.5f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+        val metrics = textPaint.fontMetrics
+        val baseline = size / 2f - (metrics.ascent + metrics.descent) / 2f
+        canvas.drawText(letter, size / 2f, baseline, textPaint)
+    }
+    return bitmap
 }
 
 /**
@@ -6675,6 +6726,93 @@ private fun BrowserScreen(
             }
         )
     }
+    // Pin the current page to the home screen (v0.86.0): the
+    // shortcut's intent is a plain ACTION_VIEW on the page URL,
+    // addressed to this app's own activity, so a tap on the
+    // shortcut comes back through the exact inbound gate every
+    // external link uses (MainActivity takes only http/https,
+    // BrowserApp.openUrl re-checks) — no new door is opened. The
+    // icon colours are captured here, in composition, because the
+    // handler below is a plain local function.
+    val shortcutIconBg = MaterialTheme.colorScheme.primary.toArgb()
+    val shortcutIconFg = MaterialTheme.colorScheme.onPrimary.toArgb()
+    fun handlePinToHomeScreen() {
+        val tab = activeTab
+        when {
+            tab == null || tab.isHome ||
+                !(tab.url.startsWith("http://") ||
+                    tab.url.startsWith("https://")) ->
+                android.widget.Toast.makeText(
+                    context, "先打开一个网页再添加到主屏幕",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            // Incognito (v0.72.0 rule, same as the tab sheet's
+            // bookmark item): the entry stays visible, the tap is
+            // intercepted — a home-screen shortcut IS a trace of
+            // the visit, so an incognito page never gets one.
+            tab.incognito ->
+                android.widget.Toast.makeText(
+                    context,
+                    "无痕标签不会在主屏幕留下快捷方式，请在普通标签里添加",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            else -> {
+                if (!ShortcutManagerCompat
+                        .isRequestPinShortcutSupported(context)
+                ) {
+                    android.widget.Toast.makeText(
+                        context,
+                        "你现在的桌面不支持把网页放到主屏幕",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                    return
+                }
+                try {
+                    val intent = android.content.Intent(
+                        android.content.Intent.ACTION_VIEW,
+                        android.net.Uri.parse(tab.url)
+                    ).setClass(context, MainActivity::class.java)
+                        .addFlags(
+                            android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                        )
+                    val shortcut = ShortcutInfoCompat.Builder(
+                        context, pinnedShortcutId(tab.url)
+                    )
+                        .setShortLabel(
+                            pinnedShortcutLabel(tab.title, tab.url)
+                        )
+                        .setIcon(
+                            IconCompat.createWithBitmap(
+                                createPinnedShortcutIcon(
+                                    shortcutIconBg, shortcutIconFg,
+                                    pinnedShortcutInitial(
+                                        tab.title, tab.url
+                                    )
+                                )
+                            )
+                        )
+                        .setIntent(intent)
+                        .build()
+                    val requested = ShortcutManagerCompat
+                        .requestPinShortcut(context, shortcut, null)
+                    android.widget.Toast.makeText(
+                        context,
+                        if (requested) {
+                            "已请求添加到主屏幕，按桌面提示确认就会出现"
+                        } else {
+                            "你现在的桌面不支持把网页放到主屏幕"
+                        },
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                } catch (t: Throwable) {
+                    android.widget.Toast.makeText(
+                        context, "添加失败，请重试",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
+    }
     // Long-press on back/forward: this tab's real back/forward stack.
     var navHistory by remember {
         mutableStateOf<Pair<List<NavHistoryEntry>, Int>?>(null)
@@ -6908,6 +7046,19 @@ private fun BrowserScreen(
                                         android.widget.Toast.LENGTH_SHORT
                                     ).show()
                                 }
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("添加到主屏幕") },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Filled.AddToHomeScreen,
+                                    contentDescription = null
+                                )
+                            },
+                            onClick = {
+                                showMenu = false
+                                handlePinToHomeScreen()
                             }
                         )
                         DropdownMenuItem(
@@ -11388,6 +11539,19 @@ private fun DownloadsScreen(
                 it.fileName.contains(query, ignoreCase = true)
             }
         }
+    }
+    // Mirror fix (v0.86.0 audit): the records list above is loaded
+    // once when this screen opens, but a Gecko download that
+    // finishes WHILE the user is looking at this screen writes its
+    // record from the engine side — the row used to vanish from
+    // the live section and never appear in the records section
+    // until the screen was reopened. The tracker retires a live
+    // entry only after its record is written (saveGeckoDownload),
+    // so any change in the live id set is a safe moment to reload
+    // the records from the same store they were written to.
+    val activeGeckoIds = activeGeckoDownloads.map { it.id }
+    LaunchedEffect(activeGeckoIds) {
+        geckoRecords = geckoStore.loadGeckoDownloads()
     }
     var pendingGeckoDelete by remember {
         mutableStateOf<GeckoDownloadRecord?>(null)

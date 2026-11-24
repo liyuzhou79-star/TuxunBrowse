@@ -927,6 +927,61 @@ fun hostOf(url: String): String? = try {
 }
 
 /**
+ * Cap for a pinned home-screen shortcut's short label (v0.86.0).
+ * The platform itself accepts longer labels, but launchers render
+ * one or two short lines under the icon and ellipsize the rest
+ * unpredictably; capping here keeps the label the app chose, not
+ * the launcher's cut. 30 characters fits a typical page title's
+ * meaningful head in both Chinese and Latin scripts.
+ */
+const val PIN_SHORTCUT_LABEL_LIMIT = 30
+
+/**
+ * Stable id for the pinned shortcut of [url] (v0.86.0): the same
+ * page always yields the same id (so re-adding a page updates its
+ * one shortcut instead of piling up duplicates), and two different
+ * pages practically never collide — the id is "web-" plus the
+ * first 16 hex digits of the URL's SHA-256.
+ */
+fun pinnedShortcutId(url: String): String {
+    val digest = java.security.MessageDigest.getInstance("SHA-256")
+        .digest(url.toByteArray(Charsets.UTF_8))
+    val hex = digest.joinToString("") { "%02x".format(it) }
+    return "web-" + hex.take(16)
+}
+
+/**
+ * The short label a pinned shortcut for a page shows (v0.86.0):
+ * the page title with whitespace collapsed, capped at
+ * [PIN_SHORTCUT_LABEL_LIMIT] characters. A page with no usable
+ * title falls back to its host, and a URL with no parseable host
+ * falls back to the URL itself (still capped) — the label is
+ * never blank, because a shortcut with an empty label is useless
+ * on a home screen.
+ */
+fun pinnedShortcutLabel(title: String, url: String): String {
+    val cleanTitle = title.trim().replace(Regex("\\s+"), " ")
+    val base = when {
+        cleanTitle.isNotEmpty() -> cleanTitle
+        else -> hostOf(url) ?: url.trim()
+    }
+    return if (base.length > PIN_SHORTCUT_LABEL_LIMIT) {
+        base.substring(0, PIN_SHORTCUT_LABEL_LIMIT)
+    } else {
+        base
+    }
+}
+
+/**
+ * The letter drawn on a pinned shortcut's generated icon
+ * (v0.86.0): the first character of the shortcut's label — the
+ * same "title's first letter" device the home page's speed-dial
+ * tiles use, so the two shortcut surfaces look related.
+ */
+fun pinnedShortcutInitial(title: String, url: String): String =
+    pinnedShortcutLabel(title, url).firstOrNull()?.toString() ?: "?"
+
+/**
  * What the address bar shows for [url] while it is NOT being edited
  * (v0.76.0): just the host for web pages — no scheme, no path, no
  * query — because the full URL is noise at a glance and the domain
