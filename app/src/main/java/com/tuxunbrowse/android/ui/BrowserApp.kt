@@ -6377,9 +6377,9 @@ private fun BrowserScreen(
     // tabs the startup restore rebuilt from the archive.
     var tabMultiSelect by rememberSaveable { mutableStateOf(false) }
     var selectedTabIds by rememberSaveable(
-        saver = listSaver<Set<Int>, Int>(
-            save = { it.toList() },
-            restore = { it.toSet() }
+        saver = listSaver<MutableState<Set<Int>>, Int>(
+            save = { it.value.toList() },
+            restore = { mutableStateOf(it.toSet()) }
         )
     ) { mutableStateOf<Set<Int>>(emptySet()) }
     fun exitTabMultiSelect() {
@@ -9327,9 +9327,9 @@ private fun BookmarksScreen(
     // and the "完成" button all leave the mode).
     var batchMode by rememberSaveable { mutableStateOf(false) }
     var selectedUrls by rememberSaveable(
-        saver = listSaver<Set<String>, String>(
-            save = { it.toList() },
-            restore = { it.toSet() }
+        saver = listSaver<MutableState<Set<String>>, String>(
+            save = { it.value.toList() },
+            restore = { mutableStateOf(it.toSet()) }
         )
     ) { mutableStateOf<Set<String>>(emptySet()) }
     // Switching the folder filter clears the batch selection
@@ -10856,9 +10856,9 @@ private fun SniffScreen(
     var selectMode by rememberSaveable(tab?.id) { mutableStateOf(false) }
     var selectedUrls by rememberSaveable(
         tab?.id,
-        saver = listSaver<Set<String>, String>(
-            save = { it.toList() },
-            restore = { it.toSet() }
+        saver = listSaver<MutableState<Set<String>>, String>(
+            save = { it.value.toList() },
+            restore = { mutableStateOf(it.toSet()) }
         )
     ) { mutableStateOf<Set<String>>(emptySet()) }
     fun toggleSniffSelected(url: String) {
