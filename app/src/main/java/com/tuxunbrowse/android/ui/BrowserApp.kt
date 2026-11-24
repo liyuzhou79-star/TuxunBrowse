@@ -2,6 +2,7 @@ package com.tuxunbrowse.android.ui
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -6080,11 +6081,26 @@ private fun BrowserScreen(
                             onClick = onToggleBookmark,
                             modifier = Modifier.expandedTouchTarget(40.dp, 48.dp)
                         ) {
-                            Icon(
-                                if (isBookmarked) Icons.Filled.Star else Icons.Filled.StarBorder,
-                                contentDescription =
-                                    if (isBookmarked) "已加入书签，点按取消书签" else "加入书签"
-                            )
+                            // Star state crossfade (v0.111.0
+                            // motion audit): the filled/border
+                            // swap used to be instant, the one
+                            // state change in the merged toolbar
+                            // with no motion at all. A plain fade
+                            // on the shared easing, 200ms — inside
+                            // the established 180–250ms range.
+                            Crossfade(
+                                targetState = isBookmarked,
+                                animationSpec = tween(
+                                    200, easing = FastOutSlowInEasing
+                                ),
+                                label = "bookmarkStar"
+                            ) { bookmarked ->
+                                Icon(
+                                    if (bookmarked) Icons.Filled.Star else Icons.Filled.StarBorder,
+                                    contentDescription =
+                                        if (bookmarked) "已加入书签，点按取消书签" else "加入书签"
+                                )
+                            }
                         }
                     },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
@@ -8574,9 +8590,25 @@ private fun BookmarksScreen(
                     Button(
                         onClick = { showBatchDeleteConfirm = true },
                         enabled = selectedUrls.isNotEmpty(),
+                        // Batch bar animation (v0.111.0 motion
+                        // audit): v0.82.0 aligned the sniff and
+                        // tab multi-select bars to the shared spec
+                        // but this third multi-select bar still
+                        // popped in instantly. Same LazyItem
+                        // animateItem treatment as the tab sheet's
+                        // action row: fadeIn 220ms / fadeOut 180ms,
+                        // FastOutSlowIn.
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 8.dp)
+                            .animateItem(
+                                fadeInSpec = tween(
+                                    220, easing = FastOutSlowInEasing
+                                ),
+                                fadeOutSpec = tween(
+                                    180, easing = FastOutSlowInEasing
+                                )
+                            )
                     ) {
                         Text("删除所选（${selectedUrls.size}）")
                     }
@@ -10600,9 +10632,24 @@ private fun DownloadsScreen(
                     // disappear the moment each copy ends (the row is
                     // replaced by the persisted record on success).
                     Column(
+                        // Live section animation (v0.111.0 motion
+                        // audit): this whole in-progress section
+                        // used to pop in and out of the list the
+                        // moment a Gecko download started or ended.
+                        // It now fades on the shared spec, like
+                        // the multi-select bars (v0.82.0) and the
+                        // bookmarks batch bar (this version).
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(start = 16.dp, end = 8.dp, top = 16.dp)
+                            .animateItem(
+                                fadeInSpec = tween(
+                                    220, easing = FastOutSlowInEasing
+                                ),
+                                fadeOutSpec = tween(
+                                    180, easing = FastOutSlowInEasing
+                                )
+                            )
                     ) {
                         Text(
                             "正在下载（火狐）",
@@ -10677,7 +10724,21 @@ private fun DownloadsScreen(
                                 )
                             }
                         },
-                        modifier = Modifier.fillMaxWidth()
+                        // Same live-section fade as the header
+                        // above (v0.111.0): a row fades in when
+                        // its download starts and out when it
+                        // ends; progress updates in between do
+                        // not re-trigger it (same key, same slot).
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .animateItem(
+                                fadeInSpec = tween(
+                                    220, easing = FastOutSlowInEasing
+                                ),
+                                fadeOutSpec = tween(
+                                    180, easing = FastOutSlowInEasing
+                                )
+                            )
                     )
                     HorizontalDivider()
                 }
@@ -11267,6 +11328,30 @@ private fun SettingsScreen(
             )
         }
     ) { padding ->
+        // Sub-page transitions (v0.111.0 motion audit): the six
+        // sub-pages (and the home list, and the v0.92.0 privacy
+        // page) used to swap instantly inside this one LazyColumn
+        // while every other page change in the app goes through
+        // the top-level AnimatedContent. They now ride the same
+        // sub-page spec as that transition's non-browser branch:
+        // fade in 250ms plus a slight horizontal slide, fade out
+        // 200ms, FastOutSlowIn throughout. Each side renders the
+        // page it was keyed with (targetPage), so the outgoing
+        // list keeps showing the old sub-page while it fades.
+        // Side benefit: each sub-page gets its own list, so a
+        // sub-page now starts at its top instead of inheriting
+        // the home list's scroll offset.
+        AnimatedContent(
+            targetState = settingsPage,
+            transitionSpec = {
+                (fadeIn(tween(250, easing = FastOutSlowInEasing)) +
+                    slideInHorizontally(
+                        tween(250, easing = FastOutSlowInEasing)
+                    ) { it / 10 }) togetherWith
+                    fadeOut(tween(200, easing = FastOutSlowInEasing))
+            },
+            label = "settingsPageTransition"
+        ) { targetPage ->
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
@@ -11277,7 +11362,7 @@ private fun SettingsScreen(
                 bottom = 24.dp
             )
         ) {
-            if (settingsPage == "home") {
+            if (targetPage == "home") {
                 items(
                     listOf(
                         Triple("engine", "内核与搜索引擎", Icons.Filled.Language),
@@ -11307,7 +11392,7 @@ private fun SettingsScreen(
                     }
                 }
             }
-            if (settingsPage == "engine") {
+            if (targetPage == "engine") {
             item {
                 Text("主内核", style = MaterialTheme.typography.titleMedium)
                 Text(
@@ -11463,7 +11548,7 @@ private fun SettingsScreen(
                 }
             }
             }
-            if (settingsPage == "adblock") {
+            if (targetPage == "adblock") {
             item {
                 Text("广告拦截", style = MaterialTheme.typography.titleMedium)
             }
@@ -11527,7 +11612,7 @@ private fun SettingsScreen(
                 }
             }
             }
-            if (settingsPage == "download") {
+            if (targetPage == "download") {
             item {
                 Text("下载", style = MaterialTheme.typography.titleMedium)
                 Text(
@@ -11565,7 +11650,7 @@ private fun SettingsScreen(
                 )
             }
             }
-            if (settingsPage == "appearance") {
+            if (targetPage == "appearance") {
             item {
                 Text("外观", style = MaterialTheme.typography.titleMedium)
             }
@@ -11714,7 +11799,7 @@ private fun SettingsScreen(
                 }
             }
             }
-            if (settingsPage == "privacy") {
+            if (targetPage == "privacy") {
             item {
                 Text("启动", style = MaterialTheme.typography.titleMedium)
             }
@@ -11736,7 +11821,7 @@ private fun SettingsScreen(
                 )
             }
             }
-            if (settingsPage == "engine") {
+            if (targetPage == "engine") {
             item {
                 Text("默认浏览器", style = MaterialTheme.typography.titleMedium)
                 Text(
@@ -11898,7 +11983,7 @@ private fun SettingsScreen(
                 }
             }
             }
-            if (settingsPage == "privacy") {
+            if (targetPage == "privacy") {
             item {
                 Text("跟踪保护", style = MaterialTheme.typography.titleMedium)
             }
@@ -12117,7 +12202,7 @@ private fun SettingsScreen(
                 }
             }
             }
-            if (settingsPage == "about") {
+            if (targetPage == "about") {
             item {
                 // Brand header (v0.92.0), laid out after the
                 // TuxunGram About page the user supplied: brand
@@ -12363,6 +12448,7 @@ private fun SettingsScreen(
             }
             item { Spacer(modifier = Modifier.padding(bottom = 24.dp)) }            }
 
+        }
         }
     }
     if (showHistoryClearDialog) {
