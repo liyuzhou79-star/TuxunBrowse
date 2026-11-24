@@ -3627,7 +3627,7 @@ fun BrowserApp(
                 }
             }
         )
-
+        }
     }
 
     // Long-press context menu (v0.42.0): ONE combined dialog for
@@ -7991,6 +7991,7 @@ private fun BookmarksScreen(
                             }) {
                                 Text("批量管理")
                             }
+                        }
                         IconButton(onClick = onImport) {
                             Icon(Icons.Filled.FileDownload, contentDescription = "导入书签")
                         }
