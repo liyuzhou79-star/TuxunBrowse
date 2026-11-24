@@ -1235,6 +1235,162 @@ fun filterSettingsIndex(
     return index.filter { it.name.contains(q, ignoreCase = true) }
 }
 
+/**
+ * Parse one stored JSON array of objects, element by element
+ * (v0.83.0 corruption audit). The contract every list loader in
+ * [Store] now shares:
+ * - a null/blank payload, or one that is not a JSON array at all
+ *   (truncated write, wrong type), parses to an empty list — the
+ *   damage stays inside this one key;
+ * - an element that is not a JSON object, or whose own parse
+ *   throws, is SKIPPED — the surviving elements still parse, so
+ *   one bad row can no longer empty the whole list;
+ * - field reads inside [parse] use the opt* family, so a field
+ *   stored with the wrong type falls back per-field instead of
+ *   throwing the row (or the list) away.
+ * Pure (org.json only) so the corruption samples are unit-tested.
+ */
+fun <T> parseJsonObjectList(raw: String?, parse: (JSONObject) -> T): List<T> {
+    if (raw.isNullOrBlank()) return emptyList()
+    val arr = try {
+        JSONArray(raw)
+    } catch (e: Exception) {
+        return emptyList()
+    }
+    val out = mutableListOf<T>()
+    for (i in 0 until arr.length()) {
+        val obj = arr.optJSONObject(i) ?: continue
+        try {
+            out.add(parse(obj))
+        } catch (e: Exception) {
+            // One corrupt element: skip it, keep the rest.
+        }
+    }
+    return out
+}
+
+/** Stored bookmarks (see [parseJsonObjectList] for the contract). */
+fun parseBookmarksJson(raw: String?): List<Bookmark> =
+    parseJsonObjectList(raw) {
+        Bookmark(
+            it.optString("title"), it.optString("url"),
+            it.optBoolean("pinned"), it.optString("folder").trim()
+        )
+    }
+
+/** Stored history entries. */
+fun parseHistoryJson(raw: String?): List<HistoryItem> =
+    parseJsonObjectList(raw) {
+        HistoryItem(it.optString("title"), it.optString("url"), it.optLong("time"))
+    }
+
+/** Stored reading-list entries. */
+fun parseReadingListJson(raw: String?): List<ReadingItem> =
+    parseJsonObjectList(raw) {
+        ReadingItem(
+            it.optString("title"),
+            it.optString("url"),
+            it.optLong("time"),
+            it.optBoolean("read")
+        )
+    }
+
+/** Stored home-page speed dials. */
+fun parseSpeedDialsJson(raw: String?): List<SpeedDial> =
+    parseJsonObjectList(raw) {
+        SpeedDial(it.optString("title"), it.optString("url"))
+    }
+
+/** Stored Gecko download records. */
+fun parseGeckoDownloadsJson(raw: String?): List<GeckoDownloadRecord> =
+    parseJsonObjectList(raw) {
+        GeckoDownloadRecord(
+            it.optString("name"),
+            it.optString("url"),
+            it.optLong("size"),
+            it.optString("mime").ifBlank { null },
+            it.optString("uri").ifBlank { null },
+            it.optString("path").ifBlank { null },
+            it.optLong("time")
+        )
+    }
+
+/**
+ * One of the per-site string lists (compat / desktop / reader).
+ * Only genuine string elements count: a number or object element
+ * is corruption, skipped rather than coerced into a fake host
+ * name. Order is kept; de-duplication is the caller's business
+ * (the loaders pour the result into a set).
+ */
+fun parseSiteListJson(raw: String?): List<String> {
+    if (raw.isNullOrBlank()) return emptyList()
+    val arr = try {
+        JSONArray(raw)
+    } catch (e: Exception) {
+        return emptyList()
+    }
+    val out = mutableListOf<String>()
+    for (i in 0 until arr.length()) {
+        val value = arr.opt(i) as? String ?: continue
+        out.add(value)
+    }
+    return out
+}
+
+/** Stored bookmark folder names: trimmed, non-blank, de-duplicated. */
+fun parseBookmarkFoldersJson(raw: String?): List<String> =
+    parseSiteListJson(raw)
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .distinct()
+
+/**
+ * The saved-tab archive: one object with a "tabs" array and an
+ * "active" index. A payload that is not a JSON object, or whose
+ * "tabs" is not an array, falls back to (empty, 0); a bad element
+ * inside the array is skipped like everywhere else, and tabs with
+ * a blank URL are dropped (the pre-audit rule, kept).
+ */
+fun parseSavedTabsJson(raw: String?): Pair<List<SavedTab>, Int> {
+    if (raw.isNullOrBlank()) return emptyList<SavedTab>() to 0
+    val obj = try {
+        JSONObject(raw)
+    } catch (e: Exception) {
+        return emptyList<SavedTab>() to 0
+    }
+    val tabsRaw = obj.optJSONArray("tabs")?.toString()
+    val list = parseJsonObjectList(tabsRaw) {
+        SavedTab(
+            Engine.fromId(it.optString("e")),
+            it.optString("u"),
+            it.optBoolean("d")
+        )
+    }.filter { it.url.isNotBlank() }
+    return list to obj.optInt("active", 0)
+}
+
+/**
+ * Per-day blocked counts (yyyy-MM-dd -> count). A payload that is
+ * not a JSON object parses to an empty map; individual values go
+ * through optLong, so a value stored with the wrong type reads
+ * as 0 for that day instead of failing the whole map.
+ */
+fun parseBlockedDailyJson(raw: String?): Map<String, Long> {
+    if (raw.isNullOrBlank()) return emptyMap()
+    val obj = try {
+        JSONObject(raw)
+    } catch (e: Exception) {
+        return emptyMap()
+    }
+    val out = mutableMapOf<String, Long>()
+    val keys = obj.keys()
+    while (keys.hasNext()) {
+        val key = keys.next()
+        out[key] = obj.optLong(key, 0L)
+    }
+    return out
+}
+
 /** Local persistence: engine choices, search engine, compat sites, bookmarks, history. */
 class Store(context: Context) {
     private val prefs: SharedPreferences =
@@ -1479,20 +1635,9 @@ class Store(context: Context) {
 
     private fun loadBlockedDaily(): MutableMap<String, Long> {
         blockedDailyMemory?.let { return it }
-        val loaded = mutableMapOf<String, Long>()
-        val raw = safeString(KEY_BLOCKED_DAILY, null)
-        if (raw != null) {
-            try {
-                val obj = JSONObject(raw)
-                val keys = obj.keys()
-                while (keys.hasNext()) {
-                    val key = keys.next()
-                    loaded[key] = obj.optLong(key, 0L)
-                }
-            } catch (e: Exception) {
-                // Corrupt payload: start over rather than crash.
-            }
-        }
+        val loaded = parseBlockedDailyJson(
+            safeString(KEY_BLOCKED_DAILY, null)
+        ).toMutableMap()
         val pruned = pruneBlockedDaily(loaded, java.time.LocalDate.now())
             .toMutableMap()
         blockedDailyMemory = pruned
@@ -1564,15 +1709,8 @@ class Store(context: Context) {
             .apply()
     }
 
-    fun loadCompatSites(): MutableSet<String> {
-        val raw = safeString(KEY_COMPAT_SITES, null) ?: return mutableSetOf()
-        return try {
-            val arr = JSONArray(raw)
-            (0 until arr.length()).map { arr.getString(it) }.toMutableSet()
-        } catch (e: Exception) {
-            mutableSetOf()
-        }
-    }
+    fun loadCompatSites(): MutableSet<String> =
+        parseSiteListJson(safeString(KEY_COMPAT_SITES, null)).toMutableSet()
 
     fun addCompatSite(domain: String) {
         val sites = loadCompatSites()
@@ -1594,15 +1732,8 @@ class Store(context: Context) {
     // desktop site view on. Stored exactly like the compat list —
     // a JSON array of plain host names — and matched with the same
     // shared hostMatchesSite rule.
-    fun loadDesktopSites(): MutableSet<String> {
-        val raw = safeString(KEY_DESKTOP_SITES, null) ?: return mutableSetOf()
-        return try {
-            val arr = JSONArray(raw)
-            (0 until arr.length()).map { arr.getString(it) }.toMutableSet()
-        } catch (e: Exception) {
-            mutableSetOf()
-        }
-    }
+    fun loadDesktopSites(): MutableSet<String> =
+        parseSiteListJson(safeString(KEY_DESKTOP_SITES, null)).toMutableSet()
 
     fun addDesktopSite(domain: String) {
         val sites = loadDesktopSites()
@@ -1624,15 +1755,8 @@ class Store(context: Context) {
     // open in reader mode. Stored exactly like the compat/desktop
     // lists — a JSON array of plain host names — and matched with
     // the same shared hostMatchesSite rule (see isReaderHost).
-    fun loadReaderSites(): MutableSet<String> {
-        val raw = safeString(KEY_READER_SITES, null) ?: return mutableSetOf()
-        return try {
-            val arr = JSONArray(raw)
-            (0 until arr.length()).map { arr.getString(it) }.toMutableSet()
-        } catch (e: Exception) {
-            mutableSetOf()
-        }
-    }
+    fun loadReaderSites(): MutableSet<String> =
+        parseSiteListJson(safeString(KEY_READER_SITES, null)).toMutableSet()
 
     fun addReaderSite(domain: String) {
         val sites = loadReaderSites()
@@ -1650,15 +1774,11 @@ class Store(context: Context) {
         prefs.edit().putString(KEY_READER_SITES, arr.toString()).apply()
     }
 
-    fun loadBookmarks(): MutableList<Bookmark> = readList(KEY_BOOKMARKS) {
-        // folder (v0.72.0): optString yields "" when the key is
-        // absent, so archives written before folders existed load
-        // as uncategorized — no migration, no data loss.
-        Bookmark(
-            it.optString("title"), it.optString("url"),
-            it.optBoolean("pinned"), it.optString("folder").trim()
-        )
-    }.toMutableList()
+    // folder (v0.72.0): optString yields "" when the key is
+    // absent, so archives written before folders existed load
+    // as uncategorized — no migration, no data loss.
+    fun loadBookmarks(): MutableList<Bookmark> =
+        parseBookmarksJson(safeString(KEY_BOOKMARKS, null)).toMutableList()
 
     fun saveBookmarks(list: List<Bookmark>) = writeList(KEY_BOOKMARKS, list) {
         JSONObject().put("title", it.title).put("url", it.url)
@@ -1674,18 +1794,8 @@ class Store(context: Context) {
      * allBookmarkFolders), so the two can never disagree about a
      * folder that holds bookmarks.
      */
-    fun loadBookmarkFolders(): List<String> {
-        val raw = safeString(KEY_BOOKMARK_FOLDERS, null) ?: return emptyList()
-        return try {
-            val arr = JSONArray(raw)
-            (0 until arr.length())
-                .map { arr.optString(it).trim() }
-                .filter { it.isNotEmpty() }
-                .distinct()
-        } catch (e: Exception) {
-            emptyList()
-        }
-    }
+    fun loadBookmarkFolders(): List<String> =
+        parseBookmarkFoldersJson(safeString(KEY_BOOKMARK_FOLDERS, null))
 
     fun saveBookmarkFolders(list: List<String>) {
         val arr = JSONArray()
@@ -1702,9 +1812,8 @@ class Store(context: Context) {
         bookmarkFolders = loadBookmarkFolders()
     )
 
-    fun loadHistory(): MutableList<HistoryItem> = readList(KEY_HISTORY) {
-        HistoryItem(it.optString("title"), it.optString("url"), it.optLong("time"))
-    }.toMutableList()
+    fun loadHistory(): MutableList<HistoryItem> =
+        parseHistoryJson(safeString(KEY_HISTORY, null)).toMutableList()
 
     fun saveHistory(list: List<HistoryItem>) = writeList(KEY_HISTORY, list) {
         JSONObject().put("title", it.title).put("url", it.url).put("time", it.time)
@@ -1712,14 +1821,8 @@ class Store(context: Context) {
 
     fun clearHistory() = prefs.edit().remove(KEY_HISTORY).apply()
 
-    fun loadReadingList(): MutableList<ReadingItem> = readList(KEY_READING_LIST) {
-        ReadingItem(
-            it.optString("title"),
-            it.optString("url"),
-            it.optLong("time"),
-            it.optBoolean("read")
-        )
-    }.toMutableList()
+    fun loadReadingList(): MutableList<ReadingItem> =
+        parseReadingListJson(safeString(KEY_READING_LIST, null)).toMutableList()
 
     fun saveReadingList(list: List<ReadingItem>) = writeList(KEY_READING_LIST, list) {
         JSONObject()
@@ -1729,26 +1832,17 @@ class Store(context: Context) {
             .put("read", it.read)
     }
 
-    fun loadSpeedDials(): MutableList<SpeedDial> = readList(KEY_SPEED_DIALS) {
-        SpeedDial(it.optString("title"), it.optString("url"))
-    }.toMutableList()
+    fun loadSpeedDials(): MutableList<SpeedDial> =
+        parseSpeedDialsJson(safeString(KEY_SPEED_DIALS, null)).toMutableList()
 
     fun saveSpeedDials(list: List<SpeedDial>) = writeList(KEY_SPEED_DIALS, list) {
         JSONObject().put("title", it.title).put("url", it.url)
     }
 
     fun loadGeckoDownloads(): MutableList<GeckoDownloadRecord> =
-        readList(KEY_GECKO_DOWNLOADS) {
-            GeckoDownloadRecord(
-                it.optString("name"),
-                it.optString("url"),
-                it.optLong("size"),
-                it.optString("mime").ifBlank { null },
-                it.optString("uri").ifBlank { null },
-                it.optString("path").ifBlank { null },
-                it.optLong("time")
-            )
-        }.toMutableList()
+        parseGeckoDownloadsJson(
+            safeString(KEY_GECKO_DOWNLOADS, null)
+        ).toMutableList()
 
     fun saveGeckoDownloads(list: List<GeckoDownloadRecord>) =
         writeList(KEY_GECKO_DOWNLOADS, list) {
@@ -1788,34 +1882,15 @@ class Store(context: Context) {
         prefs.edit().putString(KEY_TABS, obj.toString()).apply()
     }
 
-    fun loadTabs(): Pair<List<SavedTab>, Int> {
-        val raw = safeString(KEY_TABS, null) ?: return emptyList<SavedTab>() to 0
-        return try {
-            val obj = JSONObject(raw)
-            val arr = obj.optJSONArray("tabs") ?: JSONArray()
-            val list = (0 until arr.length()).map {
-                val o = arr.getJSONObject(it)
-                SavedTab(
-                    Engine.fromId(o.optString("e")),
-                    o.optString("u"),
-                    o.optBoolean("d")
-                )
-            }.filter { it.url.isNotBlank() }
-            list to obj.optInt("active", 0)
-        } catch (e: Exception) {
-            emptyList<SavedTab>() to 0
-        }
-    }
+    fun loadTabs(): Pair<List<SavedTab>, Int> =
+        parseSavedTabsJson(safeString(KEY_TABS, null))
 
-    private fun <T> readList(key: String, parse: (JSONObject) -> T): List<T> {
-        val raw = safeString(key, null) ?: return emptyList()
-        return try {
-            val arr = JSONArray(raw)
-            (0 until arr.length()).map { parse(arr.getJSONObject(it)) }
-        } catch (e: Exception) {
-            emptyList()
-        }
-    }
+    // List reads all go through parseJsonObjectList (v0.83.0):
+    // per-element tolerance, so one corrupt row can no longer
+    // empty a whole list the way the old getJSONObject-based
+    // reader did. A failed read falls back in memory only —
+    // nothing is written back until the user actually changes
+    // that list, so the stored bytes survive a corrupt read.
 
     private fun <T> writeList(key: String, list: List<T>, toJson: (T) -> JSONObject) {
         val arr = JSONArray()

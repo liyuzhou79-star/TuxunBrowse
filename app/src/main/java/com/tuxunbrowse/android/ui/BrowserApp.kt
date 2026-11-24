@@ -4596,6 +4596,7 @@ fun BrowserApp(
         // button instead of typing blind.
         var authPassVisible by remember(authPrompt) { mutableStateOf(false) }
         val authFocusRequester = remember { FocusRequester() }
+        val authPassFocusRequester = remember { FocusRequester() }
         LaunchedEffect(Unit) { authFocusRequester.requestFocus() }
         AlertDialog(
             onDismissRequest = { answerAuth(null, null) },
@@ -4624,7 +4625,18 @@ fun BrowserApp(
                                     .fillMaxWidth()
                                     .padding(top = 8.dp)
                                     .focusRequester(authFocusRequester),
-                                singleLine = true
+                                singleLine = true,
+                                // Enter moves on to the password
+                                // field instead of doing nothing
+                                // (v0.83.0 input audit).
+                                keyboardOptions = KeyboardOptions(
+                                    imeAction = ImeAction.Next
+                                ),
+                                keyboardActions = KeyboardActions(
+                                    onNext = {
+                                        authPassFocusRequester.requestFocus()
+                                    }
+                                )
                             )
                         }
                     }
@@ -4642,6 +4654,7 @@ fun BrowserApp(
                                 Modifier
                                     .fillMaxWidth()
                                     .padding(top = 8.dp)
+                                    .focusRequester(authPassFocusRequester)
                             },
                             singleLine = true,
                             visualTransformation = if (authPassVisible) {
@@ -4650,7 +4663,22 @@ fun BrowserApp(
                                 PasswordVisualTransformation()
                             },
                             keyboardOptions = KeyboardOptions(
-                                keyboardType = KeyboardType.Password
+                                keyboardType = KeyboardType.Password,
+                                // Enter on the last field submits
+                                // the login (v0.83.0 input audit).
+                                imeAction = ImeAction.Done
+                            ),
+                            keyboardActions = KeyboardActions(
+                                onDone = {
+                                    answerAuth(
+                                        if (info.onlyPassword) {
+                                            info.prefillUsername
+                                        } else {
+                                            authUser
+                                        },
+                                        authPass
+                                    )
+                                }
                             ),
                             trailingIcon = {
                                 IconButton(
@@ -8603,6 +8631,13 @@ private fun BookmarksScreen(
         // Opens focused on the first field with the keyboard up.
         val editFocusRequester = remember { FocusRequester() }
         LaunchedEffect(Unit) { editFocusRequester.requestFocus() }
+        // The inline new-folder field only appears after a menu
+        // tap; without this it showed up unfocused and needed a
+        // second tap before typing (v0.83.0 input audit).
+        val editNewFolderFocusRequester = remember { FocusRequester() }
+        LaunchedEffect(editFolderIsNew) {
+            if (editFolderIsNew) editNewFolderFocusRequester.requestFocus()
+        }
         AlertDialog(
             onDismissRequest = { editing = null },
             title = { Text("编辑书签") },
@@ -8633,7 +8668,9 @@ private fun BookmarksScreen(
                             OutlinedTextField(
                                 value = editNewFolder,
                                 onValueChange = { editNewFolder = it },
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .focusRequester(editNewFolderFocusRequester),
                                 label = { Text("新文件夹名称") },
                                 singleLine = true,
                                 trailingIcon = {
@@ -8797,6 +8834,27 @@ private fun BookmarksScreen(
     var renameFolderText by remember { mutableStateOf("") }
     var deleteFolderTarget by remember { mutableStateOf<String?>(null) }
     if (showCreateFolder) {
+        // Opens focused with the keyboard up, like every other
+        // input dialog since the v0.36.0 audit — this dialog was
+        // added later (v0.72.0) and missed that pass (v0.83.0).
+        val createFolderFocusRequester = remember { FocusRequester() }
+        LaunchedEffect(Unit) { createFolderFocusRequester.requestFocus() }
+        fun confirmCreateFolder() {
+            val name = createFolderName.trim()
+            if (name.isBlank()) return
+            if (name in folders) {
+                android.widget.Toast.makeText(
+                    context, "已经有这个文件夹了",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            } else {
+                showCreateFolder = false
+                onCreateFolder(name)
+                // Land on the new folder so the user
+                // sees where their bookmarks will go.
+                folderFilter = name
+            }
+        }
         AlertDialog(
             onDismissRequest = { showCreateFolder = false },
             title = { Text("新建文件夹") },
@@ -8804,28 +8862,22 @@ private fun BookmarksScreen(
                 OutlinedTextField(
                     value = createFolderName,
                     onValueChange = { createFolderName = it },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(createFolderFocusRequester),
                     label = { Text("文件夹名称") },
-                    singleLine = true
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        imeAction = ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = { confirmCreateFolder() }
+                    )
                 )
             },
             confirmButton = {
                 Button(
-                    onClick = {
-                        val name = createFolderName.trim()
-                        if (name in folders) {
-                            android.widget.Toast.makeText(
-                                context, "已经有这个文件夹了",
-                                android.widget.Toast.LENGTH_SHORT
-                            ).show()
-                        } else {
-                            showCreateFolder = false
-                            onCreateFolder(name)
-                            // Land on the new folder so the user
-                            // sees where their bookmarks will go.
-                            folderFilter = name
-                        }
-                    },
+                    onClick = { confirmCreateFolder() },
                     enabled = createFolderName.isNotBlank()
                 ) { Text("新建") }
             },
@@ -8838,6 +8890,26 @@ private fun BookmarksScreen(
     }
     val renameTarget = renameFolderTarget
     if (renameTarget != null) {
+        // Same v0.83.0 fix as the create dialog above: autofocus
+        // on open, Enter confirms.
+        val renameFolderFocusRequester = remember { FocusRequester() }
+        LaunchedEffect(Unit) { renameFolderFocusRequester.requestFocus() }
+        fun confirmRenameFolder() {
+            val name = renameFolderText.trim()
+            if (name.isBlank()) return
+            if (name != renameTarget && name in folders) {
+                android.widget.Toast.makeText(
+                    context, "已经有这个文件夹了",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            } else {
+                renameFolderTarget = null
+                if (name != renameTarget) {
+                    onRenameFolder(renameTarget, name)
+                    folderFilter = name
+                }
+            }
+        }
         AlertDialog(
             onDismissRequest = { renameFolderTarget = null },
             title = { Text("重命名文件夹") },
@@ -8845,28 +8917,22 @@ private fun BookmarksScreen(
                 OutlinedTextField(
                     value = renameFolderText,
                     onValueChange = { renameFolderText = it },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(renameFolderFocusRequester),
                     label = { Text("文件夹名称") },
-                    singleLine = true
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        imeAction = ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = { confirmRenameFolder() }
+                    )
                 )
             },
             confirmButton = {
                 Button(
-                    onClick = {
-                        val name = renameFolderText.trim()
-                        if (name != renameTarget && name in folders) {
-                            android.widget.Toast.makeText(
-                                context, "已经有这个文件夹了",
-                                android.widget.Toast.LENGTH_SHORT
-                            ).show()
-                        } else {
-                            renameFolderTarget = null
-                            if (name != renameTarget) {
-                                onRenameFolder(renameTarget, name)
-                                folderFilter = name
-                            }
-                        }
-                    },
+                    onClick = { confirmRenameFolder() },
                     enabled = renameFolderText.isNotBlank()
                 ) { Text("保存") }
             },
