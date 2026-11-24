@@ -1276,19 +1276,27 @@ class Store(context: Context) {
      * 阅读列表 — and the two legacy keys are deleted, so this runs
      * at most once. URLs already bookmarked are not duplicated.
      * Called from the app's startup pass, off the main thread.
+     *
+     * Returns true only when legacy entries were actually merged
+     * (the caller then reloads the bookmark list). Startup audit
+     * (v0.95.0): once the migration has run, both legacy keys are
+     * gone, and that settled state is now detected by the two raw
+     * reads alone — no JSON parsing, and no remove/apply round
+     * trip on every cold start the way the old shape did (it also
+     * made the caller re-parse the whole bookmark list each time
+     * for a merge that could not have happened).
      */
-    fun migrateRemovedListsToBookmarks() {
-        val legacyReading = parseReadingListJson(
-            safeString(KEY_READING_LIST, null)
-        )
-        val legacyDials = parseSpeedDialsJson(
-            safeString(KEY_SPEED_DIALS, null)
-        )
+    fun migrateRemovedListsToBookmarks(): Boolean {
+        val readingRaw = safeString(KEY_READING_LIST, null)
+        val dialsRaw = safeString(KEY_SPEED_DIALS, null)
+        if (readingRaw == null && dialsRaw == null) return false
+        val legacyReading = parseReadingListJson(readingRaw)
+        val legacyDials = parseSpeedDialsJson(dialsRaw)
         if (legacyReading.isEmpty() && legacyDials.isEmpty()) {
             prefs.edit()
                 .remove(KEY_READING_LIST).remove(KEY_SPEED_DIALS)
                 .apply()
-            return
+            return false
         }
         val bookmarks = loadBookmarks()
         val known = bookmarks.map { it.url }.toMutableSet()
@@ -1310,6 +1318,7 @@ class Store(context: Context) {
         prefs.edit()
             .remove(KEY_READING_LIST).remove(KEY_SPEED_DIALS)
             .apply()
+        return true
     }
 
     /**

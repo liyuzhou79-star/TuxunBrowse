@@ -146,6 +146,7 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.MutableState
@@ -273,6 +274,7 @@ import com.tuxunbrowse.android.engine.AdBlocker
 import com.tuxunbrowse.android.engine.BrowserTab
 import com.tuxunbrowse.android.engine.GeckoDownloadTracker
 import com.tuxunbrowse.android.engine.GeckoHolder
+import com.tuxunbrowse.android.engine.GuardScript
 import com.tuxunbrowse.android.engine.SniffKind
 import com.tuxunbrowse.android.engine.SniffedResource
 import com.tuxunbrowse.android.engine.TabLoadError
@@ -615,6 +617,26 @@ fun BrowserApp(
                 kotlinx.coroutines.Dispatchers.Default
             ) {
                 GeckoHolder.ensure(context.applicationContext)
+            }
+        }
+    }
+    // Page-guard payload warm-up (v0.95.0 startup audit): the
+    // payload is a ~150 KB asset read plus assembly, cached per
+    // process by GuardScript — but the first WebView tab used to
+    // pay that cost on the main thread inside obtainWebView,
+    // because registration happens there before the first load.
+    // Build the cache here instead, on a background dispatcher
+    // right after the first frame, so tab creation later only
+    // reads the finished string. Only when the switch is on: with
+    // it off nothing ever asks for the payload. The build is
+    // idempotent, so a tab created before this finishes simply
+    // builds (or finds) the same bytes itself, exactly as before.
+    LaunchedEffect(Unit) {
+        if (store.guardScriptEnabled) {
+            kotlinx.coroutines.withContext(
+                kotlinx.coroutines.Dispatchers.Default
+            ) {
+                GuardScript.payload(context.applicationContext)
             }
         }
     }
@@ -1802,14 +1824,23 @@ fun BrowserApp(
         // and speed dials fold into the bookmarks (see Store).
         // Runs after the fill above so the de-dup sees the real
         // bookmark list; the migrated entries are then published
-        // into the state list from the store's own reload.
+        // into the state list from the store's own reload. Startup
+        // audit (v0.95.0): the reload now happens only when the
+        // migration actually merged something — once it has run,
+        // every later cold start skips the second full bookmark
+        // parse entirely (the fill above already loaded the list).
         val migratedBookmarks = kotlinx.coroutines.withContext(
             kotlinx.coroutines.Dispatchers.Default
         ) {
-            store.migrateRemovedListsToBookmarks()
-            store.loadBookmarks()
+            if (store.migrateRemovedListsToBookmarks()) {
+                store.loadBookmarks()
+            } else {
+                null
+            }
         }
-        if (migratedBookmarks.size != bookmarks.size) {
+        if (migratedBookmarks != null &&
+            migratedBookmarks.size != bookmarks.size
+        ) {
             bookmarks.clear()
             bookmarks.addAll(migratedBookmarks)
         }
@@ -4596,12 +4627,18 @@ private fun HomeContent(
     val homeSuggestionQuery = query.trim()
     // Suggestions are bookmarks only (plus the search tail below):
     // history stays on the History page, exactly like the address bar.
-    val homeBookmarkSuggestions =
-        if (homeSearchFocused && query.isNotBlank()) {
-            matchSuggestions(query, bookmarks, emptyList())
-        } else {
-            emptyList()
+    // Same derived-state treatment as the address bar (v0.95.0): the
+    // bookmark scan re-runs only when the query, the focus or the
+    // bookmark list actually changes, not on every recomposition.
+    val homeBookmarkSuggestions by remember {
+        derivedStateOf {
+            if (homeSearchFocused && query.isNotBlank()) {
+                matchSuggestions(query, bookmarks, emptyList())
+            } else {
+                emptyList()
+            }
         }
+    }
     val homeShowSearchTail = homeSearchFocused &&
         homeSuggestionQuery.isNotEmpty() &&
         !isUrlLikeInput(homeSuggestionQuery)
@@ -6332,11 +6369,24 @@ private fun BrowserScreen(
             }
             // Suggestions are bookmarks only (plus the search tail
             // below): history stays on the History page and is not
-            // mixed into the address bar.
-            val suggestions = if (addressFocused && addressText.isNotBlank()) {
-                matchSuggestions(addressText, bookmarks, emptyList())
-            } else {
-                emptyList()
+            // mixed into the address bar. Startup/open-speed audit
+            // (v0.95.0): the match runs in a derived state, so it
+            // re-runs only when the text, the focus or the bookmark
+            // list actually changes — as plain composition code it
+            // re-scanned the whole list (imports can hold thousands
+            // of entries) on every recomposition, including the ones
+            // page-load progress drives while the user is typing.
+            // Keyed on the tab for the same reason addressValue is:
+            // the text state is re-created per tab.
+            val suggestions by remember(activeTab?.id) {
+                derivedStateOf {
+                    val text = addressValue.text
+                    if (addressFocused && text.isNotBlank()) {
+                        matchSuggestions(text, bookmarks, emptyList())
+                    } else {
+                        emptyList()
+                    }
+                }
             }
             // Trailing "just search this" row: shown whenever the typed
             // text is not already a URL (a URL would only duplicate the
