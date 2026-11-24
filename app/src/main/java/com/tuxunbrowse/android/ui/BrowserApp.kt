@@ -295,7 +295,6 @@ import com.tuxunbrowse.android.engine.TabContent
 import com.tuxunbrowse.android.engine.selectSleepVictims
 import com.tuxunbrowse.android.engine.trimAliveLimit
 import com.tuxunbrowse.android.engine.savePageScreenshot
-import com.tuxunbrowse.android.engine.WEB_ARCHIVE_MIME_TYPE
 import com.tuxunbrowse.android.engine.sharePageScreenshot
 import com.tuxunbrowse.android.engine.resolveDownloadFileName
 import com.tuxunbrowse.android.engine.SOURCE_DISPLAY_LIMIT

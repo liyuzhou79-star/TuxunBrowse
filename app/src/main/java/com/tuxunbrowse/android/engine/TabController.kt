@@ -462,12 +462,22 @@ internal fun parseSniffResult(raw: String?): List<SniffedResource> {
     }
 }
 
-/** Plain-language reason for a WebView main-frame error code. */
-private fun webViewErrorReason(errorCode: Int): String = when (errorCode) {
+/**
+ * Plain-language reason for a WebView main-frame error code.
+ * Internal since v0.103.0 so unit tests can pin the mapping: the
+ * audit that version found seven of the platform's sixteen codes
+ * (auth, proxy auth, IO, file, unsafe resource) falling through to
+ * the generic network line even though they are not network
+ * problems. Every named code now has its own line; only
+ * ERROR_UNKNOWN and future unknown codes reach the fallback.
+ */
+internal fun webViewErrorReason(errorCode: Int): String = when (errorCode) {
     WebViewClient.ERROR_HOST_LOOKUP ->
         "找不到这个网站，可能是网址写错了，或者现在的网络连不上它"
     WebViewClient.ERROR_CONNECT ->
         "连不上这个网站，请检查网络后再试"
+    WebViewClient.ERROR_IO ->
+        "数据传到一半断了，请检查网络后重试"
     WebViewClient.ERROR_TIMEOUT ->
         "这个网站半天没回应，连接超时了"
     WebViewClient.ERROR_REDIRECT_LOOP ->
@@ -478,6 +488,18 @@ private fun webViewErrorReason(errorCode: Int): String = when (errorCode) {
         "这个网址写得不对，打不开"
     WebViewClient.ERROR_UNSUPPORTED_SCHEME ->
         "这种链接本应用打不开"
+    WebViewClient.ERROR_UNSUPPORTED_AUTH_SCHEME ->
+        "这个网站用的登录方式本应用不支持，没法打开"
+    WebViewClient.ERROR_AUTHENTICATION ->
+        "这个网站没接受登录信息，没法打开"
+    WebViewClient.ERROR_PROXY_AUTHENTICATION ->
+        "代理服务器没接受登录信息，没法打开"
+    WebViewClient.ERROR_FILE ->
+        "读这个文件时出错了，没法打开"
+    WebViewClient.ERROR_FILE_NOT_FOUND ->
+        "找不到这个文件，它可能已经被删掉或移动了"
+    WebViewClient.ERROR_UNSAFE_RESOURCE ->
+        "这个网页被安全检查拦下了，没法打开"
     WebViewClient.ERROR_TOO_MANY_REQUESTS ->
         "这个网站说请求太多了，请过一会儿再试"
     else -> "网页没能打开，请检查网络后重试"
@@ -486,9 +508,17 @@ private fun webViewErrorReason(errorCode: Int): String = when (errorCode) {
 /**
  * Plain-language reason for a Gecko load error. WebRequestError's
  * code/category constants were verified against the GeckoView 132
- * AAR with javap.
+ * AAR with javap (the full set: 28 codes, 7 categories). Split
+ * into code/category ints since v0.103.0 so unit tests can pin
+ * the mapping without constructing a WebRequestError: the audit
+ * that version found the content, URI and safe-browsing codes
+ * falling through to the generic "check your network" line even
+ * though they are not network problems — a page blocked as
+ * dangerous, or one that crashed, said the same wrong thing.
+ * Every named code now has its own line, and the category
+ * fallback covers all seven categories.
  */
-private fun geckoErrorReason(error: WebRequestError): String = when (error.code) {
+internal fun geckoErrorReasonFor(code: Int, category: Int): String = when (code) {
     WebRequestError.ERROR_UNKNOWN_HOST ->
         "找不到这个网站，可能是网址写错了，或者现在的网络连不上它"
     WebRequestError.ERROR_OFFLINE ->
@@ -499,23 +529,65 @@ private fun geckoErrorReason(error: WebRequestError): String = when (error.code)
         "这个网站拒绝了连接，没法打开"
     WebRequestError.ERROR_NET_INTERRUPT, WebRequestError.ERROR_NET_RESET ->
         "网络连接中途断了，请重试"
+    WebRequestError.ERROR_UNKNOWN_SOCKET_TYPE ->
+        "连不上这个网站，请检查网络后再试"
+    WebRequestError.ERROR_PORT_BLOCKED ->
+        "这个网址用的端口被拦下了，没法打开"
     WebRequestError.ERROR_SECURITY_SSL, WebRequestError.ERROR_SECURITY_BAD_CERT,
     WebRequestError.ERROR_BAD_HSTS_CERT ->
         "这个网站的安全证书有问题，没法安全打开"
+    WebRequestError.ERROR_HTTPS_ONLY ->
+        "这个网站只接受安全连接（https），刚才的打开方式不安全，被拦下了"
     WebRequestError.ERROR_MALFORMED_URI ->
         "这个网址写得不对，打不开"
+    WebRequestError.ERROR_UNKNOWN_PROTOCOL ->
+        "这种链接本应用打不开"
+    WebRequestError.ERROR_FILE_NOT_FOUND ->
+        "找不到这个文件，它可能已经被删掉或移动了"
+    WebRequestError.ERROR_FILE_ACCESS_DENIED ->
+        "这个文件不让打开"
+    WebRequestError.ERROR_DATA_URI_TOO_LONG ->
+        "这个链接太长了，没法打开"
     WebRequestError.ERROR_REDIRECT_LOOP ->
         "这个网站一直在来回跳转，没法打开"
-    else -> when (error.category) {
+    WebRequestError.ERROR_CONTENT_CRASHED ->
+        "这个网页崩溃了，请重新加载"
+    WebRequestError.ERROR_CORRUPTED_CONTENT ->
+        "这个网站传回来的内容坏了，没法打开"
+    WebRequestError.ERROR_UNSAFE_CONTENT_TYPE ->
+        "这个网站传回来的内容没法当网页打开"
+    WebRequestError.ERROR_INVALID_CONTENT_ENCODING ->
+        "这个网站传回来的内容编码不对，没法打开"
+    WebRequestError.ERROR_PROXY_CONNECTION_REFUSED ->
+        "代理服务器拒绝了连接，网页没能打开"
+    WebRequestError.ERROR_UNKNOWN_PROXY_HOST ->
+        "找不到代理服务器，网页没能打开"
+    WebRequestError.ERROR_SAFEBROWSING_PHISHING_URI ->
+        "这个网站被安全名单拦下了：它可能是假冒网站，不要打开"
+    WebRequestError.ERROR_SAFEBROWSING_MALWARE_URI ->
+        "这个网站被安全名单拦下了：它可能带恶意软件，不要打开"
+    WebRequestError.ERROR_SAFEBROWSING_UNWANTED_URI,
+    WebRequestError.ERROR_SAFEBROWSING_HARMFUL_URI ->
+        "这个网站被安全名单拦下了：它可能有危险，不要打开"
+    else -> when (category) {
         WebRequestError.ERROR_CATEGORY_NETWORK ->
             "网络连接有问题，网页没能打开，请检查网络后重试"
         WebRequestError.ERROR_CATEGORY_SECURITY ->
             "这个网站的安全有问题，没法打开"
+        WebRequestError.ERROR_CATEGORY_CONTENT ->
+            "这个网页的内容有问题，没法打开"
+        WebRequestError.ERROR_CATEGORY_URI ->
+            "这个网址有问题，没法打开"
         WebRequestError.ERROR_CATEGORY_PROXY ->
             "代理连不上，网页没能打开"
+        WebRequestError.ERROR_CATEGORY_SAFEBROWSING ->
+            "这个网站被安全名单拦下了，不要打开"
         else -> "网页没能打开，请检查网络后重试"
     }
 }
+
+private fun geckoErrorReason(error: WebRequestError): String =
+    geckoErrorReasonFor(error.code, error.category)
 
 private var nextTabId = 1
 
@@ -1739,6 +1811,13 @@ class BrowserTab(
                 // HTTP errors (404/500) never arrive here — the server
                 // answers those itself and its page is shown as-is.
                 if (!request.isForMainFrame) return
+                // The load is over, failed: close out the progress
+                // bar too (v0.103.0). WebView progress is driven
+                // only by onProgressChanged, and a fast failure can
+                // leave it parked mid-way, which would keep the bar
+                // hanging over the error page forever. The Gecko
+                // side already lands at 100 via onPageStop.
+                progress = 100
                 val failed = request.url?.toString() ?: url
                 val description = error.description?.toString().orEmpty()
                 loadError = TabLoadError(
@@ -3224,9 +3303,6 @@ fun saveGeckoDownload(
     }
     return downloadId
 }
-
-private val archiveMoveExecutor =
-    java.util.concurrent.Executors.newSingleThreadExecutor()
 
 /**
  * Hand a URL to the system DownloadManager with the full set of
