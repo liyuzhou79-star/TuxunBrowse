@@ -642,8 +642,18 @@ fun BrowserApp(
     // the runtime null and the first real Firefox tab retries
     // through the existing path (plain-language fallback page
     // included), exactly as before.
-    LaunchedEffect(Unit) {
-        if (shouldPreheatGecko(store.mainEngine, store.incognitoEngine)) {
+    // First-launch gate (v0.121.0): while the engine picker is up
+    // no engine has been CHOSEN yet — store.mainEngine only reads
+    // as Gecko because that is the fromId fallback for an absent
+    // key. Warming the runtime up here would create the Firefox
+    // runtime before the user picks anything (and waste it
+    // entirely when they pick WebView for both slots). Keying on
+    // the picker state re-runs this once the choice is confirmed,
+    // and ensure() is idempotent for every later re-run.
+    LaunchedEffect(screen == Screen.PICKER) {
+        if (screen != Screen.PICKER &&
+            shouldPreheatGecko(store.mainEngine, store.incognitoEngine)
+        ) {
             kotlinx.coroutines.withContext(
                 kotlinx.coroutines.Dispatchers.Default
             ) {
@@ -3126,8 +3136,16 @@ fun BrowserApp(
     }
 
     // A link opened from another app: show it once the session is ready.
-    LaunchedEffect(initialUrl, startupDone) {
-        if (startupDone && initialUrl != null) {
+    // First-launch gate (v0.121.0): on a fresh install this must
+    // wait for the engine picker — opening the link straight away
+    // used to jump past the picker on the fallback Gecko default,
+    // create the first tab in an engine the user never chose, and
+    // leave mainEngineChosen unset so the NEXT cold start showed
+    // the picker again over the saved session. The link is not
+    // consumed while gated, and keying on the picker state re-runs
+    // this right after the user confirms a choice.
+    LaunchedEffect(initialUrl, startupDone, screen == Screen.PICKER) {
+        if (startupDone && screen != Screen.PICKER && initialUrl != null) {
             openUrl(initialUrl, httpsUpgrade = true)
             onInitialUrlConsumed()
         }
@@ -3201,8 +3219,12 @@ fun BrowserApp(
 
     // Shared text waits for the session to be ready, then asks the
     // user what to do with it — it is never opened on its own.
-    LaunchedEffect(sharedText, startupDone) {
-        if (startupDone && sharedText != null) {
+    // Same first-launch gate as the external-link effect above
+    // (v0.121.0): the share dialog must not appear over the engine
+    // picker, and its "open" choice must not create the first tab
+    // before an engine has been chosen.
+    LaunchedEffect(sharedText, startupDone, screen == Screen.PICKER) {
+        if (startupDone && screen != Screen.PICKER && sharedText != null) {
             pendingShareText = sharedText
             onSharedTextConsumed()
         }
@@ -5301,7 +5323,7 @@ private fun EnginePickerScreen(
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        text = "两个内核的登录状态互不相通：在一个内核里登录过的网站，换到另一个内核打开需要重新登录。某个网站在火狐内核下显示不正常时，可以点地址栏旁边的切换内核按钮，把当前标签切换到系统 WebView（兼容模式），还能记住这个网站以后都用兼容模式打开。",
+                        text = "两个内核的登录状态互不相通：在一个内核里登录过的网站，换到另一个内核打开需要重新登录。某个网站在火狐内核下显示不正常时，可以点地址栏里的切换内核按钮，把当前标签切换到系统 WebView（兼容模式），还能记住这个网站以后都用兼容模式打开。",
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.padding(16.dp)
                     )
