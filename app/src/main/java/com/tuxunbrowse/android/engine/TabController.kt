@@ -866,6 +866,20 @@ class BrowserTab(
     var findInfo by mutableStateOf("")
 
     /**
+     * The query the WebView's current find session was started with
+     * (v0.124.0 find audit). findAllAsync always restarts the find
+     * session and lands on the FIRST match, so it may only run when
+     * the query actually changed; stepping through results of the
+     * same query is findNext alone. Before this field existed every
+     * step re-ran findAllAsync + findNext, which pinned "next" to
+     * the second match and "previous" to the last one. Cleared
+     * wherever the page or the find state goes away (new load,
+     * clearFind, reader-mode rewrite, engine sleep), because the
+     * engine-side session dies at exactly those points too.
+     */
+    private var lastFindQuery: String? = null
+
+    /**
      * How many ad/tracker requests this tab's current page has had
      * blocked so far (WebView only — GeckoView exposes no per-request
      * count, so Gecko tabs keep this at zero and the UI shows no
@@ -967,6 +981,13 @@ class BrowserTab(
             // un-extracted or near-empty page).
             if (raw != null && raw.contains("ok")) {
                 readerActive = true
+                // The extraction just rewrote the document in
+                // place (v0.124.0): matches and the counter were
+                // computed against the ORIGINAL page, so both go.
+                // A find run from here acts on the extracted
+                // document, as v0.116.0 established.
+                resetFindState()
+                view.clearMatches()
             } else {
                 setAlgorithmicDarkening(webDarkProvider())
                 onFailed()
@@ -1180,8 +1201,24 @@ class BrowserTab(
         when (engine) {
             Engine.WEBVIEW -> {
                 val view = webView ?: return
-                view.findAllAsync(query)
-                view.findNext(forward)
+                if (query != lastFindQuery) {
+                    // Fresh query (v0.124.0): start a new find
+                    // session. findAllAsync highlights every match
+                    // and makes the first one active on its own, so
+                    // a forward step needs nothing more; a backward
+                    // step from there wraps to the last match, which
+                    // is the sensible landing spot for "previous" on
+                    // a query that has not been stepped through yet.
+                    lastFindQuery = query
+                    view.findAllAsync(query)
+                    if (!forward) view.findNext(false)
+                } else {
+                    // Same query: step within the live session.
+                    // findNext wraps at both ends (the platform does
+                    // this silently; the counter jumping from the
+                    // last match back to "1 / n" is the only sign).
+                    view.findNext(forward)
+                }
             }
             Engine.GECKO -> {
                 val flags = if (forward) {
@@ -1324,10 +1361,26 @@ class BrowserTab(
 
     fun clearFind() {
         findInfo = ""
+        lastFindQuery = null
         when (engine) {
             Engine.WEBVIEW -> webView?.clearMatches()
             Engine.GECKO -> geckoSession?.finder?.clear()
         }
+    }
+
+    /**
+     * Drop the app-side find state without touching the engine
+     * (v0.124.0): used where the page itself goes away or is
+     * rewritten — a new load starting (either engine), reader mode
+     * replacing the document, engine sleep. The engine discards its
+     * own highlights at those points; what must not survive is the
+     * counter text (it would describe a page that no longer exists)
+     * and [lastFindQuery] (the next identical query must start a
+     * fresh findAllAsync, not step a dead session).
+     */
+    private fun resetFindState() {
+        findInfo = ""
+        lastFindQuery = null
     }
 
     /** Mark this tab's thumbnail as recently used (tab selected). */
@@ -1487,7 +1540,7 @@ class BrowserTab(
         canGoBack = false
         canGoForward = false
         readerActive = false
-        findInfo = ""
+        resetFindState()
         loadError = null
         blockedCount = 0
         certIssuedTo = ""
@@ -1856,6 +1909,10 @@ class BrowserTab(
                 loadError = null
                 // The blocked-request counter belongs to one page.
                 blockedCount = 0
+                // So does the find state (v0.124.0): the WebView
+                // drops the old page's matches itself, and the
+                // counter must not keep describing them.
+                resetFindState()
                 // The old page's certificate no longer applies.
                 certIssuedTo = ""
                 certIssuedBy = ""
@@ -2509,6 +2566,9 @@ class BrowserTab(
             override fun onPageStart(s: GeckoSession, startUrl: String) {
                 // A fresh load is under way; any earlier failure is over.
                 loadError = null
+                // Same find-state reset as the WebView side
+                // (v0.124.0): a new page kills the find session.
+                resetFindState()
             }
 
             override fun onProgressChange(s: GeckoSession, p: Int) {

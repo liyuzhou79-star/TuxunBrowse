@@ -5804,6 +5804,20 @@ private fun BrowserScreen(
     // editing focus (and the keyboard) from the previous tab.
     LaunchedEffect(activeTab?.id) {
         focusManager.clearFocus()
+        // Find state does not travel across tabs (v0.124.0 find
+        // audit): the query text and the bar are screen-level state,
+        // while the counter and the highlights live on each tab —
+        // left as they were, switching tabs with the bar open would
+        // show the incoming tab's stale counter (counted for some
+        // older query) under the current query text. Same rule as
+        // other browsers: a tab switch closes the find bar, clears
+        // the query and clears the incoming tab's find state, so
+        // whatever a tab shows was searched on this visit to it.
+        if (showFindBar) {
+            showFindBar = false
+            findQuery = ""
+        }
+        activeTab?.clearFind()
     }
     // Focus gain swaps the friendly host-only display back to the
     // full URL and selects it whole; focus loss restores the
@@ -6830,7 +6844,24 @@ private fun BrowserScreen(
                 ) {
                     OutlinedTextField(
                         value = findQuery,
-                        onValueChange = { findQuery = it },
+                        onValueChange = { newQuery ->
+                            findQuery = newQuery
+                            // Find as you type (v0.124.0): before
+                            // this, editing the text left the old
+                            // query's counter and highlights on
+                            // screen until a button was pressed, so
+                            // the bar could show "3 / 10" for words
+                            // no longer in the box. Every edit now
+                            // re-runs the find (a changed query starts
+                            // a fresh find inside the tab), and
+                            // emptying the box clears the find
+                            // altogether.
+                            if (newQuery.isBlank()) {
+                                onClearFind()
+                            } else {
+                                onFind(newQuery, true)
+                            }
+                        },
                         modifier = Modifier
                             .weight(1f)
                             .focusRequester(findFocusRequester),
@@ -6847,6 +6878,22 @@ private fun BrowserScreen(
                         Text(
                             activeTab?.findInfo.orEmpty(),
                             style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(horizontal = 4.dp)
+                        )
+                    }
+                    if (activeTab?.engine == Engine.GECKO) {
+                        // GeckoView offers no match-count API
+                        // (v0.9.0), and an unlabelled empty space
+                        // where WebView tabs show a counter reads
+                        // as "nothing found" (v0.124.0). Say so
+                        // plainly instead of faking a number:
+                        // matches still highlight and scroll into
+                        // view exactly as on the WebView side.
+                        Text(
+                            "火狐内核不显示计数",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
                             modifier = Modifier.padding(horizontal = 4.dp)
                         )
                     }
