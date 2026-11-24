@@ -31,7 +31,7 @@ import java.util.Locale
 const val SPEECH_CHUNK_MAX_CHARS = 480
 
 private val SENTENCE_ENDERS = setOf('。', '！', '？', '!', '?', '；', ';', '…')
-private val SOFT_BREAKS = setOf('，', ',', '、', '：', ':')
+private val SOFT_BREAKS = charArrayOf('，', ',', '、', '：', ':')
 
 /**
  * Split [text] into speakable chunks of at most [maxChars]
@@ -61,7 +61,7 @@ fun splitSpeechChunks(
         if (rest.isEmpty()) return
         while (rest.length > maxChars) {
             val window = rest.substring(0, maxChars)
-            val soft = window.lastIndexOfAny(SOFT_BREAKS.toList())
+            val soft = window.lastIndexOfAny(SOFT_BREAKS)
             val cut = if (soft >= maxChars / 3) soft + 1 else maxChars
             val piece = rest.substring(0, cut).trim()
             if (current.isNotEmpty()) flush()
