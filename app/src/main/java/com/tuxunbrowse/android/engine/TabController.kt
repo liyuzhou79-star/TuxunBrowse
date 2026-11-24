@@ -424,8 +424,15 @@ data class SniffedResource(
     val kind: SniffKind
 )
 
-/** Parse the sniffer script's JSON answer into typed resources. */
-private fun parseSniffResult(raw: String?): List<SniffedResource> {
+/**
+ * Parse the sniffer script's JSON answer into typed resources.
+ * Internal (not private) since v0.93.0 so unit tests can pin the
+ * contract. The result is deduped by URL: the sniffer script
+ * already dedupes, and this is the second line of defence — the
+ * sniff screen keys its lazy list and its multi-select set by URL,
+ * so a duplicate URL would break both.
+ */
+internal fun parseSniffResult(raw: String?): List<SniffedResource> {
     if (raw.isNullOrBlank() || raw == "null") return emptyList()
     return try {
         // evaluateJavascript hands back the page's return value JSON
@@ -449,7 +456,7 @@ private fun parseSniffResult(raw: String?): List<SniffedResource> {
             }
             out.add(SniffedResource(u, name, hostOf(u) ?: "", kind))
         }
-        out
+        out.distinctBy { it.url }
     } catch (t: Throwable) {
         emptyList()
     }

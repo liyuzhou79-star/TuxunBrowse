@@ -5390,15 +5390,73 @@ private fun BrowserScreen(
             restore = { mutableStateOf(it.toSet()) }
         )
     ) { mutableStateOf<Set<Int>>(emptySet()) }
+    // Selection fingerprints (v0.93.0 audit): the URL each selected
+    // tab had when it was picked, saved alongside the ids. Tab ids
+    // are handed out by a process-wide counter and the saved session
+    // stores no ids, so after a process death the rebuilt tabs get a
+    // fresh 1..N id sequence in saved order — a restored id can then
+    // name a DIFFERENT tab than the one the user picked (any tab
+    // closed earlier, or an incognito tab, which consumes an id but
+    // is never saved, shifts the mapping). The validation effect
+    // below drops every restored entry whose live tab does not carry
+    // the fingerprinted URL, so a stale selection can never act on
+    // the wrong tab; entries restored from a build that saved no
+    // fingerprints (no map entry) keep the old id-only behaviour for
+    // that one restore. Saved as a flat id/url pair list.
+    var selectedTabUrls by rememberSaveable(
+        saver = listSaver<MutableState<Map<Int, String>>, String>(
+            save = { state ->
+                state.value.flatMap { (id, url) ->
+                    listOf(id.toString(), url)
+                }
+            },
+            restore = { flat ->
+                mutableStateOf(
+                    flat.chunked(2).mapNotNull { pair ->
+                        pair.getOrNull(0)?.toIntOrNull()?.let { id ->
+                            id to (pair.getOrNull(1) ?: "")
+                        }
+                    }.toMap()
+                )
+            }
+        )
+    ) { mutableStateOf<Map<Int, String>>(emptyMap()) }
     fun exitTabMultiSelect() {
         tabMultiSelect = false
         selectedTabIds = emptySet()
+        selectedTabUrls = emptyMap()
     }
     fun toggleTabSelected(tab: BrowserTab) {
-        selectedTabIds = if (tab.id in selectedTabIds) {
-            selectedTabIds - tab.id
+        if (tab.id in selectedTabIds) {
+            selectedTabIds = selectedTabIds - tab.id
+            selectedTabUrls = selectedTabUrls - tab.id
         } else {
-            selectedTabIds + tab.id
+            selectedTabIds = selectedTabIds + tab.id
+            selectedTabUrls = selectedTabUrls + (tab.id to tab.url)
+        }
+    }
+    // Selection hygiene (v0.93.0 audit): whenever the live tab set
+    // changes, drop selected ids that no longer name a live tab
+    // (closed through any other path, replaced by an engine switch)
+    // and entries whose fingerprint no longer matches the live tab's
+    // URL (a selection restored after process death pointing at a
+    // rebuilt tab, or a selected tab that navigated itself). Runs
+    // only once tabs exist, so the startup restore — which fills the
+    // list after the first composition — is validated, not wiped.
+    val tabSelectionKey = tabs.joinToString("|") { "${it.id}:${it.url}" }
+    LaunchedEffect(tabSelectionKey) {
+        if (tabs.isEmpty() || selectedTabIds.isEmpty()) {
+            return@LaunchedEffect
+        }
+        val liveById = tabs.associateBy { it.id }
+        val kept = selectedTabIds.filter { id ->
+            val live = liveById[id] ?: return@filter false
+            val fingerprinted = selectedTabUrls[id]
+            fingerprinted == null || fingerprinted == live.url
+        }.toSet()
+        if (kept != selectedTabIds) {
+            selectedTabIds = kept
+            selectedTabUrls = selectedTabUrls.filterKeys { it in kept }
         }
     }
     var showMenu by remember { mutableStateOf(false) }
@@ -6897,7 +6955,12 @@ private fun BrowserScreen(
                     ) {
                         Text(
                             if (tabMultiSelect) {
-                                "已选 ${selectedTabIds.size} 个"
+                                // Live count only (v0.93.0): the
+                                // raw set can briefly hold an id the
+                                // hygiene effect has not pruned yet;
+                                // the header must never claim more
+                                // tabs than the actions would touch.
+                                "已选 ${tabs.count { it.id in selectedTabIds }} 个"
                             } else {
                                 "标签页"
                             },
@@ -8927,6 +8990,25 @@ private fun SniffScreen(
             target.collectPageResources { found ->
                 resources = found
                 loading = false
+            }
+        }
+    }
+    // Selection hygiene (v0.93.0 audit): a selection restored from
+    // saved state (or left over from a previous visit to this tab)
+    // can name URLs the freshly collected list no longer contains —
+    // the page navigated, or its dynamic content changed. Prune to
+    // the live list as soon as a collection lands, so the header
+    // count, the select-all toggle and the download button all count
+    // exactly the rows the batch download would take. Gated on the
+    // load having finished: pruning against the initial empty list
+    // would wipe a legitimately restored selection before the
+    // collection for the same page comes back.
+    LaunchedEffect(loading, resources) {
+        if (!loading && selectedUrls.isNotEmpty()) {
+            val live = resources.map { it.url }.toSet()
+            val pruned = selectedUrls intersect live
+            if (pruned != selectedUrls) {
+                selectedUrls = pruned
             }
         }
     }
