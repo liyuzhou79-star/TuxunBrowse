@@ -11968,7 +11968,7 @@ private fun SettingsScreen(
                 ListItem(
                     headlineContent = { Text("拦截广告和跟踪请求") },
                     supportingContent = {
-                        Text("系统 WebView 按内置名单拦截；火狐用内核自带的反跟踪。")
+                        Text("系统 WebView 按内置名单拦截；火狐用内核自带的反跟踪，名单里的域名在打开时也会拦下。")
                     },
                     trailingContent = {
                         Switch(

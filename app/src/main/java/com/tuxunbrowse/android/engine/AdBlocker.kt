@@ -200,7 +200,14 @@ object AdBlocker {
      * With [strict] the strict list is consulted as well.
      */
     fun isAdRequest(url: String, strict: Boolean = false): Boolean {
-        val host = hostOf(url) ?: return false
+        // A fully-qualified host may carry a trailing root dot
+        // ("ads.example.com."): java.net.URI keeps it in the host,
+        // and without trimming it the suffix walk below would never
+        // reach a listed entry — a one-character evasion of the
+        // whole list (v0.130.0 audit). Trim it here, at the matching
+        // entry point, so every caller gets the same semantics.
+        val host = hostOf(url)?.trimEnd('.') ?: return false
+        if (host.isEmpty()) return false
         var candidate = host
         while (true) {
             if (candidate in blockedHosts) return true
