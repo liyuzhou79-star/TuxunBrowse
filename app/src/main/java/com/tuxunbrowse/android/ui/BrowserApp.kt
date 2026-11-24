@@ -1090,6 +1090,15 @@ fun BrowserApp(
     // and reports through the "gone" callback, which lands here.
     fun promoteNextClipboardPermission() {
         if (geckoClipboardPermission != null) return
+        // One page dialog at a time across ALL kinds (v0.102.0): the
+        // JS / auth / SSL dialogs already refuse a newcomer while one
+        // of them is up; the clipboard prompt now waits in its queue
+        // instead of stacking a second dialog underneath (or over)
+        // one of them. The LaunchedEffect next to the clipboard
+        // lifetime wiring re-runs this once those dialogs clear.
+        if (jsPromptRequest != null || authPromptRequest != null ||
+            sslPromptRequest != null
+        ) return
         while (geckoClipboardQueue.isNotEmpty()) {
             val next = geckoClipboardQueue.removeAt(0)
             if (tabs.any { it.id == next.tabId } &&
@@ -1136,9 +1145,15 @@ fun BrowserApp(
             uri = uri.ifBlank { tab.url },
             respond = respond
         )
-        if (geckoClipboardPermission == null) {
+        if (geckoClipboardPermission == null && jsPromptRequest == null &&
+            authPromptRequest == null && sslPromptRequest == null
+        ) {
             geckoClipboardPermission = state
         } else {
+            // Either another clipboard prompt is already showing, or
+            // a JS / auth / SSL dialog owns the stage (v0.102.0):
+            // queue — promotion re-checks the stage is free, the tab
+            // is still there and still active before showing.
             geckoClipboardQueue.add(state)
         }
     }
@@ -2494,7 +2509,7 @@ fun BrowserApp(
     // no page waits forever and no answer callback leaks.
     geckoJsPromptHandler = { kind, message, defaultValue, respond ->
         if (jsPromptRequest != null || authPromptRequest != null ||
-            sslPromptRequest != null
+            sslPromptRequest != null || geckoClipboardPermission != null
         ) {
             respond(false, null)
         } else {
@@ -2509,7 +2524,7 @@ fun BrowserApp(
     // types live only in the dialog state and this callback.
     httpAuthHandler = { info, respond ->
         if (authPromptRequest != null || jsPromptRequest != null ||
-            sslPromptRequest != null
+            sslPromptRequest != null || geckoClipboardPermission != null
         ) {
             respond(null, null)
         } else {
@@ -2522,7 +2537,7 @@ fun BrowserApp(
     // of stacking another dialog.
     sslErrorHandler = { failedUrl, description, respond ->
         if (sslPromptRequest != null || authPromptRequest != null ||
-            jsPromptRequest != null
+            jsPromptRequest != null || geckoClipboardPermission != null
         ) {
             respond(false)
         } else {
@@ -2764,6 +2779,19 @@ fun BrowserApp(
         val current = geckoClipboardPermission
         if (current != null && current.tabId != activeTabId) {
             answerClipboardPermission(false)
+        }
+    }
+
+    // Clipboard queue promotion (v0.102.0): a clipboard request that
+    // arrived while a JS / auth / SSL dialog owned the stage waits in
+    // the queue; when the last of those dialogs clears, promote it
+    // (promotion itself re-checks the stage is free and the tab is
+    // still the active one, denying cleanly otherwise).
+    LaunchedEffect(jsPromptRequest, authPromptRequest, sslPromptRequest) {
+        if (jsPromptRequest == null && authPromptRequest == null &&
+            sslPromptRequest == null
+        ) {
+            promoteNextClipboardPermission()
         }
     }
 

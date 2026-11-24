@@ -12,18 +12,6 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <!-- Android 11+ package visibility for voice input (v0.76.0):
-         the mic buttons fire the system speech-recognition intent
-         and check resolveActivity before launching, which only sees
-         the service when the intent is declared here. Recognition
-         itself runs in the system service; the app adds NO new
-         permission for it. -->
-    <queries>
-        <intent>
-            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
-        </intent>
-    </queries>
-
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
