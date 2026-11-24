@@ -3309,7 +3309,16 @@ fun saveGeckoDownload(
     } catch (t: Throwable) {
         // The copy never even started (executor rejected it): the
         // tab is not download-busy after all, and neither is the
-        // progress tracker.
+        // progress tracker. The body stream is closed here too
+        // (v0.107.0 release audit): the copy task's finally block
+        // owns the close once the task has started, but a rejected
+        // submission never runs that task, so without this close
+        // the response stream would leak.
+        try {
+            body.close()
+        } catch (t2: Throwable) {
+            // Nothing useful to do about a failed close.
+        }
         GeckoDownloadTracker.end(downloadId)
         onFinished()
     }

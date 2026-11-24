@@ -2108,6 +2108,13 @@ fun BrowserApp(
             totalBlocked = store.totalBlocked
         )
         val fileName = "tuxunbrowse-backup.json"
+        // MediaStore cleanup (v0.107.0 release audit): the insert
+        // creates the Downloads entry BEFORE any byte is written, so
+        // a failed or unwritable write must delete the entry again —
+        // before this pass a failed export left an empty file behind
+        // in Downloads, and a null output stream was silently
+        // reported as success.
+        var backupDestUri: android.net.Uri? = null
         try {
             if (android.os.Build.VERSION.SDK_INT >= 29) {
                 val resolver = context.contentResolver
@@ -2122,7 +2129,10 @@ fun BrowserApp(
                 val dest = resolver.insert(
                     android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
                 ) ?: throw IllegalStateException("insert failed")
-                resolver.openOutputStream(dest)?.use {
+                backupDestUri = dest
+                val out = resolver.openOutputStream(dest)
+                    ?: throw IllegalStateException("open output failed")
+                out.use {
                     it.write(json.toByteArray(Charsets.UTF_8))
                 }
             } else {
@@ -2135,6 +2145,13 @@ fun BrowserApp(
                 android.widget.Toast.LENGTH_LONG
             ).show()
         } catch (t: Throwable) {
+            try {
+                backupDestUri?.let {
+                    context.contentResolver.delete(it, null, null)
+                }
+            } catch (t2: Throwable) {
+                // Best-effort cleanup of the partial entry.
+            }
             android.widget.Toast.makeText(
                 context, "导出失败，请重试", android.widget.Toast.LENGTH_LONG
             ).show()
@@ -2916,6 +2933,11 @@ fun BrowserApp(
             "tuxunbrowse-bookmarks.json"
         }
         val mimeType = if (html) "text/html" else "application/json"
+        // Same MediaStore cleanup as the backup export above
+        // (v0.107.0): a failed write deletes the just-inserted
+        // entry instead of leaving an empty file in Downloads, and
+        // a null output stream counts as failure, not success.
+        var exportDestUri: android.net.Uri? = null
         try {
             if (android.os.Build.VERSION.SDK_INT >= 29) {
                 val resolver = context.contentResolver
@@ -2930,7 +2952,10 @@ fun BrowserApp(
                 val dest = resolver.insert(
                     android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
                 ) ?: throw IllegalStateException("insert failed")
-                resolver.openOutputStream(dest)?.use {
+                exportDestUri = dest
+                val out = resolver.openOutputStream(dest)
+                    ?: throw IllegalStateException("open output failed")
+                out.use {
                     it.write(content.toByteArray(Charsets.UTF_8))
                 }
             } else {
@@ -2944,6 +2969,13 @@ fun BrowserApp(
                 android.widget.Toast.LENGTH_LONG
             ).show()
         } catch (t: Throwable) {
+            try {
+                exportDestUri?.let {
+                    context.contentResolver.delete(it, null, null)
+                }
+            } catch (t2: Throwable) {
+                // Best-effort cleanup of the partial entry.
+            }
             android.widget.Toast.makeText(
                 context, "导出失败，请重试", android.widget.Toast.LENGTH_LONG
             ).show()
@@ -11128,8 +11160,15 @@ private fun SettingsScreen(
             val latest = kotlinx.coroutines.withContext(
                 kotlinx.coroutines.Dispatchers.IO
             ) {
+                // The connection and its response stream are closed
+                // on every path (v0.107.0 release audit): before this
+                // pass the reader was never closed and disconnect()
+                // was never called, so every manual update check —
+                // success, HTTP error or exception alike — left the
+                // connection hanging until the system reaped it.
+                var conn: java.net.HttpURLConnection? = null
                 try {
-                    val conn = java.net.URL(
+                    conn = java.net.URL(
                         "https://api.github.com/repos/liyuzhou79-star/TuxunBrowse/releases?per_page=5"
                     ).openConnection() as java.net.HttpURLConnection
                     conn.connectTimeout = 10_000
@@ -11141,7 +11180,8 @@ private fun SettingsScreen(
                     if (conn.responseCode !in 200..299) {
                         null
                     } else {
-                        val raw = conn.inputStream.bufferedReader().readText()
+                        val raw = conn.inputStream.bufferedReader()
+                            .use { it.readText() }
                         val arr = org.json.JSONArray(raw)
                         val pairs = (0 until arr.length()).map { i ->
                             val o = arr.getJSONObject(i)
@@ -11151,6 +11191,12 @@ private fun SettingsScreen(
                     }
                 } catch (t: Throwable) {
                     null
+                } finally {
+                    try {
+                        conn?.disconnect()
+                    } catch (t: Throwable) {
+                        // Already gone; nothing to release.
+                    }
                 }
             }
             checkingUpdate = false
