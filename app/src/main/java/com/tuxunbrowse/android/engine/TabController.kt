@@ -2945,6 +2945,24 @@ fun sanitizeDownloadFileName(raw: String?): String {
         val ext = if (dot > 0 && name.length - dot <= 11) name.substring(dot) else ""
         name = name.substring(0, 120 - ext.length) + ext
     }
+    // Filesystem name limits are in BYTES (255 on the storage this
+    // app writes to), not characters: a 120-character CJK name is
+    // 360 UTF-8 bytes and would fail every save with a too-long
+    // name. Cap the UTF-8 byte length at 200 as well, keeping the
+    // extension (v0.112.0 download-path audit).
+    val byteLimit = 200
+    if (name.toByteArray(Charsets.UTF_8).size > byteLimit) {
+        val dot = name.lastIndexOf('.')
+        val ext = if (dot > 0 && name.length - dot <= 11) name.substring(dot) else ""
+        val extBytes = ext.toByteArray(Charsets.UTF_8).size
+        var base = name.substring(0, name.length - ext.length)
+        while (base.isNotEmpty() &&
+            base.toByteArray(Charsets.UTF_8).size + extBytes > byteLimit
+        ) {
+            base = base.dropLast(1)
+        }
+        name = base + ext
+    }
     return name
 }
 
@@ -3219,13 +3237,34 @@ fun saveGeckoDownload(
             } else {
                 val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
                     ?: context.filesDir
-                val file = java.io.File(dir, fileName)
+                // Never overwrite an existing file (v0.112.0
+                // download-path audit): the MediaStore path above
+                // and the system DownloadManager both keep the old
+                // file and save under an adjusted name, and the
+                // downloads screen tells the user exactly that —
+                // but a plain FileOutputStream here would silently
+                // truncate the old file. Pick a clash-free name the
+                // same way instead.
+                var file = java.io.File(dir, fileName)
+                if (file.exists()) {
+                    val dot = fileName.lastIndexOf('.')
+                    val base = if (dot > 0) fileName.substring(0, dot) else fileName
+                    val ext = if (dot > 0) fileName.substring(dot) else ""
+                    var n = 1
+                    while (file.exists()) {
+                        file = java.io.File(dir, "$base ($n)$ext")
+                        n++
+                    }
+                }
                 destFile = file
                 val copied = file.outputStream().use { out ->
                     copyDownloadBody(body, out, downloadId)
                 }
                 ok = copied > 0
-                if (ok) copiedBytes = copied
+                if (ok) {
+                    copiedBytes = copied
+                    savedName = file.name
+                }
             }
         } catch (t: Throwable) {
             ok = false

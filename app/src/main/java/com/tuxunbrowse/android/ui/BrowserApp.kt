@@ -764,6 +764,21 @@ fun BrowserApp(
     }
 
     /**
+     * The User-Agent a tab's page is actually browsing with, for
+     * download call sites that never see the DownloadListener's
+     * reported UA (direct-link intercept, sniffer, image save,
+     * retry). A WebView tab exposes its live settings UA — which
+     * already includes the desktop-mode UA when that mode is on —
+     * so those downloads go out with the same UA as the page
+     * (v0.112.0 download-path audit). A Gecko tab has no string UA
+     * to hand over (its UA is an engine-side mode), so this returns
+     * null there and startSystemDownload's default-UA fallback
+     * applies, exactly as before.
+     */
+    fun pageUserAgent(tab: BrowserTab?): String? =
+        tab?.webView?.settings?.userAgentString
+
+    /**
      * The one dispatch point for URL-type downloads (WebView download
      * listener, sniffer items). Gecko tab downloads never come here —
      * the app saves those itself. [systemFallback] is the caller's
@@ -828,12 +843,18 @@ fun BrowserApp(
     fun downloadBatchWithMode(
         urls: List<String>,
         fromIncognito: Boolean = false,
-        systemFallback: () -> Unit
+        systemFallback: (List<String>) -> Unit
     ) {
         // Same inbound gate as downloadWithMode (v0.87.0): only
         // http(s) entries take part. The sniffer already filters
         // at its script, so this is defence in depth — a filtered
         // entry is dropped from the batch, never shared onward.
+        // The fallback receives the FILTERED list (v0.112.0
+        // download-path audit): before this, the share text was
+        // built from the filtered list but the system fallback
+        // still iterated the caller's original list, so a dropped
+        // entry would have reached DownloadManager anyway and
+        // failed with the misleading "try another link" toast.
         val clean = urls.filter {
             it.startsWith("http://") || it.startsWith("https://")
         }
@@ -848,10 +869,10 @@ fun BrowserApp(
                     "无痕提醒：下载记录会留在系统下载管理里，关掉无痕标签也不会自动删掉",
                     android.widget.Toast.LENGTH_LONG
                 ).show()
-                systemFallback()
+                systemFallback(clean)
             }
         } else {
-            systemFallback
+            { systemFallback(clean) }
         }
         when (store.downloadMode) {
             DownloadMode.SYSTEM -> effectiveFallback()
@@ -1288,8 +1309,9 @@ fun BrowserApp(
                 // A tapped direct file link, intercepted by either
                 // engine before navigating. URL-type dispatch, same
                 // as the download listener: startSystemDownload
-                // fills in the current session's Cookie and a
-                // fallback User-Agent itself; the Referer is the
+                // fills in the current session's Cookie itself; the
+                // User-Agent is the tab's live page UA when it has
+                // one (pageUserAgent), and the Referer is the
                 // page the tap happened on (the tab has not moved).
                 val fileName = resolveDownloadFileName(target, null, null)
                 downloadWithMode(
@@ -1297,7 +1319,7 @@ fun BrowserApp(
                     fromIncognito = created?.incognito == true
                 ) {
                     startSystemDownload(
-                        context, target, null, null, null,
+                        context, target, pageUserAgent(created), null, null,
                         referer = created?.url
                     )
                 }
@@ -3745,7 +3767,8 @@ fun BrowserApp(
 
         Screen.DOWNLOADS -> DownloadsScreen(
             onBack = { screen = Screen.BROWSER },
-            retryReferer = activeTab()?.url
+            retryReferer = activeTab()?.url,
+            retryUserAgent = pageUserAgent(activeTab())
         )
 
         Screen.SNIFF -> SniffScreen(
@@ -3758,7 +3781,11 @@ fun BrowserApp(
                         tabs.firstOrNull { t -> t.id == sniffTabId }?.incognito == true
                 ) {
                     startSystemDownload(
-                        context, res.url, null, null, null,
+                        context, res.url,
+                        pageUserAgent(
+                            tabs.firstOrNull { t -> t.id == sniffTabId }
+                        ),
+                        null, null,
                         referer = tabs.firstOrNull { t -> t.id == sniffTabId }?.url
                     )
                 }
@@ -3768,10 +3795,17 @@ fun BrowserApp(
                     list.map { it.url },
                     fromIncognito =
                         tabs.firstOrNull { t -> t.id == sniffTabId }?.incognito == true
-                ) {
-                    list.forEach {
+                ) { cleanUrls ->
+                    // The fallback iterates the filtered URL list
+                    // handed back by downloadBatchWithMode, not the
+                    // original selection (v0.112.0).
+                    cleanUrls.forEach { cleanUrl ->
                         startSystemDownload(
-                            context, it.url, null, null, null,
+                            context, cleanUrl,
+                            pageUserAgent(
+                                tabs.firstOrNull { t -> t.id == sniffTabId }
+                            ),
+                            null, null,
                             referer = tabs.firstOrNull { t -> t.id == sniffTabId }?.url
                         )
                     }
@@ -3790,10 +3824,14 @@ fun BrowserApp(
                     list.map { it.url },
                     fromIncognito =
                         tabs.firstOrNull { t -> t.id == sniffTabId }?.incognito == true
-                ) {
-                    list.forEach {
+                ) { cleanUrls ->
+                    cleanUrls.forEach { cleanUrl ->
                         startSystemDownload(
-                            context, it.url, null, null, null,
+                            context, cleanUrl,
+                            pageUserAgent(
+                                tabs.firstOrNull { t -> t.id == sniffTabId }
+                            ),
+                            null, null,
                             referer = tabs.firstOrNull { t -> t.id == sniffTabId }?.url
                         )
                     }
@@ -4010,8 +4048,9 @@ fun BrowserApp(
                                                 ).show()
                                             }
                                             startSystemDownload(
-                                                context, image, null, null,
-                                                null,
+                                                context, image,
+                                                pageUserAgent(activeTab()),
+                                                null, null,
                                                 referer = activeTab()?.url
                                             )
                                         }
@@ -9751,7 +9790,8 @@ private fun readDownloadEntries(
 @Composable
 private fun DownloadsScreen(
     onBack: () -> Unit,
-    retryReferer: String? = null
+    retryReferer: String? = null,
+    retryUserAgent: String? = null
 ) {
     val context = LocalContext.current
     var entries by remember { mutableStateOf<List<DownloadEntry>>(emptyList()) }
@@ -10371,7 +10411,7 @@ private fun DownloadsScreen(
         // a new record next to it, and the user can delete the old
         // one with the delete button.
         startSystemDownload(
-            context, source, null, null, entry.mediaType,
+            context, source, retryUserAgent, null, entry.mediaType,
             referer = retryReferer
         )
         refreshTick++
@@ -10831,7 +10871,8 @@ private fun DownloadsScreen(
                     text = "说明：同一个文件重复下载时，原来的文件不会被覆盖——" +
                         "系统可能给新文件自动改名保存，也可能提示「同名文件已经存在」。" +
                         "火狐标签下载的文件会列在上面的「应用内保存」一节里；" +
-                        "无痕标签里的下载只保存文件、不留记录，所以不会出现在这里。",
+                        "火狐无痕标签的下载只保存文件、不留记录，不会出现在这里；" +
+                        "系统 WebView 无痕标签的下载会留在上面的系统下载记录里，关掉无痕标签也不会自动删掉。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
