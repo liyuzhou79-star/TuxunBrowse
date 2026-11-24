@@ -2049,64 +2049,6 @@ fun BrowserApp(
         }
     }
 
-    // Incoming share (v0.73.0): another app handed us text and the
-    // user decides what happens — open it, save its URL to the
-    // reading list, or drop it. Nothing runs before this choice,
-    // and dismissing the dialog is the same as cancelling.
-    val shareText = pendingShareText
-    if (shareText != null) {
-        val sharedUrl = extractFirstWebUrl(shareText)
-        AlertDialog(
-            onDismissRequest = { pendingShareText = null },
-            title = { Text("收到一段分享内容") },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .heightIn(max = 360.dp)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    Text(shareText)
-                    if (sharedUrl != null) {
-                        Text(
-                            "\n里面找到的网址：$sharedUrl",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    } else {
-                        Text(
-                            "\n里面没有现成的网址，点「打开」会按输入内容打开或搜索。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                Button(onClick = {
-                    pendingShareText = null
-                    openSharedText(shareText)
-                }) {
-                    Text("打开")
-                }
-            },
-            dismissButton = {
-                Row {
-                    if (sharedUrl != null) {
-                        TextButton(onClick = {
-                            pendingShareText = null
-                            saveSharedUrlToReadingList(sharedUrl)
-                        }) {
-                            Text("存入阅读列表")
-                        }
-                    }
-                    TextButton(onClick = { pendingShareText = null }) {
-                        Text("取消")
-                    }
-                }
-            }
-        )
-    }
-
     // Backup import confirmation: lists merge (duplicates skipped),
     // but settings are overwritten — so the dialog names exactly
     // which settings would change before anything is written.
@@ -2768,6 +2710,65 @@ fun BrowserApp(
             onSharedTextConsumed()
         }
     }
+
+    // Incoming share (v0.73.0): another app handed us text and the
+    // user decides what happens — open it, save its URL to the
+    // reading list, or drop it. Nothing runs before this choice,
+    // and dismissing the dialog is the same as cancelling.
+    val shareText = pendingShareText
+    if (shareText != null) {
+        val sharedUrl = extractFirstWebUrl(shareText)
+        AlertDialog(
+            onDismissRequest = { pendingShareText = null },
+            title = { Text("收到一段分享内容") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(shareText)
+                    if (sharedUrl != null) {
+                        Text(
+                            "\n里面找到的网址：$sharedUrl",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Text(
+                            "\n里面没有现成的网址，点「打开」会按输入内容打开或搜索。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    pendingShareText = null
+                    openSharedText(shareText)
+                }) {
+                    Text("打开")
+                }
+            },
+            dismissButton = {
+                Row {
+                    if (sharedUrl != null) {
+                        TextButton(onClick = {
+                            pendingShareText = null
+                            saveSharedUrlToReadingList(sharedUrl)
+                        }) {
+                            Text("存入阅读列表")
+                        }
+                    }
+                    TextButton(onClick = { pendingShareText = null }) {
+                        Text("取消")
+                    }
+                }
+            }
+        )
+    }
+
 
     BackHandler(enabled = fullscreenView != null) {
         activeTab()?.exitFullscreen()
