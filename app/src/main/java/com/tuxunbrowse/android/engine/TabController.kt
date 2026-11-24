@@ -31,11 +31,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.runtime.Composable
 import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.tuxunbrowse.android.data.Engine
 import com.tuxunbrowse.android.data.GeckoDownloadRecord
 import com.tuxunbrowse.android.data.HOME_URL
-import com.tuxunbrowse.android.data.SOURCE_URL
 import com.tuxunbrowse.android.data.ReaderBackground
 import com.tuxunbrowse.android.data.ReaderFontSize
 import com.tuxunbrowse.android.data.ReaderPalette
@@ -340,63 +340,10 @@ fun engineFallbackReason(engine: Engine): String = when (engine) {
             "网页暂时打不开。可以先用火狐打开这个网站，或者等一下再重试。"
 }
 
-/** One entry of a tab's real back/forward stack, for the history sheet. */
-data class NavHistoryEntry(val title: String, val url: String)
-
-/** Resource groups the page sniffer reports, in display order. */
-enum class SniffKind { FILE, IMAGE, MEDIA }
-
 /**
  * Tallest full-page screenshot, in pixels. A page taller than this
  * is captured only up to the cap and the UI says so honestly.
  */
-const val MAX_FULL_PAGE_HEIGHT_PX = 12000
-
-/** Outcome of a full-page capture attempt. */
-data class FullPageCapture(
-    val bitmap: Bitmap?,
-    val truncated: Boolean,
-    val outOfMemory: Boolean
-)
-
-/** One downloadable resource link found on the current page. */
-data class SniffedResource(
-    val url: String,
-    val name: String,
-    val host: String,
-    val kind: SniffKind
-)
-
-/** Parse the sniffer script's JSON answer into typed resources. */
-private fun parseSniffResult(raw: String?): List<SniffedResource> {
-    if (raw.isNullOrBlank() || raw == "null") return emptyList()
-    return try {
-        // evaluateJavascript hands back the page's return value JSON
-        // encoded, so a JS string arrives as a quoted JSON string.
-        val text = org.json.JSONTokener(raw).nextValue() as? String
-            ?: return emptyList()
-        val arr = org.json.JSONArray(text)
-        val out = mutableListOf<SniffedResource>()
-        for (i in 0 until arr.length()) {
-            val obj = arr.optJSONObject(i) ?: continue
-            val u = obj.optString("url")
-            if (u.isBlank()) continue
-            val kind = when (obj.optString("kind")) {
-                "image" -> SniffKind.IMAGE
-                "media" -> SniffKind.MEDIA
-                else -> SniffKind.FILE
-            }
-            val name = obj.optString("name").ifBlank {
-                u.substringBefore("?").substringBefore("#")
-                    .substringAfterLast("/").ifBlank { u }
-            }
-            out.add(SniffedResource(u, name, hostOf(u) ?: "", kind))
-        }
-        out
-    } catch (t: Throwable) {
-        emptyList()
-    }
-}
 
 /**
  * How much of a page's source the source page renders (v0.84.0).
@@ -429,63 +376,6 @@ const val WEB_ARCHIVE_MIME_TYPE = "multipart/related"
  * filesystem-rejected) name; the date suffix and extension are
  * added on top of this cap, not counted inside it.
  */
-const val ARCHIVE_TITLE_LIMIT = 60
-
-/**
- * Clean a page title into the base of a web-archive file name
- * (v0.85.0): whitespace runs collapse to single spaces, the
- * characters common filesystems forbid (`\ / : * ? " < > |`) and
- * control characters become underscores, and leading/trailing
- * dots and spaces (which some filesystems strip or reject) are
- * trimmed. A title that leaves nothing usable behind — blank,
- * only punctuation, only forbidden characters — falls back to a
- * plain-language placeholder instead of an empty or dot-only name.
- */
-fun archiveFileBaseName(title: String): String {
-    var name = title.replace(Regex("\\s+"), " ").trim()
-    name = buildString(name.length) {
-        for (ch in name) {
-            append(
-                if (ch in "\\/:*?\"<>|" || ch.code < 0x20) '_' else ch
-            )
-        }
-    }
-    name = name.trim { it == '.' || it == ' ' }
-    if (name.length > ARCHIVE_TITLE_LIMIT) {
-        name = name.substring(0, ARCHIVE_TITLE_LIMIT)
-            .trim { it == '.' || it == ' ' }
-    }
-    return name.ifBlank { "网页存档" }
-}
-
-/**
- * Full web-archive file name (v0.85.0): the cleaned page title, a
- * date stamp and the .mhtml extension. [dateText] is supplied by
- * the caller (formatted yyyyMMdd) so this stays a pure function.
- */
-fun archiveFileName(title: String, dateText: String): String =
-    archiveFileBaseName(title) + "-" + dateText + ".mhtml"
-
-/** Plain-language reason for a WebView main-frame error code. */
-private fun webViewErrorReason(errorCode: Int): String = when (errorCode) {
-    WebViewClient.ERROR_HOST_LOOKUP ->
-        "找不到这个网站，可能是网址写错了，或者现在的网络连不上它"
-    WebViewClient.ERROR_CONNECT ->
-        "连不上这个网站，请检查网络后再试"
-    WebViewClient.ERROR_TIMEOUT ->
-        "这个网站半天没回应，连接超时了"
-    WebViewClient.ERROR_REDIRECT_LOOP ->
-        "这个网站一直在来回跳转，没法打开"
-    WebViewClient.ERROR_FAILED_SSL_HANDSHAKE ->
-        "和这个网站的安全连接没建起来，没法打开"
-    WebViewClient.ERROR_BAD_URL ->
-        "这个网址写得不对，打不开"
-    WebViewClient.ERROR_UNSUPPORTED_SCHEME ->
-        "这种链接本应用打不开"
-    WebViewClient.ERROR_TOO_MANY_REQUESTS ->
-        "这个网站说请求太多了，请过一会儿再试"
-    else -> "网页没能打开，请检查网络后重试"
-}
 
 /**
  * Plain-language reason for a Gecko load error. WebRequestError's
@@ -688,35 +578,6 @@ class BrowserTab(
     private val onGeckoClipboardPermissionGone: () -> Unit = {},
     private val textZoomProvider: () -> Int = { 100 },
     private val webDarkProvider: () -> Boolean = { false },
-    // Custom user-agent preset (v0.80.0): the UA string the app's
-    // preset builds for this device (see presetUserAgent in the
-    // data layer), or null for "no override". Read at engine
-    // creation for BOTH engines — WebView setUserAgentString,
-    // Gecko GeckoSessionSettings user-agent override — and again
-    // by applyUserAgent when the setting changes. A desktopMode
-    // tab ignores it: per-site desktop mode keeps its own UA on
-    // both engines, exactly as before the preset existed.
-    private val userAgentProvider: () -> String? = { null },
-    // Whether third-party cookies are allowed in this tab's WebView
-    // (v0.39.0). Read live from the Store by the app at obtain time;
-    // later changes are pushed to created WebViews via
-    // applyThirdPartyCookies. WebView only: CookieManager has no
-    // Gecko counterpart.
-    private val thirdPartyCookiesProvider: () -> Boolean = { true },
-    // Whether no-image mode is on for this tab's WebView (v0.46.0).
-    // Read live from the Store by the app at obtain time; later
-    // changes are pushed to created WebViews via applyBlockImages.
-    // WebView only: GeckoView 132 has no image-blocking setting
-    // (AAR-audited), so Gecko tabs ignore this entirely.
-    private val blockImagesProvider: () -> Boolean = { false },
-    // Whether the user turned JavaScript off for this tab
-    // (v0.47.0). Read live from the Store by the app at obtain time
-    // for BOTH engines: WebView via javaScriptEnabled, Gecko via
-    // GeckoSessionSettings.allowJavascript (builder at creation,
-    // live setter afterwards — see applyDisableJavaScript). Later
-    // changes are pushed to created engines via
-    // applyDisableJavaScript.
-    private val disableJavaScriptProvider: () -> Boolean = { false },
     // Reader-mode typesetting (v0.58.0), read live from the Store by
     // the app at reader-entry time: the font-size step, the
     // background choice, and the app's resolved darkness (theme mode
@@ -782,21 +643,22 @@ class BrowserTab(
     // saving the stream itself.
     private val onDirectDownload: (String) -> Unit = {},
     // Whether the ad-slot hiding stylesheet should be injected after
-    // each finished WebView page (master ad-block switch AND its
-    // sub-option, combined by the app). WebView only.
+    // each finished WebView page (follows the ad-block switch).
+    // WebView only.
     private val isAdHideSlotsEnabled: () -> Boolean = { false },
     // Fired from the exact same code path that increments the
     // per-page blocked counter, so the lifetime total in the Store
     // can never drift from the per-page numbers.
     private val onBlockedRequest: () -> Unit = {},
-    // Whether a just-finished WebView page should drop straight
-    // into reader mode (v0.73.0 per-site reader memory). Consulted
-    // only from onPageFinished, which is a WebView-only callback,
-    // so Gecko tabs can never auto-enter — matching the rule that
-    // reader mode itself is WebView-only. The app side folds the
-    // site list, the incognito flag and the disable-JavaScript
-    // switch into this one answer.
-    private val autoReaderProvider: (String) -> Boolean = { false }
+    // Whether the built-in page-guard script (v0.91.0, see
+    // GuardScript) should be injected into this tab's WebView
+    // pages. Read live from the Store by the app; consulted at
+    // WebView creation and at every page start. WebView tabs
+    // only — GeckoView has no script-injection path, so Gecko
+    // tabs never see this. Incognito and JavaScript-disabled
+    // tabs are excluded on top of this switch (see
+    // guardScriptWanted).
+    private val guardScriptProvider: () -> Boolean = { false }
 ) {
     val id: Int = nextTabId++
     var url by mutableStateOf(startUrl)
@@ -1007,6 +869,15 @@ class BrowserTab(
     var geckoView: GeckoView? = null
 
     /**
+     * The document-start script handler for the page-guard script
+     * (v0.91.0), registered on this tab's WebView when the device
+     * supports it. Null when not registered (switch off, incognito,
+     * unsupported WebView, or no WebView yet). Removed again in
+     * [destroy] / [sleepEngine] alongside the WebView it belongs to.
+     */
+    private var guardScriptHandler: WebViewCompat.ScriptHandler? = null
+
+    /**
      * Lazy engine creation (v0.23.0): a tab starts out as data only
      * — url, title, engine choice and desktop-mode flag. Its engine
      * view (WebView or GeckoSession+GeckoView) is created the first
@@ -1090,9 +961,6 @@ class BrowserTab(
         // The native home page is rendered by the app itself; the web
         // engines must never try to load its internal URL.
         if (target == HOME_URL) return
-        // Same for the page-source page's internal URL (v0.84.0):
-        // it names an app-rendered page, never an engine load.
-        if (target == SOURCE_URL) return
         when (engine) {
             Engine.WEBVIEW -> webView?.loadUrl(target)
             Engine.GECKO -> geckoSession?.loadUri(target)
@@ -1113,70 +981,8 @@ class BrowserTab(
         }
     }
 
-    /**
-     * Latest Gecko history snapshot, copied out of the HistoryList
-     * inside the delegate callback (the list object itself is only
-     * valid during that callback). WebView tabs do not use this —
-     * they read copyBackForwardList() directly.
-     */
-    var geckoHistoryEntries by mutableStateOf<List<NavHistoryEntry>>(emptyList())
-    var geckoHistoryIndex by mutableStateOf(-1)
-
-    /**
-     * This tab's real back/forward stack (oldest first) plus the
-     * index of the current entry, or null when there is nothing to
-     * show. WebView: copyBackForwardList(). Gecko: the snapshot the
-     * HistoryDelegate reported — the engine's own stack, never a
-     * shadow copy maintained by the app.
-     */
-    fun backForwardList(): Pair<List<NavHistoryEntry>, Int>? {
-        return when (engine) {
-            Engine.WEBVIEW -> {
-                val view = webView ?: return null
-                val list = try {
-                    view.copyBackForwardList()
-                } catch (t: Throwable) {
-                    return null
-                }
-                if (list.size == 0) return null
-                val entries = (0 until list.size).map { i ->
-                    val item = list.getItemAtIndex(i)
-                    NavHistoryEntry(item.title ?: "", item.url ?: "")
-                }
-                entries to list.currentIndex
-            }
-            Engine.GECKO -> {
-                if (geckoHistoryEntries.isEmpty()) null
-                else geckoHistoryEntries to geckoHistoryIndex
-            }
-        }
-    }
-
-    /** Jump to the stack entry at [index] (from [backForwardList]). */
-    fun goToHistoryIndex(index: Int) {
-        when (engine) {
-            Engine.WEBVIEW -> {
-                val list = backForwardList() ?: return
-                val steps = index - list.second
-                if (steps != 0) {
-                    try {
-                        webView?.goBackOrForward(steps)
-                    } catch (t: Throwable) {
-                        // Stack changed under us; stay on the page.
-                    }
-                }
-            }
-            Engine.GECKO -> {
-                // gotoHistoryIndex(int) verified in the 132 AAR.
-                try {
-                    geckoSession?.gotoHistoryIndex(index)
-                } catch (t: Throwable) {
-                    // Same as above: never crash over a stale index.
-                }
-            }
-        }
-    }
-
+    
+    
     fun reload() {
         when (engine) {
             Engine.WEBVIEW -> webView?.reload()
@@ -1295,33 +1101,7 @@ class BrowserTab(
         }
     }
 
-    /**
-     * Draw the whole page into one tall bitmap (WebView only): the
-     * full content height (contentHeight × scale), capped at
-     * [MAX_FULL_PAGE_HEIGHT_PX] so a very long page cannot exhaust
-     * memory — when the cap bites, [FullPageCapture.truncated] says
-     * so and the UI tells the user only the first part was captured.
-     * An out-of-memory failure is reported, never thrown.
-     */
-    fun captureFullPageBitmap(): FullPageCapture {
-        val view = webView ?: return FullPageCapture(null, false, false)
-        return try {
-            val width = view.width
-            if (width <= 0) return FullPageCapture(null, false, false)
-            val fullHeight = (view.contentHeight * view.scale).toInt()
-            if (fullHeight <= 0) return FullPageCapture(null, false, false)
-            val truncated = fullHeight > MAX_FULL_PAGE_HEIGHT_PX
-            val height = fullHeight.coerceAtMost(MAX_FULL_PAGE_HEIGHT_PX)
-            val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            view.draw(Canvas(bmp))
-            FullPageCapture(bmp, truncated, false)
-        } catch (oom: OutOfMemoryError) {
-            FullPageCapture(null, false, true)
-        } catch (t: Throwable) {
-            FullPageCapture(null, false, false)
-        }
-    }
-
+    
     /**
      * Run the resource sniffer over the current page (WebView only):
      * injects a script that collects downloadable file links, image
@@ -1343,108 +1123,9 @@ class BrowserTab(
         }
     }
 
-    /**
-     * Fetch the current page's source (WebView only, v0.84.0): the
-     * DOM's outerHTML, read through the same evaluateJavascript
-     * channel as the sniffer and the reader text. The script's
-     * return value arrives JSON-encoded (a JS string comes back as
-     * a quoted JSON string), so it is decoded with the platform
-     * JSON parser — the exact pattern [parseSniffResult] and the
-     * reader-text readback already use; no hand-rolled unescaping.
-     * Any failure — no WebView (Gecko tab or engine not created
-     * yet), a script error, an undecodable or blank result (a page
-     * that has not produced a document yet) — reports null, and
-     * the source page shows its plain-language empty state.
-     */
-    fun fetchPageSource(onResult: (String?) -> Unit) {
-        val view = webView
-        if (engine != Engine.WEBVIEW || view == null) {
-            onResult(null)
-            return
-        }
-        try {
-            view.evaluateJavascript(PAGE_SOURCE_JS) { raw ->
-                val decoded = try {
-                    org.json.JSONTokener(raw).nextValue() as? String
-                } catch (t: Throwable) {
-                    null
-                }
-                onResult(decoded?.takeIf { it.isNotBlank() })
-            }
-        } catch (t: Throwable) {
-            onResult(null)
-        }
-    }
-
-    /**
-     * Save the current page as a web archive (.mhtml) into
-     * [tempFile] (WebView only, v0.85.0). Completion semantics are
-     * the platform documentation's, verified against the official
-     * WebView reference before this was written: the three-argument
-     * saveWebArchive(basename, autoname, callback) invokes its
-     * ValueCallback AFTER the archive has been saved, with the
-     * file name it was saved under, or null when saving failed —
-     * so the callback IS the completion signal and no polling or
-     * file-size guessing is needed. autoname is false: [tempFile]
-     * is taken to be the exact destination file. The archive lands
-     * in a cache temp file first because saveWebArchive writes a
-     * plain filesystem path and cannot write to a MediaStore entry;
-     * [moveWebArchiveToDownloads] then moves it to where the user
-     * can actually reach it. Any failure — no WebView (Gecko tab or
-     * engine not created yet), an exception from the call itself,
-     * or a null callback value — reports false.
-     */
-    fun savePageArchive(tempFile: java.io.File, onResult: (Boolean) -> Unit) {
-        val view = webView
-        if (engine != Engine.WEBVIEW || view == null) {
-            onResult(false)
-            return
-        }
-        try {
-            view.saveWebArchive(tempFile.absolutePath, false) { saved ->
-                onResult(saved != null)
-            }
-        } catch (t: Throwable) {
-            onResult(false)
-        }
-    }
-
+    
     fun applyTextZoom(percent: Int) {
         webView?.settings?.textZoom = percent
-    }
-
-    /**
-     * Push the UA preset to this tab's already created engine
-     * (v0.80.0), mirroring [applyBlockImages]. Both engines go
-     * through their official live setters (javap/doc-verified):
-     * - WebView: settings.userAgentString — the platform docs say
-     *   a null (or empty) value restores the system default UA,
-     *   which is exactly the "follow system" preset, so the
-     *   provider result is passed straight through, null included.
-     * - Gecko: GeckoSessionSettings.setUserAgentOverride takes a
-     *   @Nullable String (AAR-verified) and its key is not
-     *   init-only, so the live setter reaches the running session
-     *   the same way setAllowJavascript does; null clears the
-     *   override back to Gecko's default UA.
-     * The new UA applies to loads that start after the change; a
-     * page already on screen keeps the identity it loaded with
-     * until it is refreshed or a new page loads — the settings
-     * text says exactly that. Desktop-mode tabs are skipped: their
-     * per-site desktop UA wins over the global preset. Tabs whose
-     * engine is not created yet read the provider at creation.
-     */
-    fun applyUserAgent() {
-        if (desktopMode) return
-        try {
-            webView?.settings?.userAgentString = userAgentProvider()
-        } catch (t: Throwable) {
-            // Engine already gone; nothing to apply.
-        }
-        try {
-            geckoSession?.settings?.setUserAgentOverride(userAgentProvider())
-        } catch (t: Throwable) {
-            // Engine already gone; nothing to apply.
-        }
     }
 
     fun applyWebDark(enabled: Boolean) {
@@ -1454,80 +1135,6 @@ class BrowserTab(
         // mode exits and restores it from the provider.
         if (readerActive) return
         setAlgorithmicDarkening(enabled)
-    }
-
-    /**
-     * Push the third-party-cookie setting to this tab's already
-     * created WebView (v0.39.0). CookieManager.setAcceptThirdPartyCookies
-     * is per-WebView-instance, so a settings change must be re-applied
-     * to every created WebView tab; tabs created later read the
-     * provider in obtainWebView. No-op for Gecko tabs and for WebView
-     * tabs not created yet.
-     */
-    fun applyThirdPartyCookies(enabled: Boolean) {
-        try {
-            webView?.let { view ->
-                CookieManager.getInstance().setAcceptThirdPartyCookies(view, enabled)
-            }
-        } catch (t: Throwable) {
-            // Engine already gone; nothing to apply.
-        }
-    }
-
-    /**
-     * Push the no-image setting to this tab's already created
-     * WebView (v0.46.0), mirroring [applyThirdPartyCookies]: both
-     * image switches are re-set together so a created WebView can
-     * never sit in a half state. The pair takes effect for loads
-     * that start after the change; images already on screen stay
-     * until the page is refreshed or a new page loads — the
-     * settings text says exactly that. No-op for Gecko tabs (no
-     * such GeckoView setting exists) and for WebView tabs not
-     * created yet (they read the provider in obtainWebView).
-     */
-    fun applyBlockImages(enabled: Boolean) {
-        try {
-            webView?.settings?.let { settings ->
-                settings.loadsImagesAutomatically = !enabled
-                settings.blockNetworkImage = enabled
-            }
-        } catch (t: Throwable) {
-            // Engine already gone; nothing to apply.
-        }
-    }
-
-    /**
-     * Push the disable-JavaScript setting to this tab's already
-     * created engine (v0.47.0), mirroring [applyBlockImages].
-     * Both engines are covered, each through its own audited path:
-     * - WebView: settings.javaScriptEnabled. The platform applies
-     *   the new value to loads that start after the change; a page
-     *   already on screen keeps the scripts it already loaded
-     *   until it is refreshed or a new page loads — the settings
-     *   text says exactly that.
-     * - Gecko: GeckoSession.getSettings() returns the session's
-     *   own live settings object (javap-verified against the 132
-     *   AAR: getSettings returns the mSettings field directly, and
-     *   GeckoSessionSettings.setAllowJavascript goes through
-     *   setBoolean, which on a value change dispatches
-     *   "GeckoView:UpdateSettings" to the engine). So the setter
-     *   reaches the running session; as with WebView, pages
-     *   already loaded are only guaranteed to follow it from
-     *   their next load, and the settings text promises no more.
-     * Tabs whose engine is not created yet read the provider in
-     * obtainWebView / buildGeckoSettings instead.
-     */
-    fun applyDisableJavaScript(disabled: Boolean) {
-        try {
-            webView?.settings?.javaScriptEnabled = !disabled
-        } catch (t: Throwable) {
-            // Engine already gone; nothing to apply.
-        }
-        try {
-            geckoSession?.settings?.setAllowJavascript(!disabled)
-        } catch (t: Throwable) {
-            // Engine already gone; nothing to apply.
-        }
     }
 
     fun clearFind() {
@@ -1586,6 +1193,8 @@ class BrowserTab(
         // it) and the GC reclaims the pixels.
         ThumbnailCache.onTabDestroyed(this)
         thumbnail = null
+        // The guard-script handler belongs to the WebView below.
+        removeGuardScriptHandler()
         exitFullscreen()
         popupChild?.let {
             try {
@@ -1659,6 +1268,9 @@ class BrowserTab(
     fun sleepEngine() {
         if (!engineCreated) return
         denyPendingClipboardRequests()
+        // The guard-script handler belongs to the WebView being
+        // destroyed; a woken tab re-registers at creation.
+        removeGuardScriptHandler()
         customViewCallback = null
         popupChild?.let {
             try {
@@ -1694,8 +1306,6 @@ class BrowserTab(
         blockedCount = 0
         certIssuedTo = ""
         certIssuedBy = ""
-        geckoHistoryEntries = emptyList()
-        geckoHistoryIndex = -1
     }
 
     /**
@@ -1796,12 +1406,8 @@ class BrowserTab(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT
         )
-        // JavaScript (v0.47.0): on unless the user turned it off
-        // in settings. Before v0.47.0 this was pinned true (the
-        // v0.31.0 audit kept it on as browser-essential); the pin
-        // is now the user's own switch, still defaulting to on.
-        // Later changes are pushed via applyDisableJavaScript.
-        view.settings.javaScriptEnabled = !disableJavaScriptProvider()
+        // JavaScript stays on: pages need it to work at all.
+        view.settings.javaScriptEnabled = true
         view.settings.domStorageEnabled = true
         // Hardened WebView switches (v0.31.0 audit), all pinned
         // explicitly rather than left to platform defaults:
@@ -1831,30 +1437,15 @@ class BrowserTab(
         view.settings.mixedContentMode =
             android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
         view.settings.setGeolocationEnabled(false)
-        // No-image mode (v0.46.0 audit): the two WebSettings image
-        // switches mean different things. loadsImagesAutomatically
-        // is the master switch — false means the WebView does not
-        // load images at all. blockNetworkImage only covers images
-        // fetched over the network (http/https). The data-saving
-        // goal ("never even send the image requests") is met by
-        // setting BOTH from the one user switch: master off plus
-        // network blocked, so no image request leaves the device
-        // and nothing is merely downloaded-then-hidden. Later
-        // changes are pushed via applyBlockImages.
-        val blockImagesNow = blockImagesProvider()
-        view.settings.loadsImagesAutomatically = !blockImagesNow
-        view.settings.blockNetworkImage = blockImagesNow
         view.settings.builtInZoomControls = true
         view.settings.displayZoomControls = false
         view.settings.textZoom = textZoomProvider()
-        // Third-party cookies (v0.39.0): CookieManager's per-WebView
-        // switch was never set before, so it sat at the platform
-        // default (false) and embedded third-party sign-in / payment
-        // iframes (SSO chains, web payment pages) could fail to sign
-        // in. Apply the user's setting explicitly at creation.
+        // Third-party cookies stay allowed: blocking them breaks
+        // real sign-in flows (SSO redirect chains, payment pages
+        // embedded in iframes) far more often than it helps.
         try {
             CookieManager.getInstance()
-                .setAcceptThirdPartyCookies(view, thirdPartyCookiesProvider())
+                .setAcceptThirdPartyCookies(view, true)
         } catch (t: Throwable) {
             // Cookie policy is best-effort only; browsing must still work.
         }
@@ -1887,12 +1478,6 @@ class BrowserTab(
         view.settings.loadWithOverviewMode = true
         if (desktopMode) {
             view.settings.userAgentString = DESKTOP_USER_AGENT
-        } else {
-            // UA preset (v0.80.0): a null provider result leaves
-            // the platform default UA completely untouched.
-            userAgentProvider()?.let { presetUa ->
-                view.settings.userAgentString = presetUa
-            }
         }
         view.setOnLongClickListener { v ->
             val wv = v as WebView
@@ -2029,6 +1614,9 @@ class BrowserTab(
                 favicon: android.graphics.Bitmap?
             ) {
                 super.onPageStarted(wv, startedUrl, favicon)
+                // Page-guard script (v0.91.0): reconcile the
+                // injection channels with the user's switch.
+                syncGuardScript(wv)
                 // A fresh load is under way; any earlier failure is over.
                 loadError = null
                 // The blocked-request counter belongs to one page.
@@ -2186,19 +1774,7 @@ class BrowserTab(
                         // Injection is best-effort only.
                     }
                 }
-                // Per-site reader memory (v0.73.0): a remembered
-                // site drops straight into reader mode once its
-                // page has finished loading, through the exact same
-                // enterReaderMode path as the menu item. The one
-                // exception is the reload caused by the user just
-                // exiting reader mode on this very page — honour
-                // that exit instead of bouncing straight back in.
-                if (u == readerSuppressedUrl) {
-                    // Just exited here; stay out for this load.
-                } else {
-                    readerSuppressedUrl = null
-                    if (autoReaderProvider(u)) enterReaderMode()
-                }
+                readerSuppressedUrl = null
             }
         }
         view.webChromeClient = object : WebChromeClient() {
@@ -2325,32 +1901,118 @@ class BrowserTab(
             }
         )
         webView = view
+        // Page-guard script (v0.91.0): the document-start handler
+        // must be registered BEFORE the first loadUrl, or the
+        // first page would miss the earliest channel.
+        registerGuardScriptHandler(view)
         if (url.isNotBlank() && url != HOME_URL) view.loadUrl(url)
         return view
+    }
+
+    /**
+     * Whether the page-guard script should be injected into this
+     * tab right now: the user's switch is on, this is not an
+     * incognito tab (the script keeps permanent per-site statistics
+     * in page storage, which contradicts the incognito contract —
+     * see Store.guardScriptEnabled), and JavaScript is on (both
+     * injection channels are JavaScript; with JS off there is
+     * nothing for the script to hook anyway).
+     */
+    private fun guardScriptWanted(): Boolean =
+        guardScriptProvider() && !incognito
+
+    private fun guardDocumentStartSupported(): Boolean =
+        try {
+            WebViewFeature.isFeatureSupported(
+                WebViewFeature.DOCUMENT_START_SCRIPT
+            )
+        } catch (t: Throwable) {
+            false
+        }
+
+    /** Register the document-start handler on this tab's WebView. */
+    private fun registerGuardScriptHandler(view: WebView) {
+        if (!guardScriptWanted() || !guardDocumentStartSupported()) return
+        if (guardScriptHandler != null) return
+        guardScriptHandler = try {
+            WebViewCompat.addDocumentStartJavaScript(
+                view, GuardScript.payload(view.context), setOf("*")
+            )
+        } catch (t: Throwable) {
+            // Registration is best-effort: the onPageStarted
+            // fallback in syncGuardScript still covers the tab.
+            null
+        }
+    }
+
+    /** Drop the document-start handler, if one is registered. */
+    private fun removeGuardScriptHandler() {
+        try {
+            guardScriptHandler?.remove()
+        } catch (t: Throwable) {
+            // The WebView may already be gone; nothing to clean up.
+        }
+        guardScriptHandler = null
+    }
+
+    /**
+     * Reconcile page-guard injection with the switch at every page
+     * start (v0.91.0). Three cases:
+     *
+     * - Document-start supported and the handler is registered:
+     *   the script already ran for this page before any of the
+     *   page's own scripts — the earliest channel there is, and
+     *   this call is a no-op.
+     * - Document-start supported but no handler (the switch was
+     *   off when the WebView was created, or the tab just woke
+     *   from sleep): register now for later navigations, and give
+     *   THIS page the script through evaluateJavascript — later
+     *   than document-start, but the script's own guard flag
+     *   keeps it from ever running twice on one page.
+     * - Document-start unsupported (older WebView): every page
+     *   gets the script through evaluateJavascript here in
+     *   onPageStarted, the earliest hook that remains.
+     *
+     * Turning the switch off removes the handler at the next page
+     * start; a page that already has the script keeps it until it
+     * navigates — injected code cannot be un-injected, and the
+     * settings copy does not pretend otherwise.
+     */
+    private fun syncGuardScript(wv: WebView) {
+        val want = guardScriptWanted()
+        if (guardDocumentStartSupported()) {
+            if (want && guardScriptHandler == null) {
+                registerGuardScriptHandler(wv)
+                if (guardScriptHandler != null) {
+                    try {
+                        wv.evaluateJavascript(
+                            GuardScript.payload(wv.context), null
+                        )
+                    } catch (t: Throwable) {
+                        // Best-effort only.
+                    }
+                }
+            } else if (!want) {
+                removeGuardScriptHandler()
+            }
+        } else if (want) {
+            try {
+                wv.evaluateJavascript(GuardScript.payload(wv.context), null)
+            } catch (t: Throwable) {
+                // Best-effort only.
+            }
+        }
     }
 
     private fun buildGeckoSettings(): GeckoSessionSettings {
         val settingsBuilder = GeckoSessionSettings.Builder()
             .usePrivateMode(incognito)
-            // Disable-JavaScript switch (v0.47.0): Builder
-            // .allowJavascript exists in GeckoView 132 (javap
-            // verified against the AAR, alongside the live
-            // GeckoSessionSettings.setAllowJavascript used by
-            // applyDisableJavaScript). Default stays on.
-            .allowJavascript(!disableJavaScriptProvider())
+            // JavaScript stays on: pages need it to work at all.
+            .allowJavascript(true)
         if (desktopMode) {
             settingsBuilder
                 .userAgentMode(GeckoSessionSettings.USER_AGENT_MODE_DESKTOP)
                 .viewportMode(GeckoSessionSettings.VIEWPORT_MODE_DESKTOP)
-        } else {
-            // UA preset (v0.80.0): GeckoView 132's official
-            // user-agent override (Builder.userAgentOverride,
-            // javap-verified against the AAR). A null provider
-            // result sets nothing — the session keeps Gecko's own
-            // default UA for its user-agent mode.
-            userAgentProvider()?.let { presetUa ->
-                settingsBuilder.userAgentOverride(presetUa)
-            }
         }
         return settingsBuilder.build()
     }
@@ -2489,31 +2151,6 @@ class BrowserTab(
                     detail = "分类 ${error.category} · 错误码 ${error.code}"
                 )
                 return null
-            }
-        }
-        // HistoryDelegate, verified against the GeckoView 132 AAR
-        // with javap: onHistoryStateChange(session, HistoryList)
-        // reports the session's real back/forward stack; HistoryList
-        // is a List<HistoryItem> with getCurrentIndex(), HistoryItem
-        // has getUri()/getTitle(), and GeckoSession.gotoHistoryIndex
-        // jumps to an entry. The HistoryList object is only valid
-        // during the callback, so its entries are copied out here
-        // into plain tab state.
-        session.historyDelegate = object : GeckoSession.HistoryDelegate {
-            override fun onHistoryStateChange(
-                s: GeckoSession,
-                historyList: GeckoSession.HistoryDelegate.HistoryList
-            ) {
-                try {
-                    geckoHistoryEntries = historyList.map { item ->
-                        NavHistoryEntry(item.title ?: "", item.uri ?: "")
-                    }
-                    geckoHistoryIndex = historyList.currentIndex
-                } catch (t: Throwable) {
-                    // A stale snapshot is worse than none at all.
-                    geckoHistoryEntries = emptyList()
-                    geckoHistoryIndex = -1
-                }
             }
         }
         session.progressDelegate = object : GeckoSession.ProgressDelegate {
@@ -3399,143 +3036,6 @@ private val archiveMoveExecutor =
     java.util.concurrent.Executors.newSingleThreadExecutor()
 
 /**
- * Move a finished web archive from its cache temp file to where
- * the user can reach it (v0.85.0), following the exact landing
- * rules of [saveGeckoDownload] so every file this app saves on the
- * user's behalf lands the same way: on Android 10+ a MediaStore
- * entry in the public Downloads folder (no permission needed), on
- * older systems the app's own download folder (no permission
- * either). Runs on a background thread; [onDone] is posted back to
- * the main thread with the name the file actually landed under
- * (MediaStore may adjust it on a name clash — the landed name is
- * queried back, like the Gecko path), the MediaStore entry URI or
- * the file path, and the byte count. On any failure the partial
- * destination is removed, the temp file is always deleted, and
- * [onDone] receives a null name.
- */
-fun moveWebArchiveToDownloads(
-    context: Context,
-    tempFile: java.io.File,
-    fileName: String,
-    onDone: (
-        savedName: String?,
-        contentUri: String?,
-        filePath: String?,
-        sizeBytes: Long
-    ) -> Unit
-) {
-    archiveMoveExecutor.execute {
-        var destUri: android.net.Uri? = null
-        var destFile: java.io.File? = null
-        var savedName: String? = null
-        var sizeBytes = 0L
-        try {
-            if (!tempFile.isFile || tempFile.length() <= 0L) {
-                throw java.io.IOException("web archive temp file missing or empty")
-            }
-            sizeBytes = tempFile.length()
-            if (android.os.Build.VERSION.SDK_INT >= 29) {
-                val resolver = context.contentResolver
-                val values = android.content.ContentValues().apply {
-                    put(
-                        android.provider.MediaStore.Downloads.DISPLAY_NAME,
-                        fileName
-                    )
-                    put(
-                        android.provider.MediaStore.Downloads.MIME_TYPE,
-                        WEB_ARCHIVE_MIME_TYPE
-                    )
-                    put(
-                        android.provider.MediaStore.Downloads.RELATIVE_PATH,
-                        Environment.DIRECTORY_DOWNLOADS
-                    )
-                    put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
-                }
-                val dest = resolver.insert(
-                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-                    values
-                ) ?: throw java.io.IOException("MediaStore insert failed")
-                destUri = dest
-                val copied = resolver.openOutputStream(dest)?.use { out ->
-                    tempFile.inputStream().use { input ->
-                        input.copyTo(out)
-                    }
-                } ?: throw java.io.IOException("MediaStore open failed")
-                if (copied <= 0L) {
-                    throw java.io.IOException("web archive copy produced no bytes")
-                }
-                val done = android.content.ContentValues().apply {
-                    put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
-                }
-                resolver.update(dest, done, null, null)
-                savedName = fileName
-                try {
-                    resolver.query(
-                        dest,
-                        arrayOf(
-                            android.provider.MediaStore.Downloads.DISPLAY_NAME
-                        ),
-                        null, null, null
-                    )?.use { cur ->
-                        if (cur.moveToFirst()) {
-                            val actual = cur.getString(0)
-                            if (!actual.isNullOrBlank()) savedName = actual
-                        }
-                    }
-                } catch (t: Throwable) {
-                    // Keep the requested name in the report.
-                }
-            } else {
-                val dir = context.getExternalFilesDir(
-                    Environment.DIRECTORY_DOWNLOADS
-                ) ?: context.filesDir
-                val file = java.io.File(dir, fileName)
-                destFile = file
-                val copied = file.outputStream().use { out ->
-                    tempFile.inputStream().use { input ->
-                        input.copyTo(out)
-                    }
-                }
-                if (copied <= 0L) {
-                    throw java.io.IOException("web archive copy produced no bytes")
-                }
-                savedName = fileName
-            }
-        } catch (t: Throwable) {
-            // Never leave a half-moved archive behind and call it
-            // saved: remove the partial destination.
-            try {
-                destUri?.let { context.contentResolver.delete(it, null, null) }
-            } catch (ignored: Throwable) {
-                // Best-effort cleanup.
-            }
-            try {
-                destFile?.delete()
-            } catch (ignored: Throwable) {
-                // Best-effort cleanup.
-            }
-            destUri = null
-            destFile = null
-            savedName = null
-            sizeBytes = 0L
-        } finally {
-            try {
-                tempFile.delete()
-            } catch (ignored: Throwable) {
-                // Cache file; the system reclaims cache eventually.
-            }
-        }
-        val reportName = savedName
-        val reportUri = destUri?.toString()
-        val reportPath = destFile?.absolutePath
-        val reportSize = sizeBytes
-        android.os.Handler(android.os.Looper.getMainLooper()).post {
-            onDone(reportName, reportUri, reportPath, reportSize)
-        }
-    }
-}
-
-/**
  * Hand a URL to the system DownloadManager with the full set of
  * request headers a browser download needs:
  * - User-Agent: the one the DownloadListener reported; when the
@@ -3982,13 +3482,6 @@ fun dispatchSpecialLink(context: Context, url: String): String? {
     }
     return null
 }
-
-/**
- * Page source readback (WebView only, v0.84.0): the whole current
- * DOM as one HTML string. evaluateJavascript JSON-encodes the
- * result; [BrowserTab.fetchPageSource] decodes it.
- */
-private const val PAGE_SOURCE_JS = "document.documentElement.outerHTML"
 
 /**
  * Page resource sniffer (WebView only): collects direct links to

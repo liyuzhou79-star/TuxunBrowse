@@ -1,7 +1,6 @@
 package com.tuxunbrowse.android
 
 import com.tuxunbrowse.android.data.Engine
-import com.tuxunbrowse.android.data.parseBlockedDailyJson
 import com.tuxunbrowse.android.data.parseBookmarkFoldersJson
 import com.tuxunbrowse.android.data.parseBookmarksJson
 import com.tuxunbrowse.android.data.parseGeckoDownloadsJson
@@ -34,7 +33,6 @@ class CorruptDataParseTest {
         assertEquals(emptyList<Any>(), parseGeckoDownloadsJson(truncated))
         assertEquals(emptyList<String>(), parseSiteListJson(truncated))
         assertEquals(emptyList<String>(), parseBookmarkFoldersJson(truncated))
-        assertEquals(emptyMap<String, Long>(), parseBlockedDailyJson(truncated))
         assertTrue(parseBookmarksJson(null).isEmpty())
         assertTrue(parseBookmarksJson("").isEmpty())
         assertTrue(parseBookmarksJson("not json at all").isEmpty())
@@ -46,7 +44,6 @@ class CorruptDataParseTest {
         assertTrue(parseBookmarksJson("{\"title\":\"a\"}").isEmpty())
         assertTrue(parseHistoryJson("\"just a string\"").isEmpty())
         assertTrue(parseSiteListJson("42").isEmpty())
-        assertTrue(parseBlockedDailyJson("[1,2,3]").isEmpty())
     }
 
     @Test
@@ -168,15 +165,6 @@ class CorruptDataParseTest {
     }
 
     @Test
-    fun blockedDailyKeepsGoodDaysWhenOneValueIsBad() {
-        val parsed = parseBlockedDailyJson(
-            "{\"2026-11-20\":5,\"2026-11-21\":{\"bad\":true}," +
-                "\"2026-11-22\":\"7\"}"
-        )
-        assertEquals(5L, parsed["2026-11-20"])
-        assertEquals(0L, parsed["2026-11-21"])
-        assertEquals(7L, parsed["2026-11-22"])
-    }
 
     @Test
     fun genericParserSkipsElementsWhoseParseThrows() {

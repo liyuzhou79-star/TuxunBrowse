@@ -10,6 +10,17 @@ GeckoView is distributed as a prebuilt library; the MPL-2.0 applies to the
 GeckoView code itself. This app's own code is GPL-3.0, which is compatible
 with redistributing MPL-2.0 libraries alongside it.
 
+## Built-in page-guard script
+
+Since 0.91.0 the app bundles one user script, "Via Liquid Glass Pro"
+(7.0.0), stored verbatim as `app/src/main/assets/page_guard.js` and
+injected into system-WebView pages when the "内置净化脚本" switch is
+on. The script was supplied by the project maintainer for inclusion;
+its floating in-page UI is suppressed by the app, and the Firefox
+(GeckoView) engine does not run it — GeckoView offers no equivalent
+injection path, so Firefox tabs rely on the native block list and
+tracking protection instead.
+
 ## AndroidX / Jetpack Compose
 
 AndroidX libraries, including Jetpack Compose and Material 3, are licensed

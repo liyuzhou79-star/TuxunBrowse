@@ -75,7 +75,6 @@ import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.MenuBook
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Info
@@ -196,8 +195,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.tuxunbrowse.android.data.Bookmark
-import com.tuxunbrowse.android.data.BookmarkSortOrder
-import com.tuxunbrowse.android.data.sortedBookmarksForDisplay
 import com.tuxunbrowse.android.data.DownloadMode
 import com.tuxunbrowse.android.data.GeckoDownloadRecord
 import com.tuxunbrowse.android.data.Engine
@@ -207,16 +204,12 @@ import com.tuxunbrowse.android.data.HistoryRetention
 import com.tuxunbrowse.android.data.TUXUNDOWN_PACKAGE
 import com.tuxunbrowse.android.data.ReaderBackground
 import com.tuxunbrowse.android.data.ReaderFontSize
-import com.tuxunbrowse.android.data.ReadingItem
-import com.tuxunbrowse.android.data.SpeedDial
 import com.tuxunbrowse.android.data.compareVersionNames
 import com.tuxunbrowse.android.data.pickLatestRelease
 import com.tuxunbrowse.android.data.SavedTab
 import com.tuxunbrowse.android.data.SearchEngine
 import com.tuxunbrowse.android.data.Store
 import com.tuxunbrowse.android.data.ThemeMode
-import com.tuxunbrowse.android.data.UaPreset
-import com.tuxunbrowse.android.data.presetUserAgent
 import com.tuxunbrowse.android.data.dirSizeBytes
 import com.tuxunbrowse.android.data.formatStorageSize
 import com.tuxunbrowse.android.data.WEBVIEW_CACHE_AUTO_CLEAR_THRESHOLD_BYTES
@@ -230,7 +223,6 @@ import com.tuxunbrowse.android.data.bookmarksFromJson
 import com.tuxunbrowse.android.data.bookmarksToHtml
 import com.tuxunbrowse.android.data.bookmarksToJson
 import com.tuxunbrowse.android.data.MAX_IMPORT_FILE_CHARS
-import com.tuxunbrowse.android.data.isValidCustomSearchTemplate
 import com.tuxunbrowse.android.MainActivity
 import com.tuxunbrowse.android.data.hostOf
 import com.tuxunbrowse.android.data.pinnedShortcutId
@@ -240,7 +232,6 @@ import com.tuxunbrowse.android.data.isAppDarkTheme
 import com.tuxunbrowse.android.data.hostMatchesSite
 import com.tuxunbrowse.android.data.isCompatHost
 import com.tuxunbrowse.android.data.isDesktopHost
-import com.tuxunbrowse.android.data.isReaderHost
 import com.tuxunbrowse.android.data.extractFirstWebUrl
 import com.tuxunbrowse.android.data.DiagnosticInfo
 import com.tuxunbrowse.android.data.GECKOVIEW_VERSION
@@ -248,22 +239,10 @@ import com.tuxunbrowse.android.data.diagnosticText
 import com.tuxunbrowse.android.data.displayHostFor
 import com.tuxunbrowse.android.data.hasBlockedPageScheme
 import com.tuxunbrowse.android.data.isAllowedPageUrl
-import com.tuxunbrowse.android.data.SEARCH_SUGGESTION_DEBOUNCE_MS
-import com.tuxunbrowse.android.data.fetchSearchSuggestions
-import com.tuxunbrowse.android.data.mergedOnlineSuggestionRows
-import com.tuxunbrowse.android.data.shouldFetchOnlineSuggestions
 import com.tuxunbrowse.android.data.isUrlLikeInput
-import com.tuxunbrowse.android.data.SETTINGS_SEARCH_INDEX
-import com.tuxunbrowse.android.data.blockedDayKey
-import com.tuxunbrowse.android.data.filterSettingsIndex
 import com.tuxunbrowse.android.data.historyRestoreIndex
-import com.tuxunbrowse.android.data.recentBlockedSeries
 import com.tuxunbrowse.android.data.shouldPreheatGecko
 import com.tuxunbrowse.android.data.TabBookmarkCandidate
-import com.tuxunbrowse.android.data.SaveAllTabsPlan
-import com.tuxunbrowse.android.data.defaultSaveAllTabsFolderName
-import com.tuxunbrowse.android.data.planSaveAllTabsAsBookmarks
-import com.tuxunbrowse.android.data.saveAllTabsResultText
 import com.tuxunbrowse.android.data.allBookmarkFolders
 import com.tuxunbrowse.android.data.bookmarksInFolder
 import com.tuxunbrowse.android.data.clearBookmarksFolder
@@ -283,10 +262,6 @@ import com.tuxunbrowse.android.engine.AdBlocker
 import com.tuxunbrowse.android.engine.BrowserTab
 import com.tuxunbrowse.android.engine.GeckoDownloadTracker
 import com.tuxunbrowse.android.engine.GeckoHolder
-import com.tuxunbrowse.android.engine.MAX_FULL_PAGE_HEIGHT_PX
-import com.tuxunbrowse.android.engine.NavHistoryEntry
-import com.tuxunbrowse.android.engine.ReaderSpeechController
-import com.tuxunbrowse.android.engine.SpeechState
 import com.tuxunbrowse.android.engine.SniffKind
 import com.tuxunbrowse.android.engine.SniffedResource
 import com.tuxunbrowse.android.engine.TabLoadError
@@ -303,8 +278,6 @@ import com.tuxunbrowse.android.engine.selectSleepVictims
 import com.tuxunbrowse.android.engine.trimAliveLimit
 import com.tuxunbrowse.android.engine.savePageScreenshot
 import com.tuxunbrowse.android.engine.WEB_ARCHIVE_MIME_TYPE
-import com.tuxunbrowse.android.engine.archiveFileName
-import com.tuxunbrowse.android.engine.moveWebArchiveToDownloads
 import com.tuxunbrowse.android.engine.sharePageScreenshot
 import com.tuxunbrowse.android.engine.resolveDownloadFileName
 import com.tuxunbrowse.android.engine.SOURCE_DISPLAY_LIMIT
@@ -315,93 +288,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import org.mozilla.geckoview.GeckoSession
 
-private enum class Screen { PICKER, BROWSER, BOOKMARKS, HISTORY, SETTINGS, DOWNLOADS, CLEAR_DATA, SNIFF, READING_LIST, SOURCE }
-
-/**
- * The page-source page's content (v0.84.0): which tab the source
- * belongs to, that page's title and URL at fetch time, and the
- * fetch outcome — [text] null with [failed] false means the fetch
- * is still running; [failed] true means it came back empty.
- * App-level state, not a tab property: opening the source page
- * never navigates the tab, so the tab's URL (and with it the
- * visit history and the saved-tab archive) is untouched.
- */
-private data class PageSourceData(
-    val tabId: Int,
-    val title: String,
-    val url: String,
-    val text: String?,
-    val failed: Boolean
-)
-
-/**
- * One recently closed tab, kept in memory only (never on disk) so it
- * can be reopened from the tab sheet. Incognito tabs are NEVER put
- * on this stack — incognito leaves no trace, by definition.
- */
-private data class ClosedTabInfo(
-    val title: String,
-    val engine: Engine,
-    val url: String,
-    val desktopMode: Boolean
-)
-
-/** How many recently closed tabs the session stack remembers. */
-private const val MAX_RECENT_CLOSED = 10
-
-/** A pending "which downloader?" question (download mode = ask). */
-private data class AskDownloadRequest(
-    val message: String,
-    val onSystem: () -> Unit,
-    val onTuxunDown: () -> Unit
-)
-
-/** A JavaScript dialog (alert/confirm/prompt) waiting for the user. */
-private data class JsPromptState(
-    val kind: GeckoJsPromptKind,
-    val message: String,
-    val defaultValue: String,
-    val respond: (Boolean, String?) -> Unit
-)
-
-/**
- * An HTTP Basic-auth challenge waiting for the user. The credentials
- * typed into the dialog exist only in the dialog's own state and in
- * this answer callback — they are never stored or logged.
- */
-private data class AuthPromptState(
-    val info: HttpAuthRequestInfo,
-    val respond: (String?, String?) -> Unit
-)
-
-/**
- * Read an imported file's full text, stopping at
- * [MAX_IMPORT_FILE_CHARS]. Import files are untrusted input: reading
- * one unbounded with readText() lets an oversized file exhaust
- * memory before any parser gets a chance to reject it. Throws on
- * oversize or I/O failure — callers catch and report in plain
- * language without touching existing data.
- */
-private fun readImportFileText(
-    context: android.content.Context,
-    uri: android.net.Uri
-): String {
-    val reader = context.contentResolver.openInputStream(uri)?.bufferedReader()
-        ?: throw java.io.IOException("cannot open import file")
-    val sb = StringBuilder()
-    reader.use { r ->
-        val buf = CharArray(8192)
-        while (true) {
-            val n = r.read(buf)
-            if (n < 0) break
-            if (sb.length + n > MAX_IMPORT_FILE_CHARS) {
-                throw java.io.IOException("import file too large")
-            }
-            sb.append(buf, 0, n)
-        }
-    }
-    return sb.toString()
-}
+private enum class Screen { PICKER, BROWSER, BOOKMARKS, HISTORY, SETTINGS, DOWNLOADS, CLEAR_DATA, SNIFF }
 
 /**
  * Copy plain text to the system clipboard. Returns false when the
@@ -463,39 +350,6 @@ private fun createPinnedShortcutIcon(
     }
     return bitmap
 }
-
-/**
- * Voice input (v0.76.0): the system speech-recognition intent both
- * mic buttons (address bar and home search box) fire. Recognition
- * runs in the system's own service UI — the app never records audio
- * itself and declares no RECORD_AUDIO permission for this; the
- * language follows the system language and the prompt is one plain
- * sentence. Callers check resolveActivity first: a device with no
- * recognition service gets a toast, never a crash.
- */
-private fun speechRecognitionIntent(): android.content.Intent =
-    android.content.Intent(
-        android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH
-    ).apply {
-        putExtra(
-            android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-            android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
-        )
-        putExtra(
-            android.speech.RecognizerIntent.EXTRA_LANGUAGE,
-            java.util.Locale.getDefault().toLanguageTag()
-        )
-        putExtra(
-            android.speech.RecognizerIntent.EXTRA_PROMPT,
-            "请说出要打开的网址或要搜索的内容"
-        )
-    }
-
-/** The first recognition candidate of a speech result, if any. */
-private fun spokenTextFromResult(data: android.content.Intent?): String? =
-    data?.getStringArrayListExtra(
-        android.speech.RecognizerIntent.EXTRA_RESULTS
-    )?.firstOrNull()?.takeIf { it.isNotBlank() }
 
 /**
  * A long-press context menu waiting to be shown (v0.42.0). Carries
@@ -588,17 +442,6 @@ fun BrowserApp(
 ) {
     val context = LocalContext.current
     val store = remember { Store(context) }
-    // This device's system default WebView UA, read once (v0.80.0):
-    // the UA presets build their strings out of its real fragments
-    // (Android version, model, Chrome version — see presetUserAgent),
-    // and every tab's UA provider closes over this value.
-    val systemDefaultUserAgent = remember {
-        try {
-            android.webkit.WebSettings.getDefaultUserAgent(context)
-        } catch (t: Throwable) {
-            null
-        }
-    }
     var screen by remember {
         mutableStateOf(if (store.mainEngineChosen) Screen.BROWSER else Screen.PICKER)
     }
@@ -617,13 +460,6 @@ fun BrowserApp(
     // main thread during the very first composition.
     val bookmarks = remember { mutableStateListOf<Bookmark>() }
     val history = remember { mutableStateListOf<HistoryItem>() }
-    val readingList = remember { mutableStateListOf<ReadingItem>() }
-    // Speed dials stay synchronous on purpose: the list is hard-capped
-    // at 12 tiny entries (a couple of KB of JSON at most) and the home
-    // page shows them, so there is nothing worth deferring.
-    val speedDials = remember {
-        mutableStateListOf<SpeedDial>().apply { addAll(store.loadSpeedDials()) }
-    }
     // Compat sites also stay synchronous on purpose: the very first
     // restored tab must already know them (effectiveEngine / the
     // shouldUseWebView check run when that tab is created and first
@@ -637,12 +473,6 @@ fun BrowserApp(
     // consults this list), and the set is a handful of host strings.
     val desktopSites = remember {
         mutableStateListOf<String>().apply { addAll(store.loadDesktopSites()) }
-    }
-    // Reader-mode sites (v0.73.0) stay synchronous for the same
-    // reason: the auto-reader check runs when a tab's first page
-    // finishes loading, and the set is a handful of host strings.
-    val readerSites = remember {
-        mutableStateListOf<String>().apply { addAll(store.loadReaderSites()) }
     }
     // Text another app shared to us, waiting for the user's choice
     // in the share dialog (v0.73.0). Nothing is opened or saved
@@ -692,12 +522,8 @@ fun BrowserApp(
     // page read, so a change made on either the settings page or the
     // home-page chip applies everywhere at once.
     var searchEngineState by remember { mutableStateOf(store.searchEngine) }
-    var searchSuggestionsState by remember {
-        mutableStateOf(store.searchSuggestionsEnabled)
-    }
     LaunchedEffect(screen) {
         searchEngineState = store.searchEngine
-        searchSuggestionsState = store.searchSuggestionsEnabled
     }
     // Gecko warm-up (v0.71.0): the runtime used to be created only
     // when the first Firefox tab was opened, and that tab sat
@@ -778,8 +604,6 @@ fun BrowserApp(
     var sniffTabId by remember { mutableStateOf(-1) }
     // The tab waiting on the screenshot save/share dialog.
     var screenshotTab by remember { mutableStateOf<BrowserTab?>(null) }
-    // A download waiting on the user's system-vs-TuxunDown choice.
-    var askDownload by remember { mutableStateOf<AskDownloadRequest?>(null) }
 
     /**
      * Hand link text to TuxunDown through its only public entry: an
@@ -868,18 +692,13 @@ fun BrowserApp(
         when (store.downloadMode) {
             DownloadMode.SYSTEM -> effectiveFallback()
             DownloadMode.TUXUNDOWN -> tuxunDownOrFallback(url, effectiveFallback)
-            DownloadMode.ASK -> askDownload = AskDownloadRequest(
-                message = filenameHint?.takeIf { it.isNotBlank() } ?: url,
-                onSystem = effectiveFallback,
-                onTuxunDown = { tuxunDownOrFallback(url, effectiveFallback) }
-            )
         }
     }
 
     /**
      * Batch version of [downloadWithMode] (sniffer "download all"):
-     * never asks or shares per item — the whole batch is one share
-     * with one link per line, and ask mode asks exactly once.
+     * never shares per item — the whole batch is one share with one
+     * link per line.
      */
     fun downloadBatchWithMode(
         urls: List<String>,
@@ -912,11 +731,6 @@ fun BrowserApp(
         when (store.downloadMode) {
             DownloadMode.SYSTEM -> effectiveFallback()
             DownloadMode.TUXUNDOWN -> tuxunDownOrFallback(joined, effectiveFallback)
-            DownloadMode.ASK -> askDownload = AskDownloadRequest(
-                message = "共 ${clean.size} 个链接",
-                onSystem = effectiveFallback,
-                onTuxunDown = { tuxunDownOrFallback(joined, effectiveFallback) }
-            )
         }
     }
 
@@ -1283,12 +1097,6 @@ fun BrowserApp(
             },
             textZoomProvider = { store.textZoomPercent },
             webDarkProvider = { store.webDarkMode },
-            userAgentProvider = {
-                presetUserAgent(store.uaPreset, systemDefaultUserAgent)
-            },
-            thirdPartyCookiesProvider = { store.allowThirdPartyCookies },
-            blockImagesProvider = { store.blockImages },
-            disableJavaScriptProvider = { store.disableJavaScript },
             readerFontSizeProvider = { store.readerFontSize },
             readerBackgroundProvider = { store.readerBackground },
             appDarkProvider = { isAppDarkTheme(context, store.themeMode) },
@@ -1353,29 +1161,14 @@ fun BrowserApp(
                         referer = created?.url
                     )
                 }
-                if (store.downloadMode != DownloadMode.ASK) {
-                    android.widget.Toast.makeText(
-                        context, "已开始下载 $fileName",
-                        android.widget.Toast.LENGTH_SHORT
-                    ).show()
-                }
+                android.widget.Toast.makeText(
+                    context, "已开始下载 $fileName",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
             },
-            isAdHideSlotsEnabled = {
-                store.adBlockEnabled && store.adHideSlots
-            },
+            isAdHideSlotsEnabled = { store.adBlockEnabled },
             onBlockedRequest = { store.noteBlocked() },
-            autoReaderProvider = { finishedUrl ->
-                // Per-site reader memory (v0.73.0): only WebView
-                // tabs ever consult this (their onPageFinished is
-                // the only caller). Incognito tabs neither read nor
-                // write the list — the same rule as desktop memory —
-                // and reader mode needs JavaScript, so the global
-                // disable-JavaScript switch vetoes it too (the menu
-                // item refuses with an explanation in that state;
-                // silently staying out is the honest auto behaviour).
-                !incognito && !store.disableJavaScript &&
-                    isReaderHost(hostOf(finishedUrl), readerSites.toSet())
-            }
+            guardScriptProvider = { store.guardScriptEnabled }
         )
         created = tab
         return tab
@@ -1625,27 +1418,7 @@ fun BrowserApp(
         desktopSites.remove(domain)
     }
 
-    fun addReaderSite(domain: String) {
-        store.addReaderSite(domain)
-        if (domain !in readerSites) readerSites.add(domain)
-    }
-
-    fun removeReaderSite(domain: String) {
-        store.removeReaderSite(domain)
-        readerSites.remove(domain)
-    }
-
-    /**
-     * Forget the reader-mode memory covering [host]: every stored
-     * entry this host belongs to (the host itself may have been
-     * remembered through a parent domain) is removed. Twin of
-     * [removeDesktopMemoryForHost].
-     */
-    fun removeReaderMemoryForHost(host: String) {
-        readerSites.filter { hostMatchesSite(host, it) }
-            .forEach { removeReaderSite(it) }
-    }
-
+    
     /**
      * Forget the desktop-mode memory covering [host]: every stored
      * entry this host belongs to (the host itself may have been
@@ -1919,39 +1692,7 @@ fun BrowserApp(
         return added to skippedIncognito
     }
 
-    /**
-     * Save ALL open tabs as bookmarks into one folder (v0.87.0,
-     * the tab sheet's "把全部标签存为书签"). The classification is
-     * the pure [planSaveAllTabsAsBookmarks] — incognito tabs,
-     * internal pages and already-bookmarked URLs are skipped and
-     * counted; everything else is appended through the existing
-     * bookmark storage, and the folder name joins the stored
-     * folder list through the existing folder write path (an
-     * existing folder of the same name is merged into, never
-     * duplicated — the plan's bookmarks simply carry its name).
-     * The folder is registered even when nothing was added, so an
-     * explicitly confirmed name is never silently dropped.
-     */
-    fun saveAllTabsToFolder(folderName: String): SaveAllTabsPlan {
-        val plan = planSaveAllTabsAsBookmarks(
-            tabs.map {
-                TabBookmarkCandidate(it.title, it.url, it.incognito)
-            },
-            bookmarks,
-            folderName
-        )
-        if (plan.toAdd.isNotEmpty()) {
-            bookmarks.addAll(0, plan.toAdd)
-            store.saveBookmarks(bookmarks)
-        }
-        val folder = normalizeBookmarkFolderName(folderName)
-        if (folder.isNotEmpty() && folder !in bookmarkFolders) {
-            bookmarkFolders.add(folder)
-            store.saveBookmarkFolders(bookmarkFolders)
-        }
-        return plan
-    }
-
+    
     // Session restore: reopen the tabs that were open when the app was
     // last closed (normal tabs only — incognito tabs are never saved).
     // Runs once, before the persistence effect below is allowed to save
@@ -1970,8 +1711,22 @@ fun BrowserApp(
         }
         bookmarks.addAll(loadedLists.bookmarks)
         history.addAll(loadedLists.history)
-        readingList.addAll(loadedLists.readingList)
         bookmarkFolders.addAll(loadedLists.bookmarkFolders)
+        // One-time migration (v0.91.0): the removed reading list
+        // and speed dials fold into the bookmarks (see Store).
+        // Runs after the fill above so the de-dup sees the real
+        // bookmark list; the migrated entries are then published
+        // into the state list from the store's own reload.
+        val migratedBookmarks = kotlinx.coroutines.withContext(
+            kotlinx.coroutines.Dispatchers.Default
+        ) {
+            store.migrateRemovedListsToBookmarks()
+            store.loadBookmarks()
+        }
+        if (migratedBookmarks.size != bookmarks.size) {
+            bookmarks.clear()
+            bookmarks.addAll(migratedBookmarks)
+        }
         // History retention cleanup: drop normal-history entries older
         // than the user's chosen window. Runs inside this effect (off
         // the startup critical path, filtering on a background
@@ -2166,37 +1921,27 @@ fun BrowserApp(
 
     fun exportBackup() {
         val json = backupToJson(
-            bookmarks, history, readingList, speedDials,
+            bookmarks, history,
             BackupSettings(
                 mainEngine = store.mainEngine,
                 incognitoEngine = store.incognitoEngine,
                 searchEngine = store.searchEngine,
-                customSearchName = store.customSearchName,
-                customSearchTemplate = store.customSearchTemplate,
                 adBlockEnabled = store.adBlockEnabled,
                 downloadMode = store.downloadMode,
                 historyRetention = store.historyRetention,
                 textZoomPercent = store.textZoomPercent,
                 startupRestore = store.startupRestore,
                 themeMode = store.themeMode,
-                adHideSlots = store.adHideSlots,
                 webDarkMode = store.webDarkMode,
-                allowThirdPartyCookies = store.allowThirdPartyCookies,
-                blockImages = store.blockImages,
-                disableJavaScript = store.disableJavaScript,
-                searchSuggestionsEnabled = store.searchSuggestionsEnabled,
                 readerFontSize = store.readerFontSize,
                 readerBackground = store.readerBackground,
-                bookmarkSortOrder = store.bookmarkSortOrder,
                 httpsFirstEnabled = store.httpsFirstEnabled,
-                uaPreset = store.uaPreset
+                guardScriptEnabled = store.guardScriptEnabled
             ),
             compatSites = store.loadCompatSites().sorted(),
             desktopSites = store.loadDesktopSites().sorted(),
             bookmarkFolders = allBookmarkFolders(bookmarks, bookmarkFolders),
-            readerSites = store.loadReaderSites().sorted(),
-            totalBlocked = store.totalBlocked,
-            blockedDaily = store.blockedDailyCounts()
+            totalBlocked = store.totalBlocked
         )
         val fileName = "tuxunbrowse-backup.json"
         try {
@@ -2234,9 +1979,9 @@ fun BrowserApp(
 
     /**
      * Merge a confirmed backup into the live data: lists merge with
-     * de-duplication (bookmarks/reading list/speed dials by URL,
-     * history by URL + time), settings overwrite. Returns the
-     * per-list added counts for the result toast.
+     * de-duplication (bookmarks by URL, history by URL + time),
+     * settings overwrite. Returns the per-list added counts for the
+     * result toast.
      */
     fun applyBackup(data: BackupData): String {
         var addedBookmarks = 0
@@ -2261,33 +2006,10 @@ fun BrowserApp(
             history.addAll(sorted)
             store.saveHistory(history)
         }
-        var addedReading = 0
-        data.readingList.distinctBy { it.url }.forEach { item ->
-            if (readingList.none { it.url == item.url }) {
-                readingList.add(item)
-                addedReading++
-            }
-        }
-        if (addedReading > 0) {
-            while (readingList.size > 200) {
-                readingList.removeAt(readingList.lastIndex)
-            }
-            store.saveReadingList(readingList)
-        }
-        var addedDials = 0
-        data.speedDials.distinctBy { it.url }.forEach { dial ->
-            if (speedDials.size < 12 && speedDials.none { it.url == dial.url }) {
-                speedDials.add(dial)
-                addedDials++
-            }
-        }
-        if (addedDials > 0) store.saveSpeedDials(speedDials)
         val s = data.settings
         s.mainEngine?.let { store.mainEngine = it }
         s.incognitoEngine?.let { store.incognitoEngine = it }
         s.searchEngine?.let { store.searchEngine = it }
-        s.customSearchName?.let { store.customSearchName = it }
-        s.customSearchTemplate?.let { store.customSearchTemplate = it }
         s.adBlockEnabled?.let { store.adBlockEnabled = it }
         s.downloadMode?.let { store.downloadMode = it }
         s.historyRetention?.let { store.historyRetention = it }
@@ -2308,46 +2030,21 @@ fun BrowserApp(
             // reaches it, and the import goes through it too.
             onThemeModeChanged(mode)
         }
-        s.adHideSlots?.let { store.adHideSlots = it }
         s.webDarkMode?.let { enabled ->
             store.webDarkMode = enabled
             tabs.forEach { it.applyWebDark(enabled) }
         }
-        s.allowThirdPartyCookies?.let { enabled ->
-            store.allowThirdPartyCookies = enabled
-            tabs.forEach { it.applyThirdPartyCookies(enabled) }
-        }
-        s.blockImages?.let { enabled ->
-            store.blockImages = enabled
-            tabs.forEach { it.applyBlockImages(enabled) }
-        }
-        s.disableJavaScript?.let { disabled ->
-            store.disableJavaScript = disabled
-            tabs.forEach { it.applyDisableJavaScript(disabled) }
-        }
-        s.searchSuggestionsEnabled?.let { store.searchSuggestionsEnabled = it }
         // Reader typesetting (v0.58.0): plain Store writes, plus a
         // style re-apply so a tab currently in reader mode picks the
         // restored values up at once (same live path as the settings
         // page).
         s.readerFontSize?.let { store.readerFontSize = it }
         s.readerBackground?.let { store.readerBackground = it }
-        // Bookmark display sort (v0.63.0): plain Store write — the
-        // bookmarks page reads it when it is next composed, exactly
-        // like the settings-page picker writes it.
-        s.bookmarkSortOrder?.let { store.bookmarkSortOrder = it }
         // HTTPS first (v0.77.0): plain Store write — the four
         // inbound paths read it at open time, exactly like the
         // settings-page switch writes it.
         s.httpsFirstEnabled?.let { store.httpsFirstEnabled = it }
-        // UA preset (v0.80.0): Store write plus the same live push
-        // the settings page uses, so created engines switch identity
-        // at once (for their next load), exactly like flipping the
-        // radio by hand.
-        s.uaPreset?.let { preset ->
-            store.uaPreset = preset
-            tabs.forEach { it.applyUserAgent() }
-        }
+        s.guardScriptEnabled?.let { store.guardScriptEnabled = it }
         if (s.readerFontSize != null || s.readerBackground != null) {
             tabs.forEach { it.applyReaderStyle() }
         }
@@ -2368,14 +2065,6 @@ fun BrowserApp(
                 addedDesktop++
             }
         }
-        // Reader-mode sites merge the same way (union, v0.73.0).
-        var addedReader = 0
-        data.readerSites.forEach { domain ->
-            if (domain !in readerSites) {
-                addReaderSite(domain)
-                addedReader++
-            }
-        }
         // Bookmark folder names merge the same way (union,
         // v0.72.0): a restore must never delete a folder the user
         // made on this device. (Folders of the imported bookmarks
@@ -2394,11 +2083,11 @@ fun BrowserApp(
         // a backup without them leaves the current counters alone.
         var restoredBlocked = false
         data.totalBlocked?.let { total ->
-            store.restoreBlockedStats(total, data.blockedDaily)
+            store.restoreBlockedStats(total)
             restoredBlocked = true
         }
         if (data.settings.overwriteSummary().isNotEmpty() ||
-            addedCompat > 0 || addedDesktop > 0 || addedReader > 0 ||
+            addedCompat > 0 || addedDesktop > 0 ||
             restoredBlocked
         ) {
             // The store was just rewritten behind the settings
@@ -2408,14 +2097,11 @@ fun BrowserApp(
             // its own mirrors on, so every page shows the imported
             // values at once instead of after a re-entry.
             searchEngineState = store.searchEngine
-            searchSuggestionsState = store.searchSuggestionsEnabled
             settingsRefreshTick++
         }
-        return "书签 +$addedBookmarks 条、历史 +$addedHistory 条、" +
-            "阅读列表 +$addedReading 条、快捷方式 +$addedDials 条" +
+        return "书签 +$addedBookmarks 条、历史 +$addedHistory 条" +
             (if (addedCompat > 0) "、兼容名单 +$addedCompat 个" else "") +
             (if (addedDesktop > 0) "、桌面模式站点 +$addedDesktop 个" else "") +
-            (if (addedReader > 0) "、阅读模式站点 +$addedReader 个" else "") +
             (if (addedFolders > 0) "、书签文件夹 +$addedFolders 个" else "") +
             (if (restoredBlocked) "、拦截统计已按备份恢复" else "")
     }
@@ -2468,9 +2154,7 @@ fun BrowserApp(
                 ) {
                     Text(
                         "备份里的书签 ${backupToConfirm.bookmarks.size} 条、" +
-                            "历史 ${backupToConfirm.history.size} 条、" +
-                            "阅读列表 ${backupToConfirm.readingList.size} 条、" +
-                            "快捷方式 ${backupToConfirm.speedDials.size} 条会合并进来，" +
+                            "历史 ${backupToConfirm.history.size} 条会合并进来，" +
                             "和现有的重复的会跳过，不会删掉现有的任何东西。" +
                             if (backupToConfirm.compatSites.isNotEmpty()) {
                                 "\n\n备份里的兼容名单 ${backupToConfirm.compatSites.size} 个网站" +
@@ -3223,32 +2907,26 @@ fun BrowserApp(
                 android.widget.Toast.LENGTH_LONG
             ).show()
             else -> openUrlInNewTab(
-                resolveInput(text, store.searchEngine, store.customSearchTemplate),
+                resolveInput(text, store.searchEngine),
                 httpsUpgrade = true
             )
         }
     }
 
-    /** The share dialog's "save to reading list" choice (v0.73.0). */
-    fun saveSharedUrlToReadingList(url: String) {
-        if (readingList.any { it.url == url }) {
+    
+    /** The share dialog's "save as bookmark" choice. */
+    fun saveSharedUrlAsBookmark(url: String) {
+        if (bookmarks.any { it.url == url }) {
             android.widget.Toast.makeText(
-                context, "这篇文章已经在阅读列表里了",
+                context, "这个网址已经在书签里了",
                 android.widget.Toast.LENGTH_SHORT
             ).show()
             return
         }
-        readingList.add(
-            0,
-            ReadingItem(url, url, System.currentTimeMillis(), false)
-        )
-        // Same 200-entry cap as the in-browser add path.
-        while (readingList.size > 200) {
-            readingList.removeAt(readingList.lastIndex)
-        }
-        store.saveReadingList(readingList)
+        bookmarks.add(0, Bookmark(url, url))
+        store.saveBookmarks(bookmarks)
         android.widget.Toast.makeText(
-            context, "已存入阅读列表",
+            context, "已存为书签",
             android.widget.Toast.LENGTH_SHORT
         ).show()
     }
@@ -3263,8 +2941,8 @@ fun BrowserApp(
     }
 
     // Incoming share (v0.73.0): another app handed us text and the
-    // user decides what happens — open it, save its URL to the
-    // reading list, or drop it. Nothing runs before this choice,
+    // user decides what happens — open it, save its URL as a
+    // bookmark, or drop it. Nothing runs before this choice,
     // and dismissing the dialog is the same as cancelling.
     val shareText = pendingShareText
     if (shareText != null) {
@@ -3307,9 +2985,9 @@ fun BrowserApp(
                     if (sharedUrl != null) {
                         TextButton(onClick = {
                             pendingShareText = null
-                            saveSharedUrlToReadingList(sharedUrl)
+                            saveSharedUrlAsBookmark(sharedUrl)
                         }) {
-                            Text("存入阅读列表")
+                            Text("存为书签")
                         }
                     }
                     TextButton(onClick = { pendingShareText = null }) {
@@ -3318,162 +2996,6 @@ fun BrowserApp(
                 }
             }
         )
-    }
-
-
-    // Page source (v0.84.0): fetched on demand from the active
-    // WebView tab and shown on the app-level SOURCE screen. The
-    // fetch is asynchronous; the screen renders the loading state
-    // from this state and then the text or the empty state.
-    var pageSource by remember { mutableStateOf<PageSourceData?>(null) }
-    fun fetchPageSource(tab: BrowserTab) {
-        pageSource = PageSourceData(
-            tabId = tab.id,
-            title = tab.title,
-            url = tab.url,
-            text = null,
-            failed = false
-        )
-        tab.fetchPageSource { html ->
-            // A late answer for a tab the user has since replaced
-            // (re-fetched another tab's source) must not overwrite
-            // the newer fetch.
-            val current = pageSource
-            if (current != null && current.tabId == tab.id &&
-                current.text == null && !current.failed
-            ) {
-                pageSource = if (html == null) {
-                    current.copy(failed = true)
-                } else {
-                    current.copy(text = html)
-                }
-            }
-        }
-    }
-    fun openPageSource() {
-        val tab = activeTab() ?: return
-        // BrowserScreen only calls this for a WebView tab on a real
-        // page; the guard is repeated here so no other caller can
-        // land on the source screen with nothing to fetch.
-        if (tab.isHome || tab.engine != Engine.WEBVIEW) return
-        // Same guard as the sniffer (v0.80.0 call site): reading
-        // the source runs a script in the page, so with JavaScript
-        // disabled there is honestly nothing to fetch.
-        if (store.disableJavaScript) {
-            android.widget.Toast.makeText(
-                context,
-                "禁用 JavaScript 还开着，查看源代码需要运行脚本才能取到；先到设置里关掉它再试",
-                android.widget.Toast.LENGTH_LONG
-            ).show()
-            return
-        }
-        fetchPageSource(tab)
-        screen = Screen.SOURCE
-    }
-    fun refetchPageSource() {
-        val data = pageSource ?: return
-        val tab = tabs.firstOrNull { it.id == data.tabId }
-        if (tab == null || tab.engine != Engine.WEBVIEW || tab.isHome) {
-            // The tab is gone (or stopped being a WebView page):
-            // say so through the empty state instead of spinning.
-            pageSource = data.copy(text = null, failed = true)
-            return
-        }
-        fetchPageSource(tab)
-    }
-
-    // Save web archive (v0.85.0): the active WebView tab's page as
-    // one .mhtml file. BrowserScreen only calls this for a WebView
-    // tab on a real page; the guards are repeated here so no other
-    // caller can start a save with nothing to save. A page that is
-    // still loading is refused in plain language — an archive of a
-    // half-loaded page would silently miss content, so the user is
-    // asked to wait for the load to finish instead.
-    fun savePageArchive() {
-        val tab = activeTab() ?: return
-        if (tab.isHome || tab.engine != Engine.WEBVIEW) return
-        if (tab.loadError != null) {
-            android.widget.Toast.makeText(
-                context, "这个网页没打开成功，先重新加载试试",
-                android.widget.Toast.LENGTH_SHORT
-            ).show()
-            return
-        }
-        if (tab.progress < 100) {
-            android.widget.Toast.makeText(
-                context, "网页还在加载，等它加载完再保存存档",
-                android.widget.Toast.LENGTH_LONG
-            ).show()
-            return
-        }
-        val fileName = archiveFileName(
-            tab.title,
-            java.text.SimpleDateFormat(
-                "yyyyMMdd", java.util.Locale.US
-            ).format(java.util.Date())
-        )
-        val tempFile = java.io.File(
-            context.cacheDir,
-            "web-archive-" + System.currentTimeMillis() + ".mhtml"
-        )
-        val pageUrl = tab.url
-        val incognito = tab.incognito
-        tab.savePageArchive(tempFile) { saved ->
-            if (!saved) {
-                android.widget.Toast.makeText(
-                    context, "存档保存失败，请重试",
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
-            } else {
-                moveWebArchiveToDownloads(
-                    context, tempFile, fileName
-                ) { savedName, contentUri, filePath, sizeBytes ->
-                    if (savedName == null) {
-                        android.widget.Toast.makeText(
-                            context, "存档保存失败，请重试",
-                            android.widget.Toast.LENGTH_LONG
-                        ).show()
-                    } else {
-                        // Same in-app record shape as a Gecko download
-                        // (v0.57.0 list), so the archive is listed,
-                        // openable and deletable on the downloads
-                        // screen too. Incognito keeps the v0.57.0
-                        // rule: the file itself is saved (the user
-                        // asked for it), but no record is left behind.
-                        if (!incognito) {
-                            try {
-                                store.addGeckoDownload(
-                                    GeckoDownloadRecord(
-                                        fileName = savedName,
-                                        sourceUrl = pageUrl,
-                                        sizeBytes = sizeBytes,
-                                        mimeType = WEB_ARCHIVE_MIME_TYPE,
-                                        contentUri = contentUri,
-                                        filePath = filePath,
-                                        time = System.currentTimeMillis()
-                                    )
-                                )
-                            } catch (t: Throwable) {
-                                // Recording is best-effort; the file
-                                // itself is already saved.
-                            }
-                        }
-                        android.widget.Toast.makeText(
-                            context,
-                            when {
-                                filePath != null ->
-                                    "已保存存档：$savedName（在应用下载文件夹里）"
-                                incognito ->
-                                    "已保存存档：$savedName（在系统下载文件夹里）"
-                                else ->
-                                    "已保存存档：$savedName（在系统下载文件夹，下载页里也能找到）"
-                            },
-                            android.widget.Toast.LENGTH_LONG
-                        ).show()
-                    }
-                }
-            }
-        }
     }
 
     BackHandler(enabled = fullscreenView != null) {
@@ -3542,7 +3064,6 @@ fun BrowserApp(
                 onCloseOtherTabsFor = { closeOtherTabsKeeping(it) },
                 onToggleBookmarkFor = { toggleBookmarkForTab(it) },
                 onBookmarkTabs = { bookmarkTabs(it) },
-                onSaveAllTabsToFolder = { saveAllTabsToFolder(it) },
                 bookmarkFolderNames = allBookmarkFolders(bookmarks, bookmarkFolders),
                 recentClosed = recentClosedTabs,
                 onReopenClosed = { reopenClosedTab(it) },
@@ -3574,7 +3095,7 @@ fun BrowserApp(
                         // load, and the tab is marked so a failure
                         // can offer the one-off http fallback.
                         val resolved = resolveInput(
-                            text, store.searchEngine, store.customSearchTemplate
+                            text, store.searchEngine
                         )
                         val target = upgradeToHttps(resolved, store.httpsFirstEnabled)
                         val tab = activeTab()
@@ -3586,8 +3107,6 @@ fun BrowserApp(
                 },
                 bookmarks = bookmarks,
                 searchEngine = searchEngineState,
-                searchSuggestionsEnabled = searchSuggestionsState,
-                customSearchName = store.customSearchName,
                 onOpenSuggestion = { url -> openUrl(url) },
                 onGoHome = { activeTab()?.load(HOME_URL) },
                 onReloadPage = {
@@ -3690,59 +3209,7 @@ fun BrowserApp(
                             android.widget.Toast.LENGTH_LONG
                         ).show()
                         tab.readerActive -> tab.exitReaderMode()
-                        store.disableJavaScript -> android.widget.Toast.makeText(
-                            context,
-                            "禁用 JavaScript 还开着，阅读模式需要运行脚本才能整理正文；先到设置里关掉它再试",
-                            android.widget.Toast.LENGTH_LONG
-                        ).show()
                         else -> tab.enterReaderMode()
-                    }
-                },
-                readerSiteRemembered = current?.let {
-                    !it.incognito && it.engine == Engine.WEBVIEW &&
-                        isReaderHost(hostOf(it.url), readerSites.toSet())
-                } ?: false,
-                onToggleReaderSiteMemory = { enabled ->
-                    val tab = activeTab() ?: return@BrowserScreen
-                    // The menu only offers this on a normal WebView
-                    // tab; these guards are the second line of
-                    // defence so no other caller can write the list
-                    // from an incognito or Gecko tab either.
-                    when {
-                        tab.isHome -> android.widget.Toast.makeText(
-                            context, "先打开一个网页再设置",
-                            android.widget.Toast.LENGTH_SHORT
-                        ).show()
-                        tab.incognito -> android.widget.Toast.makeText(
-                            context, "无痕标签里不会记住网站设置",
-                            android.widget.Toast.LENGTH_SHORT
-                        ).show()
-                        tab.engine == Engine.GECKO -> android.widget.Toast.makeText(
-                            context,
-                            "阅读模式暂时只支持系统 WebView 标签，火狐标签可以先切换内核再开",
-                            android.widget.Toast.LENGTH_LONG
-                        ).show()
-                        else -> {
-                            val host = hostOf(tab.url)
-                            if (host == null) {
-                                android.widget.Toast.makeText(
-                                    context, "这个页面没有可记住的网站地址",
-                                    android.widget.Toast.LENGTH_SHORT
-                                ).show()
-                            } else if (enabled) {
-                                addReaderSite(host)
-                                android.widget.Toast.makeText(
-                                    context, "已记住：这个网站会自动用阅读模式打开",
-                                    android.widget.Toast.LENGTH_SHORT
-                                ).show()
-                            } else {
-                                removeReaderMemoryForHost(host)
-                                android.widget.Toast.makeText(
-                                    context, "已取消这个网站的阅读模式记忆",
-                                    android.widget.Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                        }
                     }
                 },
                 onPrintPage = {
@@ -3775,19 +3242,12 @@ fun BrowserApp(
                             "火狐标签暂不支持嗅探，请切换到系统 WebView 打开本页再试",
                             android.widget.Toast.LENGTH_LONG
                         ).show()
-                        store.disableJavaScript -> android.widget.Toast.makeText(
-                            context,
-                            "禁用 JavaScript 还开着，嗅探需要运行脚本才能收集资源；先到设置里关掉它再试",
-                            android.widget.Toast.LENGTH_LONG
-                        ).show()
                         else -> {
                             sniffTabId = tab.id
                             screen = Screen.SNIFF
                         }
                     }
                 },
-                onViewSource = { openPageSource() },
-                onSaveArchive = { savePageArchive() },
                 onScreenshot = {
                     val tab = activeTab()
                     when {
@@ -3808,83 +3268,14 @@ fun BrowserApp(
                 onOpenHistory = { screen = Screen.HISTORY },
                 onOpenSettings = { screen = Screen.SETTINGS },
                 adBlockEnabled = store.adBlockEnabled,
-                onAddToReadingList = {
-                    val tab = activeTab() ?: return@BrowserScreen
-                    when {
-                        tab.isHome || !tab.url.startsWith("http") ->
-                            android.widget.Toast.makeText(
-                                context, "先打开一个网页再加入阅读列表",
-                                android.widget.Toast.LENGTH_SHORT
-                            ).show()
-                        readingList.any { it.url == tab.url } ->
-                            android.widget.Toast.makeText(
-                                context, "这篇文章已经在阅读列表里了",
-                                android.widget.Toast.LENGTH_SHORT
-                            ).show()
-                        else -> {
-                            readingList.add(
-                                0,
-                                ReadingItem(
-                                    tab.title.ifBlank { tab.url },
-                                    tab.url,
-                                    System.currentTimeMillis(),
-                                    false
-                                )
-                            )
-                            // Cap the list at 200 entries; the oldest
-                            // ones fall off the end.
-                            while (readingList.size > 200) {
-                                readingList.removeAt(readingList.lastIndex)
-                            }
-                            store.saveReadingList(readingList)
-                            android.widget.Toast.makeText(
-                                context, "已加入阅读列表",
-                                android.widget.Toast.LENGTH_SHORT
-                            ).show()
-                        }
-                    }
-                },
-                onOpenReadingList = { screen = Screen.READING_LIST },
                 homeContent = {
                     HomeContent(
                         bookmarks = bookmarks,
-                        speedDials = speedDials,
-                        onOpenSpeedDial = { openUrl(it.url) },
-                        onAddSpeedDial = {
-                            speedDials.add(it)
-                            store.saveSpeedDials(speedDials)
-                        },
-                        onEditSpeedDial = { old, newItem ->
-                            val idx = speedDials.indexOf(old)
-                            if (idx >= 0) {
-                                speedDials[idx] = newItem
-                                store.saveSpeedDials(speedDials)
-                            }
-                        },
-                        onDeleteSpeedDial = {
-                            speedDials.remove(it)
-                            store.saveSpeedDials(speedDials)
-                        },
                         searchEngine = searchEngineState,
-                        customSearchName = store.customSearchName,
-                        customSearchTemplate = store.customSearchTemplate,
-                        // Home suggestions (v0.59.0): same switch
-                        // state the address bar gets, plus the ACTIVE
-                        // tab's incognito flag — the home page belongs
-                        // to that tab, so an incognito tab's home box
-                        // never fetches online suggestions.
-                        searchSuggestionsEnabled = searchSuggestionsState,
                         activeIncognito = current?.incognito == true,
-                        activeTabId = current?.id,
                         onSearchEngineSelected = { engine ->
                             store.searchEngine = engine
                             searchEngineState = engine
-                        },
-                        onSaveCustomSearch = { name, template ->
-                            store.customSearchName = name
-                            store.customSearchTemplate = template
-                            store.searchEngine = SearchEngine.CUSTOM
-                            searchEngineState = SearchEngine.CUSTOM
                         },
                         onSearchUrl = { url -> openUrl(url, httpsUpgrade = true) },
                         onOpenBookmark = { openUrl(it.url) },
@@ -3908,8 +3299,6 @@ fun BrowserApp(
         Screen.BOOKMARKS -> BookmarksScreen(
             bookmarks = bookmarks,
             folders = allBookmarkFolders(bookmarks, bookmarkFolders),
-            sortOrder = store.bookmarkSortOrder,
-            onSortOrderChange = { store.bookmarkSortOrder = it },
             onBack = { screen = Screen.BROWSER },
             onOpen = { openUrl(it.url) },
             onDelete = {
@@ -4074,15 +3463,12 @@ fun BrowserApp(
             refreshTick = settingsRefreshTick,
             bookmarkCount = bookmarks.size,
             historyCount = history.size,
-            readingCount = readingList.size,
-            speedDialCount = speedDials.size,
             onOpenReleaseUrl = { url -> openUrl(url) },
             onBack = { screen = Screen.BROWSER },
             onClearHistoryRange = { range -> clearHistoryRange(range) },
             historyClearCounts = historyClearCounts(),
             onRemoveCompatSite = { removeCompatSite(it) },
             onRemoveDesktopSite = { removeDesktopSite(it) },
-            onRemoveReaderSite = { removeReaderSite(it) },
             onClearDesktopSites = { clearDesktopSites() },
             onOpenClearData = { screen = Screen.CLEAR_DATA },
             onExportBackup = { exportBackup() },
@@ -4097,18 +3483,6 @@ fun BrowserApp(
             },
             onWebDarkChange = { enabled ->
                 tabs.forEach { it.applyWebDark(enabled) }
-            },
-            onUserAgentChange = {
-                tabs.forEach { it.applyUserAgent() }
-            },
-            onThirdPartyCookiesChange = { enabled ->
-                tabs.forEach { it.applyThirdPartyCookies(enabled) }
-            },
-            onBlockImagesChange = { enabled ->
-                tabs.forEach { it.applyBlockImages(enabled) }
-            },
-            onDisableJavaScriptChange = { disabled ->
-                tabs.forEach { it.applyDisableJavaScript(disabled) }
             },
             onReaderStyleChange = {
                 tabs.forEach { it.applyReaderStyle() }
@@ -4132,7 +3506,6 @@ fun BrowserApp(
                     GeckoHolder.clearSiteData()
                 }
             },
-            onClearSite = { host -> clearSiteData(host) }
         )
 
         Screen.DOWNLOADS -> DownloadsScreen(
@@ -4193,116 +3566,6 @@ fun BrowserApp(
             }
         )
 
-        Screen.SOURCE -> SourceScreen(
-            data = pageSource,
-            onBack = { screen = Screen.BROWSER },
-            onRefetch = { refetchPageSource() }
-        )
-
-        Screen.READING_LIST -> ReadingListScreen(
-            items = readingList,
-            onBack = { screen = Screen.BROWSER },
-            onOpen = { item ->
-                // Opening an entry marks it read, then follows the
-                // usual openUrl path (current tab, default engine
-                // rules and compat memory included).
-                val idx = readingList.indexOf(item)
-                if (idx >= 0 && !readingList[idx].read) {
-                    readingList[idx] = readingList[idx].copy(read = true)
-                    store.saveReadingList(readingList)
-                }
-                openUrl(item.url)
-            },
-            onDelete = {
-                readingList.remove(it)
-                store.saveReadingList(readingList)
-            },
-            onClearRead = {
-                // Delete-all-read (v0.62.0): the screen's confirm
-                // dialog has already stated this same count; remove,
-                // persist once, and report how many went.
-                val removedCount = readingList.count { it.read }
-                readingList.removeAll { it.read }
-                store.saveReadingList(readingList)
-                android.widget.Toast.makeText(
-                    context, "已删除 $removedCount 条已读条目",
-                    android.widget.Toast.LENGTH_SHORT
-                ).show()
-            },
-            onMarkAllRead = {
-                // Mark-all-read (v0.62.0): field-level copy(read =
-                // true) per unread entry — the same update shape the
-                // open paths use (v0.55.0 audit), so title/url/time
-                // are carried over untouched — then one save and a
-                // Toast with the real number marked.
-                var markedCount = 0
-                for (i in readingList.indices) {
-                    if (!readingList[i].read) {
-                        readingList[i] =
-                            readingList[i].copy(read = true)
-                        markedCount++
-                    }
-                }
-                if (markedCount > 0) {
-                    store.saveReadingList(readingList)
-                    android.widget.Toast.makeText(
-                        context, "已把 $markedCount 条标为已读",
-                        android.widget.Toast.LENGTH_SHORT
-                    ).show()
-                }
-            },
-            onOpenInNewTab = { item ->
-                // Background open (v0.54.0): the entry counts as
-                // opened, so it goes through the exact same
-                // mark-read step as a tap/menu open before the tab
-                // is created — no open path leaves it unread.
-                val idx = readingList.indexOf(item)
-                if (idx >= 0 && !readingList[idx].read) {
-                    readingList[idx] = readingList[idx].copy(read = true)
-                    store.saveReadingList(readingList)
-                }
-                newTab(store.mainEngine, false, item.url, activate = false)
-                android.widget.Toast.makeText(
-                    context, "已在后台打开新标签",
-                    android.widget.Toast.LENGTH_SHORT
-                ).show()
-            },
-            onCopyUrl = {
-                val ok = copyTextToClipboard(context, "url", it.url)
-                android.widget.Toast.makeText(
-                    context, if (ok) "网址已复制" else "复制失败，请重试",
-                    android.widget.Toast.LENGTH_SHORT
-                ).show()
-            }
-        )
-        }
-    }
-
-    val ask = askDownload
-    if (ask != null) {
-        AlertDialog(
-            onDismissRequest = { askDownload = null },
-            title = { Text("用哪种方式下载？") },
-            text = {
-                Text(
-                    ask.message + "\n\n系统下载用手机自带的下载器；" +
-                        "TuxunDown 是多线程下载器，下大文件更快，需要另外安装这个 App，" +
-                        "没装会自动改用系统下载。"
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    askDownload = null
-                    ask.onTuxunDown()
-                }) { Text("TuxunDown 下载") }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    askDownload = null
-                    ask.onSystem()
-                }) { Text("系统下载") }
-            }
-        )
     }
 
     // Long-press context menu (v0.42.0): ONE combined dialog for
@@ -4817,8 +4080,7 @@ fun BrowserApp(
                                             target.load(
                                                 resolveInput(
                                                     selText,
-                                                    store.searchEngine,
-                                                    store.customSearchTemplate
+                                                    store.searchEngine
                                                 )
                                             )
                                             screen = Screen.BROWSER
@@ -5150,13 +4412,10 @@ fun BrowserApp(
     }
 
     // Page screenshot (WebView tabs only — Gecko tabs are told
-    // honestly at the menu entry that it is not supported there).
-    // Two kinds: the visible screen, or a full-page long capture
-    // capped at MAX_FULL_PAGE_HEIGHT_PX — the dialog says what the
-    // cap means, and a truncated capture is reported after saving.
+    // honestly at the menu entry that it is not supported there):
+    // captures the visible screen, then saves or shares it.
     val shotTab = screenshotTab
     if (shotTab != null) {
-        var fullPage by remember(shotTab) { mutableStateOf(false) }
         fun shotToast(message: String) {
             android.widget.Toast.makeText(
                 context, message, android.widget.Toast.LENGTH_LONG
@@ -5164,43 +4423,16 @@ fun BrowserApp(
         }
         fun runShot(share: Boolean) {
             screenshotTab = null
-            if (!fullPage) {
-                val bmp = shotTab.captureVisibleBitmap()
-                when {
-                    bmp == null -> shotToast("截图失败，请重试")
-                    share -> sharePageScreenshot(context, bmp)
-                    else -> savePageScreenshot(context, bmp) { where ->
-                        shotToast(
-                            if (where != null) {
-                                "截图已保存到$where"
-                            } else {
-                                "保存失败，请重试"
-                            }
-                        )
-                    }
-                }
-                return
-            }
-            val result = shotTab.captureFullPageBitmap()
-            val bmp = result.bitmap
+            val bmp = shotTab.captureVisibleBitmap()
             when {
-                result.outOfMemory -> shotToast(
-                    "这个页面太长太大，手机内存不够截成长图，可以改用当前屏幕截图"
-                )
                 bmp == null -> shotToast("截图失败，请重试")
-                share -> {
-                    sharePageScreenshot(context, bmp)
-                    if (result.truncated) {
-                        shotToast("页面太长，只截了前半部分")
-                    }
-                }
+                share -> sharePageScreenshot(context, bmp)
                 else -> savePageScreenshot(context, bmp) { where ->
                     shotToast(
-                        when {
-                            where == null -> "保存失败，请重试"
-                            result.truncated ->
-                                "页面太长，只截了前半部分，已保存到$where"
-                            else -> "长截图已保存到$where"
+                        if (where != null) {
+                            "截图已保存到$where"
+                        } else {
+                            "保存失败，请重试"
                         }
                     )
                 }
@@ -5210,49 +4442,7 @@ fun BrowserApp(
             onDismissRequest = { screenshotTab = null },
             title = { Text("网页截图") },
             text = {
-                LazyColumn {
-                    item {
-                        Text("选一种截图方式，截好后可以存到相册，也可以直接分享。")
-                    }
-                    item {
-                        ListItem(
-                            headlineContent = { Text("当前屏幕截图") },
-                            supportingContent = {
-                                Text("只截现在屏幕里能看到的这一屏")
-                            },
-                            leadingContent = {
-                                RadioButton(
-                                    selected = !fullPage,
-                                    onClick = { fullPage = false }
-                                )
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { fullPage = false }
-                        )
-                    }
-                    item {
-                        ListItem(
-                            headlineContent = { Text("整页长截图") },
-                            supportingContent = {
-                                Text(
-                                    "把整个网页从上到下截成一张长图，最长 " +
-                                        "$MAX_FULL_PAGE_HEIGHT_PX 像素；" +
-                                        "页面更长时只截前半部分，截完会提醒你"
-                                )
-                            },
-                            leadingContent = {
-                                RadioButton(
-                                    selected = fullPage,
-                                    onClick = { fullPage = true }
-                                )
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { fullPage = true }
-                        )
-                    }
-                }
+                Text("截取现在屏幕里能看到的这一屏，截好后可以存到相册，也可以直接分享。")
             },
             confirmButton = {
                 Button(onClick = { runShot(share = false) }) { Text("保存到相册") }
@@ -5268,30 +4458,18 @@ fun BrowserApp(
 }
 
 /**
- * The app's own home page: a native Material 3 screen with a big search
- * box, a bookmark shortcut grid and recent history. It never loads an
- * external start page.
+ * The app's own home page: a native Material 3 screen with a big
+ * search box and, when bookmarks exist, a pinned-bookmark shortcut
+ * grid. It never loads an external start page, and history is not
+ * shown here — it lives on the History page.
  */
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun HomeContent(
     bookmarks: List<Bookmark>,
-    speedDials: List<SpeedDial> = emptyList(),
-    onOpenSpeedDial: (SpeedDial) -> Unit = {},
-    onAddSpeedDial: (SpeedDial) -> Unit = {},
-    onEditSpeedDial: (SpeedDial, SpeedDial) -> Unit = { _, _ -> },
-    onDeleteSpeedDial: (SpeedDial) -> Unit = {},
     searchEngine: SearchEngine,
-    customSearchName: String = "",
-    customSearchTemplate: String = "",
-    // Home search suggestions (v0.59.0): the same switch, the active
-    // tab's incognito flag and the tab id (the fetch effect's stale
-    // guard key), all mirroring what the address bar receives.
-    searchSuggestionsEnabled: Boolean = false,
     activeIncognito: Boolean = false,
-    activeTabId: Int? = null,
     onSearchEngineSelected: (SearchEngine) -> Unit = {},
-    onSaveCustomSearch: (String, String) -> Unit = { _, _ -> },
     onSearchUrl: (String) -> Unit,
     onOpenBookmark: (Bookmark) -> Unit,
     onDeleteBookmark: (Bookmark) -> Unit,
@@ -5301,89 +4479,24 @@ private fun HomeContent(
     var query by remember { mutableStateOf("") }
     var pendingDelete by remember { mutableStateOf<Bookmark?>(null) }
     var actionTarget by remember { mutableStateOf<Bookmark?>(null) }
-    // Speed-dial editor/menu state (add when dialEditing == null).
     val homeContext = LocalContext.current
-    var dialActionTarget by remember { mutableStateOf<SpeedDial?>(null) }
-    var dialPendingDelete by remember { mutableStateOf<SpeedDial?>(null) }
-    var dialDialogOpen by remember { mutableStateOf(false) }
     // Home-page search-engine quick switch: same data source as the
     // settings page (the store, via the callbacks above); this local
     // mirror is what the home search box reads, so a pick here takes
     // effect on the home page at once.
     var currentEngine by remember { mutableStateOf(searchEngine) }
-    var currentCustomName by remember { mutableStateOf(customSearchName) }
-    var currentCustomTemplate by remember { mutableStateOf(customSearchTemplate) }
     var showEnginePicker by remember { mutableStateOf(false) }
-    var showHomeCustomDialog by remember { mutableStateOf(false) }
-    var homeCustomName by remember { mutableStateOf("") }
-    var homeCustomTemplate by remember { mutableStateOf("") }
-    var homeCustomError by remember { mutableStateOf<String?>(null) }
-    fun engineShortName(): String =
-        if (currentEngine == SearchEngine.CUSTOM) {
-            currentCustomName.ifBlank { "自定义" }
-        } else {
-            currentEngine.label
-        }
-    // ---- Home search suggestions (v0.59.0) ----
-    // The home search box runs the address bar's suggestion pipeline
-    // (v0.50.0) through the SAME shared pieces — the
-    // shouldFetchOnlineSuggestions privacy gate, the same debounce
-    // and fetchSearchSuggestions call, and the same
-    // mergedOnlineSuggestionRows merge/cap — so the two surfaces
-    // cannot drift apart. Address-bar-only concerns (its
-    // TextFieldValue select-all, its AnimatedVisibility unfold) stay
-    // in BrowserScreen; the home box tracks focus with
-    // onFocusChanged on the DockedSearchBar instead. The home page
-    // belongs to the active tab, so the incognito gate reads that
-    // tab's flag (activeIncognito above).
     var homeSearchFocused by remember { mutableStateOf(false) }
-    var homeOnlineSuggestions by remember {
-        mutableStateOf<List<String>>(emptyList())
-    }
     val homeFocusManager = LocalFocusManager.current
     val homeSuggestionQuery = query.trim()
-    LaunchedEffect(
-        homeSuggestionQuery, homeSearchFocused, searchSuggestionsEnabled,
-        currentEngine, activeIncognito, activeTabId
-    ) {
-        if (!shouldFetchOnlineSuggestions(
-                searchSuggestionsEnabled, homeSearchFocused,
-                activeIncognito, currentEngine, homeSuggestionQuery
-            )
-        ) {
-            homeOnlineSuggestions = emptyList()
-            return@LaunchedEffect
-        }
-        // Same debounce as the address bar: a new keystroke restarts
-        // this effect and cancels the pending wait.
-        kotlinx.coroutines.delay(SEARCH_SUGGESTION_DEBOUNCE_MS)
-        val fetched = kotlinx.coroutines.withContext(
-            kotlinx.coroutines.Dispatchers.IO
-        ) {
-            fetchSearchSuggestions(currentEngine, homeSuggestionQuery)
-        }
-        // Stale-response guard, same as the address bar.
-        if (isActive) {
-            homeOnlineSuggestions = fetched
-        }
-    }
-    // Suggestions are bookmarks only (plus online words and the
-    // search tail below): history stays on the History page, exactly
-    // like the address bar.
+    // Suggestions are bookmarks only (plus the search tail below):
+    // history stays on the History page, exactly like the address bar.
     val homeBookmarkSuggestions =
         if (homeSearchFocused && query.isNotBlank()) {
             matchSuggestions(query, bookmarks, emptyList())
         } else {
             emptyList()
         }
-    val homeOnlineRows = if (homeSearchFocused) {
-        mergedOnlineSuggestionRows(
-            homeBookmarkSuggestions, homeOnlineSuggestions,
-            homeSuggestionQuery
-        )
-    } else {
-        emptyList()
-    }
     val homeShowSearchTail = homeSearchFocused &&
         homeSuggestionQuery.isNotEmpty() &&
         !isUrlLikeInput(homeSuggestionQuery)
@@ -5424,65 +4537,14 @@ private fun HomeContent(
             ).show()
             return false
         }
-        onSearchUrl(resolveInput(text, currentEngine, currentCustomTemplate))
+        onSearchUrl(resolveInput(text, currentEngine))
         return true
     }
     // Tapping any suggestion row opens it, then the typed text and
     // the list go away (the tab navigates to the page).
     fun finishHomeSuggestionPick() {
         query = ""
-        homeOnlineSuggestions = emptyList()
         homeFocusManager.clearFocus()
-    }
-    // Voice input (v0.76.0): the mic button in the home search box
-    // fires the system speech recognizer; the first candidate goes
-    // through the home box's own submit path above (same
-    // blocked-scheme refusal, same resolveInput), exactly like
-    // typing it and pressing search. A device with no recognition
-    // service gets a plain toast instead of a crash.
-    val homeSpeechLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == android.app.Activity.RESULT_OK) {
-            val spoken = spokenTextFromResult(result.data)
-            if (spoken != null && submitHomeSearch(spoken)) {
-                finishHomeSuggestionPick()
-            }
-        }
-    }
-    fun launchHomeSpeechSearch() {
-        val intent = speechRecognitionIntent()
-        if (intent.resolveActivity(homeContext.packageManager) == null) {
-            android.widget.Toast.makeText(
-                homeContext, "这台设备没有可用的语音输入",
-                android.widget.Toast.LENGTH_SHORT
-            ).show()
-            return
-        }
-        try {
-            homeSpeechLauncher.launch(intent)
-        } catch (t: Throwable) {
-            android.widget.Toast.makeText(
-                homeContext, "这台设备没有可用的语音输入",
-                android.widget.Toast.LENGTH_SHORT
-            ).show()
-        }
-    }
-    var dialEditing by remember { mutableStateOf<SpeedDial?>(null) }
-    var dialName by remember { mutableStateOf("") }
-    var dialUrl by remember { mutableStateOf("") }
-    fun openDialDialog(editing: SpeedDial?) {
-        if (editing == null && speedDials.size >= 12) {
-            android.widget.Toast.makeText(
-                homeContext, "快捷方式最多 12 个，先删掉一个再加",
-                android.widget.Toast.LENGTH_LONG
-            ).show()
-            return
-        }
-        dialEditing = editing
-        dialName = editing?.title ?: ""
-        dialUrl = editing?.url ?: ""
-        dialDialogOpen = true
     }
     val target = actionTarget
     if (target != null) {
@@ -5546,150 +4608,6 @@ private fun HomeContent(
             }
         )
     }
-    val dialTarget = dialActionTarget
-    if (dialTarget != null) {
-        AlertDialog(
-            onDismissRequest = { dialActionTarget = null },
-            title = { Text(dialTarget.title, maxLines = 2) },
-            text = {
-                LazyColumn {
-                    item {
-                        ListItem(
-                            headlineContent = { Text("编辑") },
-                            leadingContent = {
-                                Icon(Icons.Filled.Edit, contentDescription = null)
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    dialActionTarget = null
-                                    openDialDialog(dialTarget)
-                                }
-                        )
-                    }
-                    item {
-                        ListItem(
-                            headlineContent = { Text("删除") },
-                            leadingContent = {
-                                Icon(Icons.Filled.Delete, contentDescription = null)
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    dialActionTarget = null
-                                    dialPendingDelete = dialTarget
-                                }
-                        )
-                    }
-                }
-            },
-            confirmButton = {},
-            dismissButton = {
-                TextButton(onClick = { dialActionTarget = null }) { Text("取消") }
-            }
-        )
-    }
-    val dialToDelete = dialPendingDelete
-    if (dialToDelete != null) {
-        AlertDialog(
-            onDismissRequest = { dialPendingDelete = null },
-            title = { Text("删除这个快捷方式？") },
-            text = { Text("会把「${dialToDelete.title}」从首页快捷方式里删掉。") },
-            confirmButton = {
-                Button(onClick = {
-                    onDeleteSpeedDial(dialToDelete)
-                    dialPendingDelete = null
-                }) { Text("删除") }
-            },
-            dismissButton = {
-                TextButton(onClick = { dialPendingDelete = null }) { Text("取消") }
-            }
-        )
-    }
-    if (dialDialogOpen) {
-        // Opens focused on the first field with the keyboard up.
-        val dialFocusRequester = remember { FocusRequester() }
-        LaunchedEffect(Unit) { dialFocusRequester.requestFocus() }
-        AlertDialog(
-            onDismissRequest = { dialDialogOpen = false },
-            title = {
-                Text(if (dialEditing == null) "添加快捷方式" else "编辑快捷方式")
-            },
-            text = {
-                LazyColumn {
-                    item {
-                        OutlinedTextField(
-                            value = dialName,
-                            onValueChange = { dialName = it },
-                            label = { Text("名称") },
-                            placeholder = { Text("可以不填，会用网址的域名") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .focusRequester(dialFocusRequester),
-                            singleLine = true
-                        )
-                    }
-                    item {
-                        OutlinedTextField(
-                            value = dialUrl,
-                            onValueChange = { dialUrl = it },
-                            label = { Text("网址") },
-                            placeholder = { Text("比如 example.com") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 8.dp),
-                            singleLine = true
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                Button(onClick = {
-                    if (dialUrl.isBlank()) {
-                        android.widget.Toast.makeText(
-                            homeContext, "先填网址",
-                            android.widget.Toast.LENGTH_SHORT
-                        ).show()
-                    } else if (hasBlockedPageScheme(dialUrl)) {
-                        // Non-web schemes are never saved as speed
-                        // dials (v0.31.0, same rule as openUrl).
-                        android.widget.Toast.makeText(
-                            homeContext,
-                            "这个链接打不开：只支持打开 http 或 https 开头的网址",
-                            android.widget.Toast.LENGTH_LONG
-                        ).show()
-                    } else {
-                        val resolved = resolveInput(
-                            dialUrl, currentEngine, currentCustomTemplate
-                        )
-                        val name = dialName.trim()
-                            .ifBlank { hostOf(resolved) ?: resolved }
-                        val editing = dialEditing
-                        when {
-                            editing != null -> {
-                                onEditSpeedDial(
-                                    editing, SpeedDial(name, resolved)
-                                )
-                                dialDialogOpen = false
-                            }
-                            speedDials.any { it.url == resolved } ->
-                                android.widget.Toast.makeText(
-                                    homeContext, "已经有这个快捷方式了",
-                                    android.widget.Toast.LENGTH_SHORT
-                                ).show()
-                            else -> {
-                                onAddSpeedDial(SpeedDial(name, resolved))
-                                dialDialogOpen = false
-                            }
-                        }
-                    }
-                }) { Text("保存") }
-            },
-            dismissButton = {
-                TextButton(onClick = { dialDialogOpen = false }) { Text("取消") }
-            }
-        )
-    }
     if (showEnginePicker) {
         AlertDialog(
             onDismissRequest = { showEnginePicker = false },
@@ -5698,17 +4616,7 @@ private fun HomeContent(
                 LazyColumn {
                     items(SearchEngine.entries) { engine ->
                         ListItem(
-                            headlineContent = {
-                                Text(
-                                    if (engine == SearchEngine.CUSTOM &&
-                                        currentCustomName.isNotBlank()
-                                    ) {
-                                        currentCustomName
-                                    } else {
-                                        engine.label
-                                    }
-                                )
-                            },
+                            headlineContent = { Text(engine.label) },
                             trailingContent = {
                                 RadioButton(
                                     selected = currentEngine == engine,
@@ -5718,17 +4626,9 @@ private fun HomeContent(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    if (engine == SearchEngine.CUSTOM) {
-                                        homeCustomName = currentCustomName
-                                        homeCustomTemplate = currentCustomTemplate
-                                        homeCustomError = null
-                                        showEnginePicker = false
-                                        showHomeCustomDialog = true
-                                    } else {
-                                        currentEngine = engine
-                                        onSearchEngineSelected(engine)
-                                        showEnginePicker = false
-                                    }
+                                    currentEngine = engine
+                                    onSearchEngineSelected(engine)
+                                    showEnginePicker = false
                                 }
                         )
                     }
@@ -5737,90 +4637,6 @@ private fun HomeContent(
             confirmButton = {},
             dismissButton = {
                 TextButton(onClick = { showEnginePicker = false }) { Text("取消") }
-            }
-        )
-    }
-    if (showHomeCustomDialog) {
-        // Opens focused on the first field with the keyboard up.
-        val homeCustomFocusRequester = remember { FocusRequester() }
-        LaunchedEffect(Unit) { homeCustomFocusRequester.requestFocus() }
-        AlertDialog(
-            onDismissRequest = { showHomeCustomDialog = false },
-            title = { Text("自定义搜索引擎") },
-            text = {
-                LazyColumn {
-                    item {
-                        OutlinedTextField(
-                            value = homeCustomName,
-                            onValueChange = { homeCustomName = it },
-                            label = { Text("名称") },
-                            placeholder = { Text("比如：我的搜索") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .focusRequester(homeCustomFocusRequester),
-                            singleLine = true
-                        )
-                    }
-                    item {
-                        OutlinedTextField(
-                            value = homeCustomTemplate,
-                            onValueChange = { homeCustomTemplate = it },
-                            label = { Text("网址模板") },
-                            placeholder = {
-                                Text("比如：https://example.com/search?q=%s")
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 8.dp),
-                            singleLine = true
-                        )
-                    }
-                    item {
-                        Text(
-                            "模板里必须有 %s，它会被换成你要搜的词；" +
-                                "网址要以 http:// 或 https:// 开头。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 8.dp)
-                        )
-                    }
-                    val error = homeCustomError
-                    if (error != null) {
-                        item {
-                            Text(
-                                error,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.error,
-                                modifier = Modifier.padding(top = 8.dp)
-                            )
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                Button(onClick = {
-                    val template = homeCustomTemplate.trim()
-                    homeCustomError = when {
-                        !template.contains("%s") ->
-                            "模板里没有 %s，搜的时候没地方放要搜的词，请补上。"
-                        !template.startsWith("http://") &&
-                            !template.startsWith("https://") ->
-                            "网址要以 http:// 或 https:// 开头，请改一下。"
-                        else -> null
-                    }
-                    if (homeCustomError == null) {
-                        currentCustomName = homeCustomName.trim()
-                        currentCustomTemplate = template
-                        currentEngine = SearchEngine.CUSTOM
-                        onSaveCustomSearch(homeCustomName.trim(), template)
-                        showHomeCustomDialog = false
-                    }
-                }) { Text("保存") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showHomeCustomDialog = false }) {
-                    Text("取消")
-                }
             }
         )
     }
@@ -5905,7 +4721,6 @@ private fun HomeContent(
                     // suggestion list goes away with it (v0.59.0).
                     if (submitHomeSearch(query)) {
                         query = ""
-                        homeOnlineSuggestions = emptyList()
                     }
                 },
                 active = false,
@@ -5914,20 +4729,9 @@ private fun HomeContent(
                     .fillMaxWidth()
                     .onFocusChanged { homeSearchFocused = it.isFocused },
                 placeholder = {
-                    Text("用${engineShortName()}搜索，或输入网址", maxLines = 1)
+                    Text("用${currentEngine.label}搜索，或输入网址", maxLines = 1)
                 },
-                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                trailingIcon = {
-                    // Voice input (v0.76.0): system speech
-                    // recognition, result goes through the same
-                    // submit path as typed text.
-                    IconButton(onClick = { launchHomeSpeechSearch() }) {
-                        Icon(
-                            Icons.Filled.Mic,
-                            contentDescription = "语音输入"
-                        )
-                    }
-                }
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) }
             ) {}
         }
         // Home search suggestions (v0.59.0): while the search box
@@ -5940,8 +4744,7 @@ private fun HomeContent(
         // then the "search this" tail, in an official Card of
         // ListItems inside the home page's own scrolling grid.
         if (homeBookmarkSuggestions.isNotEmpty() ||
-            homeOnlineRows.isNotEmpty() || homeShowSearchTail ||
-            homeShowPasteRow
+            homeShowSearchTail || homeShowPasteRow
         ) {
             item(span = { GridItemSpan(maxLineSpan) }) {
                 ElevatedCard(modifier = Modifier.fillMaxWidth()) {
@@ -6018,38 +4821,12 @@ private fun HomeContent(
                                     }
                             )
                         }
-                        homeOnlineRows.forEach { word ->
-                            ListItem(
-                                headlineContent = {
-                                    Text(
-                                        highlightMatchedText(
-                                            word, homeSuggestionQuery,
-                                            MaterialTheme.colorScheme.primary
-                                        ),
-                                        maxLines = 1
-                                    )
-                                },
-                                leadingContent = {
-                                    Icon(
-                                        Icons.Filled.Search,
-                                        contentDescription = "搜索建议"
-                                    )
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        if (submitHomeSearch(word)) {
-                                            finishHomeSuggestionPick()
-                                        }
-                                    }
-                            )
-                        }
                         if (homeShowSearchTail) {
                             ListItem(
                                 headlineContent = {
                                     Text(
                                         highlightMatchedText(
-                                            "用${engineShortName()}搜索「$homeSuggestionQuery」",
+                                            "用${currentEngine.label}搜索「$homeSuggestionQuery」",
                                             homeSuggestionQuery,
                                             MaterialTheme.colorScheme.primary
                                         ),
@@ -6085,7 +4862,7 @@ private fun HomeContent(
             // keeps the full width of the row.
             AssistChip(
                 onClick = { showEnginePicker = true },
-                label = { Text(engineShortName(), maxLines = 1) },
+                label = { Text(currentEngine.label, maxLines = 1) },
                 leadingIcon = {
                     Icon(Icons.Filled.Search, contentDescription = null)
                 },
@@ -6093,60 +4870,6 @@ private fun HomeContent(
                     Icon(Icons.Filled.ArrowDropDown, contentDescription = null)
                 }
             )
-        }
-        // Speed dials live above the bookmarks grid and are stored
-        // separately from bookmarks. With no dials at all, only a
-        // small "add" entry remains (no header, no grid), keeping
-        // the home page as lean as before.
-        if (speedDials.isEmpty()) {
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                TextButton(onClick = { openDialDialog(null) }) {
-                    Icon(Icons.Filled.Add, contentDescription = null)
-                    Text("添加快捷方式", modifier = Modifier.padding(start = 4.dp))
-                }
-            }
-        } else {
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                Text("快捷方式", style = MaterialTheme.typography.titleMedium)
-            }
-            gridItems(speedDials, key = { it.title + "\n" + it.url }) { dial ->
-                ElevatedCard(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .combinedClickable(
-                            onClick = { onOpenSpeedDial(dial) },
-                            onLongClick = { dialActionTarget = dial }
-                        )
-                ) {
-                    ListItem(
-                        headlineContent = { Text(dial.title, maxLines = 2) },
-                        supportingContent = {
-                            Text(hostOf(dial.url) ?: dial.url, maxLines = 1)
-                        },
-                        leadingContent = {
-                            Text(
-                                dial.title.firstOrNull()?.toString() ?: "",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    )
-                }
-            }
-            item {
-                ElevatedCard(
-                    onClick = { openDialDialog(null) },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    ListItem(
-                        headlineContent = { Text("添加") },
-                        supportingContent = { Text("最多 12 个") },
-                        leadingContent = {
-                            Icon(Icons.Filled.Add, contentDescription = null)
-                        }
-                    )
-                }
-            }
         }
         // The bookmarks block only exists when there really are
         // bookmarks: no header, no grey empty-state card with a long
@@ -6500,9 +5223,6 @@ private fun BrowserScreen(
     onCloseOtherTabsFor: (BrowserTab) -> Unit = {},
     onToggleBookmarkFor: (BrowserTab) -> Unit = {},
     onBookmarkTabs: (List<BrowserTab>) -> Pair<Int, Int> = { 0 to 0 },
-    onSaveAllTabsToFolder: (String) -> SaveAllTabsPlan = {
-        SaveAllTabsPlan(emptyList(), 0, 0, 0)
-    },
     bookmarkFolderNames: List<String> = emptyList(),
     recentClosed: List<ClosedTabInfo>,
     onReopenClosed: (ClosedTabInfo) -> Unit,
@@ -6516,8 +5236,6 @@ private fun BrowserScreen(
     onNavigate: (String) -> Unit,
     bookmarks: List<Bookmark>,
     searchEngine: SearchEngine,
-    searchSuggestionsEnabled: Boolean = false,
-    customSearchName: String = "",
     onOpenSuggestion: (String) -> Unit,
     onGoHome: () -> Unit,
     onReloadPage: () -> Unit,
@@ -6536,20 +5254,14 @@ private fun BrowserScreen(
     chromeHidden: Boolean,
     onExitFullscreen: () -> Unit,
     onToggleReaderMode: () -> Unit,
-    readerSiteRemembered: Boolean = false,
-    onToggleReaderSiteMemory: (Boolean) -> Unit = {},
     onPrintPage: () -> Unit,
     onOpenSniffer: () -> Unit,
-    onViewSource: () -> Unit = {},
-    onSaveArchive: () -> Unit = {},
     onScreenshot: () -> Unit,
     onOpenDownloads: () -> Unit,
     onOpenBookmarks: () -> Unit,
     onOpenHistory: () -> Unit,
     onOpenSettings: () -> Unit,
     adBlockEnabled: Boolean,
-    onAddToReadingList: () -> Unit,
-    onOpenReadingList: () -> Unit,
     homeContent: @Composable () -> Unit
 ) {
     val context = LocalContext.current
@@ -6626,32 +5338,6 @@ private fun BrowserScreen(
     LaunchedEffect(activeTab?.id) {
         focusManager.clearFocus()
     }
-    // Reader speech (v0.82.0): one controller per tab, created with
-    // the screen but with its TTS engine created lazily on first
-    // play. Lifecycle is a hard contract — speech must never
-    // outlive the reader page it belongs to:
-    // - switching tabs replaces the controller (remember key) and
-    //   the old one's DisposableEffect releases its engine;
-    // - leaving reader mode (exit, navigation, reload — every one
-    //   of them clears readerActive) stops and resets it;
-    // - closing the tab or leaving this screen disposes it.
-    val speechController = remember(activeTab?.id) {
-        ReaderSpeechController(context.applicationContext)
-    }
-    DisposableEffect(speechController) {
-        speechController.onUnavailable = {
-            android.widget.Toast.makeText(
-                context, "这台设备没有可用的朗读功能",
-                android.widget.Toast.LENGTH_SHORT
-            ).show()
-        }
-        onDispose { speechController.release() }
-    }
-    LaunchedEffect(activeTab?.id, activeTab?.readerActive) {
-        if (activeTab?.readerActive != true) {
-            speechController.stopAndReset()
-        }
-    }
     // Focus gain swaps the friendly host-only display back to the
     // full URL and selects it whole; focus loss restores the
     // display text. Done in an effect so it lands after the tap's
@@ -6678,42 +5364,6 @@ private fun BrowserScreen(
     fun submitAddress() {
         onNavigate(addressValue.text)
         focusManager.clearFocus()
-    }
-    // Voice input (v0.76.0): the mic button in the address bar fires
-    // the system speech recognizer; the first candidate goes through
-    // the exact same path as typed input (onNavigate → resolveInput,
-    // so spoken words search and a spoken address opens). A device
-    // with no recognition service gets a plain toast instead of a
-    // crash — checked before launching, and the launch itself is
-    // guarded too.
-    val speechLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == android.app.Activity.RESULT_OK) {
-            val spoken = spokenTextFromResult(result.data)
-            if (spoken != null) {
-                onNavigate(spoken)
-                focusManager.clearFocus()
-            }
-        }
-    }
-    fun launchSpeechSearch() {
-        val intent = speechRecognitionIntent()
-        if (intent.resolveActivity(context.packageManager) == null) {
-            android.widget.Toast.makeText(
-                context, "这台设备没有可用的语音输入",
-                android.widget.Toast.LENGTH_SHORT
-            ).show()
-            return
-        }
-        try {
-            speechLauncher.launch(intent)
-        } catch (t: Throwable) {
-            android.widget.Toast.makeText(
-                context, "这台设备没有可用的语音输入",
-                android.widget.Toast.LENGTH_SHORT
-            ).show()
-        }
     }
     // The find bar grabs focus (and the keyboard) as soon as it opens.
     val findFocusRequester = remember { FocusRequester() }
@@ -6784,87 +5434,6 @@ private fun BrowserScreen(
     var showRecentClosed by remember { mutableStateOf(false) }
     var showSiteInfo by remember { mutableStateOf(false) }
     var showMoreTools by remember { mutableStateOf(false) }
-    // View-source on a Gecko tab (v0.84.0): GeckoView has no
-    // channel for handing the page's source to the app, so the
-    // menu item explains that in plain language and offers the
-    // existing switch-engine path instead of pretending.
-    var showGeckoSourceNote by remember { mutableStateOf(false) }
-    fun handleViewSource() {
-        val tab = activeTab
-        when {
-            tab == null || tab.isHome -> android.widget.Toast.makeText(
-                context, "先打开一个网页再看源代码",
-                android.widget.Toast.LENGTH_SHORT
-            ).show()
-            tab.loadError != null -> android.widget.Toast.makeText(
-                context, "这个网页没打开成功，先重新加载试试",
-                android.widget.Toast.LENGTH_SHORT
-            ).show()
-            tab.engine == Engine.GECKO -> showGeckoSourceNote = true
-            else -> onViewSource()
-        }
-    }
-    if (showGeckoSourceNote) {
-        AlertDialog(
-            onDismissRequest = { showGeckoSourceNote = false },
-            title = { Text("火狐内核取不到源代码") },
-            text = {
-                Text("火狐内核没有把网页源代码交给应用的通路，这个标签页取不到源码。可以先用系统 WebView 打开这一页，再看源代码。")
-            },
-            confirmButton = {
-                Button(onClick = {
-                    showGeckoSourceNote = false
-                    onOpenInOtherEngine()
-                }) { Text("用系统 WebView 打开本页") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showGeckoSourceNote = false }) {
-                    Text("取消")
-                }
-            }
-        )
-    }
-    // Save web archive on a Gecko tab (v0.85.0): same honest
-    // degradation as view-source above — GeckoView has no channel
-    // for handing an archive of the page to the app, so the menu
-    // item explains that in plain language and offers the existing
-    // switch-engine path instead of a button that cannot work.
-    var showGeckoArchiveNote by remember { mutableStateOf(false) }
-    fun handleSaveArchive() {
-        val tab = activeTab
-        when {
-            tab == null || tab.isHome -> android.widget.Toast.makeText(
-                context, "先打开一个网页再保存存档",
-                android.widget.Toast.LENGTH_SHORT
-            ).show()
-            tab.loadError != null -> android.widget.Toast.makeText(
-                context, "这个网页没打开成功，先重新加载试试",
-                android.widget.Toast.LENGTH_SHORT
-            ).show()
-            tab.engine == Engine.GECKO -> showGeckoArchiveNote = true
-            else -> onSaveArchive()
-        }
-    }
-    if (showGeckoArchiveNote) {
-        AlertDialog(
-            onDismissRequest = { showGeckoArchiveNote = false },
-            title = { Text("火狐内核存不了网页存档") },
-            text = {
-                Text("火狐内核没有把整页存档交给应用的通路，这个标签页存不了存档。可以先用系统 WebView 打开这一页，再保存存档。")
-            },
-            confirmButton = {
-                Button(onClick = {
-                    showGeckoArchiveNote = false
-                    onOpenInOtherEngine()
-                }) { Text("用系统 WebView 打开本页") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showGeckoArchiveNote = false }) {
-                    Text("取消")
-                }
-            }
-        )
-    }
     // Pin the current page to the home screen (v0.86.0): the
     // shortcut's intent is a plain ACTION_VIEW on the page URL,
     // addressed to this app's own activity, so a tap on the
@@ -6952,17 +5521,6 @@ private fun BrowserScreen(
             }
         }
     }
-    // Long-press on back/forward: this tab's real back/forward stack.
-    var navHistory by remember {
-        mutableStateOf<Pair<List<NavHistoryEntry>, Int>?>(null)
-    }
-    var showNavHistory by remember { mutableStateOf(false) }
-    fun openNavHistory() {
-        val tab = activeTab ?: return
-        if (tab.isHome) return
-        navHistory = tab.backForwardList()
-        showNavHistory = true
-    }
     var showClearSiteConfirm by remember { mutableStateOf(false) }
     var showCloseOthersConfirm by remember { mutableStateOf(false) }
     if (showCloseOthersConfirm) {
@@ -7002,81 +5560,6 @@ private fun BrowserScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showCloseAllConfirm = false }) { Text("取消") }
-            }
-        )
-    }
-
-    // Save all tabs as bookmarks (v0.87.0): the folder name is
-    // asked with the official dialog, pre-filled with today's
-    // dated default; an existing folder of the same name is
-    // merged into, and the dialog says so before confirming.
-    var showSaveAllTabsDialog by remember { mutableStateOf(false) }
-    var saveAllTabsFolderName by remember { mutableStateOf("") }
-    if (showSaveAllTabsDialog) {
-        val saveAllFocusRequester = remember { FocusRequester() }
-        LaunchedEffect(Unit) { saveAllFocusRequester.requestFocus() }
-        val trimmedName = saveAllTabsFolderName.trim()
-        fun confirmSaveAllTabs() {
-            if (trimmedName.isBlank()) return
-            showSaveAllTabsDialog = false
-            showTabs = false
-            val plan = onSaveAllTabsToFolder(trimmedName)
-            android.widget.Toast.makeText(
-                context,
-                saveAllTabsResultText(plan, trimmedName),
-                android.widget.Toast.LENGTH_LONG
-            ).show()
-        }
-        AlertDialog(
-            onDismissRequest = { showSaveAllTabsDialog = false },
-            title = { Text("把全部标签存为书签") },
-            text = {
-                Column {
-                    Text(
-                        "当前全部标签里的网页会逐个存成书签，放进下面这个文件夹。" +
-                            "已经加入书签的、无痕标签和首页等内部页会跳过。"
-                    )
-                    OutlinedTextField(
-                        value = saveAllTabsFolderName,
-                        onValueChange = { saveAllTabsFolderName = it },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 12.dp)
-                            .focusRequester(saveAllFocusRequester),
-                        label = { Text("文件夹名称") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(
-                            imeAction = ImeAction.Done
-                        ),
-                        keyboardActions = KeyboardActions(
-                            onDone = { confirmSaveAllTabs() }
-                        )
-                    )
-                    if (trimmedName.isNotEmpty()) {
-                        Text(
-                            if (trimmedName in bookmarkFolderNames) {
-                                "已经有同名文件夹了，新书签会并入那个文件夹，" +
-                                    "不会新建重名文件夹。"
-                            } else {
-                                "会新建这个文件夹。"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 8.dp)
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = { confirmSaveAllTabs() },
-                    enabled = trimmedName.isNotEmpty()
-                ) { Text("保存") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showSaveAllTabsDialog = false }) {
-                    Text("取消")
-                }
             }
         )
     }
@@ -7305,47 +5788,10 @@ private fun BrowserScreen(
                             },
                             onClick = { showMenu = false; onToggleReaderMode() }
                         )
-                        // Per-site reader memory (v0.73.0): shown
-                        // only where it can actually be written —
-                        // a real page (not home), a normal tab (not
-                        // incognito: incognito never writes the list,
-                        // the same rule as the other per-site
-                        // memories), and a WebView tab (reader mode
-                        // itself is WebView-only; a Gecko tab keeps
-                        // the plain "阅读模式" item above, whose tap
-                        // already explains the limitation).
-                        if (activeTab?.isHome != true &&
-                            activeTab?.incognito != true &&
-                            activeTab?.engine == Engine.WEBVIEW
-                        ) {
-                        DropdownMenuItem(
-                            text = {
-                                Column {
-                                    Text("本站总是用阅读模式")
-                                    Text(
-                                        "打开后，这个网站的页面加载完会自动进入阅读模式；关掉就取消记住",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            },
-                            leadingIcon = {
-                                Icon(Icons.Filled.MenuBook, contentDescription = null)
-                            },
-                            trailingIcon = {
-                                Switch(
-                                    checked = readerSiteRemembered,
-                                    onCheckedChange = { onToggleReaderSiteMemory(it) }
-                                )
-                            },
-                            onClick = { onToggleReaderSiteMemory(!readerSiteRemembered) }
-                        )
-                        }
                         // The home tab has no site and no engine:
                         // a desktop-mode switch there flips a state
                         // that can never take effect, so the item is
-                        // not offered on it (v0.61.0 regression fix;
-                        // same treatment as "加入阅读列表" below).
+                        // not offered on it (v0.61.0 regression fix).
                         if (activeTab?.isHome != true) {
                         DropdownMenuItem(
                             text = {
@@ -7395,19 +5841,6 @@ private fun BrowserScreen(
                             leadingIcon = { Icon(Icons.Filled.History, contentDescription = null) },
                             onClick = { showMenu = false; onOpenHistory() }
                         )
-                        // Incognito tabs never write anything to disk,
-                        // so they do not offer "add to reading list".
-                        if (activeTab != null && !activeTab.incognito &&
-                            !activeTab.isHome
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("加入阅读列表") },
-                                leadingIcon = {
-                                    Icon(Icons.Filled.MenuBook, contentDescription = null)
-                                },
-                                onClick = { showMenu = false; onAddToReadingList() }
-                            )
-                        }
                         DropdownMenuItem(
                             text = { Text("设置") },
                             leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
@@ -7552,11 +5985,8 @@ private fun BrowserScreen(
                     .padding(horizontal = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                // Back/forward: tap steps one page; long-press opens
-                // this tab's back/forward history sheet. IconButton
-                // has no long-press path, so the buttons are Boxes
-                // with combinedClickable (tap + long-press) sized
-                // like the neighbouring icon buttons.
+                // Back/forward buttons: Boxes with combinedClickable
+                // sized like the neighbouring icon buttons.
                 Box(
                     modifier = Modifier
                         .size(48.dp)
@@ -7567,13 +5997,12 @@ private fun BrowserScreen(
                                     activeTab?.goBack()
                                 }
                             },
-                            onLongClick = { openNavHistory() }
                         ),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "后退（长按看历史）",
+                        contentDescription = "后退",
                         tint = if (activeTab?.canGoBack == true) {
                             MaterialTheme.colorScheme.onSurface
                         } else {
@@ -7591,13 +6020,12 @@ private fun BrowserScreen(
                                     activeTab?.goForward()
                                 }
                             },
-                            onLongClick = { openNavHistory() }
                         ),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         Icons.AutoMirrored.Filled.ArrowForward,
-                        contentDescription = "前进（长按看历史）",
+                        contentDescription = "前进",
                         tint = if (activeTab?.canGoForward == true) {
                             MaterialTheme.colorScheme.onSurface
                         } else {
@@ -7633,17 +6061,6 @@ private fun BrowserScreen(
                                 else ->
                                     Icon(Icons.Filled.Warning, contentDescription = "非安全连接，点按看网站信息")
                             }
-                        }
-                    },
-                    trailingIcon = {
-                        // Voice input (v0.76.0): system speech
-                        // recognition, result goes through the same
-                        // resolveInput path as typed text.
-                        IconButton(onClick = { launchSpeechSearch() }) {
-                            Icon(
-                                Icons.Filled.Mic,
-                                contentDescription = "语音输入"
-                            )
                         }
                     },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
@@ -7723,72 +6140,11 @@ private fun BrowserScreen(
                 }
             }
             }
-            // Online search suggestions (v0.50.0). Privacy gates are
-            // all hard checks on this one path — a fetch happens only
-            // when EVERY one passes: the user turned the switch on,
-            // the bar is focused, the active tab is NOT incognito
-            // (incognito never fetches, whatever the switch says),
-            // the engine is a built-in one with a suggestion endpoint
-            // (custom engines have none), and the typed text is not
-            // URL-like (it is about to be opened as an address, so
-            // asking an engine about it would only leak it). With the
-            // switch off this effect never reaches the network call.
-            var onlineSuggestions by remember {
-                mutableStateOf<List<String>>(emptyList())
-            }
-            val suggestionQuery = addressText.trim()
-            val activeIncognito = activeTab?.incognito == true
-            LaunchedEffect(
-                suggestionQuery, addressFocused, searchSuggestionsEnabled,
-                searchEngine, activeIncognito, activeTab?.id
-            ) {
-                // The gate itself is the shared
-                // shouldFetchOnlineSuggestions (v0.59.0): the home
-                // search box runs the exact same check, so the two
-                // surfaces cannot drift apart.
-                if (!shouldFetchOnlineSuggestions(
-                        searchSuggestionsEnabled, addressFocused,
-                        activeIncognito, searchEngine, suggestionQuery
-                    )
-                ) {
-                    onlineSuggestions = emptyList()
-                    return@LaunchedEffect
-                }
-                // Debounce: a new keystroke restarts this effect and
-                // cancels the pending wait, so only a pause in typing
-                // ever sends a request.
-                kotlinx.coroutines.delay(SEARCH_SUGGESTION_DEBOUNCE_MS)
-                val fetched = kotlinx.coroutines.withContext(
-                    kotlinx.coroutines.Dispatchers.IO
-                ) {
-                    fetchSearchSuggestions(searchEngine, suggestionQuery)
-                }
-                // Stale-response guard: if the text moved on while
-                // the request was in flight, this effect has been
-                // cancelled; only publish when still active, and the
-                // fetch for the current text runs in its own effect.
-                if (isActive) {
-                    onlineSuggestions = fetched
-                }
-            }
             // Suggestions are bookmarks only (plus the search tail
-            // below): history stays on the History page and is no
-            // longer mixed into the address bar. matchSuggestions
-            // itself is unchanged — it is simply handed no history.
+            // below): history stays on the History page and is not
+            // mixed into the address bar.
             val suggestions = if (addressFocused && addressText.isNotBlank()) {
                 matchSuggestions(addressText, bookmarks, emptyList())
-            } else {
-                emptyList()
-            }
-            // Merge order is fixed: bookmark matches first, then
-            // online suggestions, then the search tail row. Online
-            // rows that merely repeat a bookmark title/URL or the
-            // typed text itself are dropped, and the two groups
-            // together are capped so the list stays compact.
-            val onlineRows = if (addressFocused) {
-                mergedOnlineSuggestionRows(
-                    suggestions, onlineSuggestions, suggestionQuery
-                )
             } else {
                 emptyList()
             }
@@ -7802,7 +6158,7 @@ private fun BrowserScreen(
             // The suggestion card unfolds under the address bar when
             // it gains focus and folds away again afterwards.
             AnimatedVisibility(
-                visible = suggestions.isNotEmpty() || onlineRows.isNotEmpty() ||
+                visible = suggestions.isNotEmpty() ||
                     showSearchTail || showPasteRow,
                 enter = fadeIn(tween(220, easing = FastOutSlowInEasing)) +
                     expandVertically(tween(220, easing = FastOutSlowInEasing)),
@@ -7893,48 +6249,13 @@ private fun BrowserScreen(
                                     }
                             )
                         }
-                        items(onlineRows, key = { "online-$it" }) { word ->
-                            ListItem(
-                                headlineContent = {
-                                    Text(
-                                        highlightMatchedText(
-                                            word, suggestionQuery,
-                                            MaterialTheme.colorScheme.primary
-                                        ),
-                                        maxLines = 1
-                                    )
-                                },
-                                leadingContent = {
-                                    Icon(
-                                        Icons.Filled.Search,
-                                        contentDescription = "搜索建议"
-                                    )
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        // Same path as submitting the
-                                        // bar by hand: resolveInput
-                                        // turns the word into a search
-                                        // with the current engine.
-                                        onNavigate(word)
-                                        focusManager.clearFocus()
-                                    }
-                            )
-                        }
                         if (showSearchTail) {
                             item(key = "search-tail") {
                                 ListItem(
                                     headlineContent = {
                                         Text(
                                             highlightMatchedText(
-                                                "用${
-                                                    if (searchEngine == SearchEngine.CUSTOM) {
-                                                        customSearchName.ifBlank { "自定义" }
-                                                    } else {
-                                                        searchEngine.label
-                                                    }
-                                                }搜索「$trimmedAddress」",
+                                                "用${searchEngine.label}搜索「$trimmedAddress」",
                                                 trimmedAddress,
                                                 MaterialTheme.colorScheme.primary
                                             ),
@@ -8012,89 +6333,6 @@ private fun BrowserScreen(
                     }
                 }
             }
-            }
-            // Reader speech controls (v0.82.0): a single row shown
-            // only while the active tab is in reader mode (which is
-            // WebView-only, so this never appears for a Gecko tab).
-            // Play starts or continues, pause stops the engine and
-            // keeps the chunk position (TTS has no true pause —
-            // continuing restarts the current chunk), stop clears
-            // the position. All controls are official IconButtons
-            // with plain-language content descriptions.
-            AnimatedVisibility(
-                visible = activeTab?.readerActive == true && !chromeHidden,
-                enter = fadeIn(tween(220, easing = FastOutSlowInEasing)) +
-                    expandVertically(tween(220, easing = FastOutSlowInEasing)),
-                exit = fadeOut(tween(180, easing = FastOutSlowInEasing)) +
-                    shrinkVertically(tween(180, easing = FastOutSlowInEasing))
-            ) {
-                val speechTab = activeTab
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    if (speechController.state == SpeechState.SPEAKING) {
-                        IconButton(onClick = { speechController.pause() }) {
-                            Icon(
-                                Icons.Filled.Pause,
-                                contentDescription = "暂停朗读"
-                            )
-                        }
-                    } else {
-                        IconButton(onClick = {
-                            val text = speechTab?.readerText.orEmpty()
-                            if (text.isBlank()) {
-                                android.widget.Toast.makeText(
-                                    context, "正文还在准备中，请稍等一下再点朗读",
-                                    android.widget.Toast.LENGTH_SHORT
-                                ).show()
-                            } else {
-                                speechController.playOrResume(text)
-                            }
-                        }) {
-                            Icon(
-                                Icons.Filled.PlayArrow,
-                                contentDescription = if (
-                                    speechController.state == SpeechState.PAUSED
-                                ) {
-                                    "继续朗读"
-                                } else {
-                                    "朗读正文"
-                                }
-                            )
-                        }
-                    }
-                    IconButton(
-                        onClick = { speechController.stopAndReset() },
-                        enabled = speechController.state != SpeechState.IDLE
-                    ) {
-                        Icon(
-                            Icons.Filled.Stop,
-                            contentDescription = "停止朗读"
-                        )
-                    }
-                    Text(
-                        when (speechController.state) {
-                            SpeechState.SPEAKING ->
-                                "正在朗读 第 ${speechController.chunkIndex + 1} / " +
-                                    "${speechController.chunkCount} 段"
-                            SpeechState.PAUSED ->
-                                "已暂停 第 ${speechController.chunkIndex + 1} / " +
-                                    "${speechController.chunkCount} 段"
-                            SpeechState.IDLE -> "朗读正文"
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier
-                            .weight(1f)
-                            .semantics {
-                                liveRegion = LiveRegionMode.Polite
-                            }
-                    )
-                }
             }
             // Tab content crossfades on every switch: changing tabs,
             // creating or closing one, home <-> web page, and the
@@ -8184,8 +6422,7 @@ private fun BrowserScreen(
     }
 
     // ---- More-tools sheet: the low-frequency tools that left the
-    // main menu (their features and handlers are unchanged), plus
-    // the reading-list view entry. ----
+    // main menu. ----
     if (showMoreTools) {
         ModalBottomSheet(
             onDismissRequest = { showMoreTools = false },
@@ -8222,34 +6459,6 @@ private fun BrowserScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable { showMoreTools = false; onOpenSniffer() }
-                    )
-                }
-                item {
-                    ListItem(
-                        headlineContent = { Text("查看源代码") },
-                        supportingContent = {
-                            Text("只支持系统 WebView 标签页")
-                        },
-                        leadingContent = {
-                            Icon(Icons.Filled.Code, contentDescription = null)
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { showMoreTools = false; handleViewSource() }
-                    )
-                }
-                item {
-                    ListItem(
-                        headlineContent = { Text("保存网页存档") },
-                        supportingContent = {
-                            Text("把整页存成一个文件，离线也能打开；只支持系统 WebView 标签页")
-                        },
-                        leadingContent = {
-                            Icon(Icons.Filled.Save, contentDescription = null)
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { showMoreTools = false; handleSaveArchive() }
                     )
                 }
                 item {
@@ -8304,85 +6513,6 @@ private fun BrowserScreen(
                                 }
                             }
                     )
-                }
-                item {
-                    ListItem(
-                        headlineContent = { Text("阅读列表") },
-                        leadingContent = {
-                            Icon(
-                                Icons.Filled.FormatListBulleted,
-                                contentDescription = null
-                            )
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { showMoreTools = false; onOpenReadingList() }
-                    )
-                }
-            }
-        }
-    }
-
-    // ---- Back/forward history sheet (long-press on back/forward) ----
-    if (showNavHistory) {
-        ModalBottomSheet(
-            onDismissRequest = { showNavHistory = false },
-            sheetState = rememberModalBottomSheetState()
-        ) {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 640.dp)
-                    .padding(horizontal = 16.dp)
-                    .padding(bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                item {
-                    Text("本标签的浏览历史", style = MaterialTheme.typography.titleLarge)
-                }
-                val nav = navHistory
-                if (nav == null || nav.first.isEmpty()) {
-                    item {
-                        EmptyState(
-                            Icons.Filled.History,
-                            "这个标签还没有可以前进后退的页面。"
-                        )
-                    }
-                } else {
-                    // Newest first, so the pages you can go back to
-                    // are at the top; the index math uses the real
-                    // stack position, not the display position.
-                    val entries = nav.first
-                    val current = nav.second
-                    items(entries.indices.reversed().toList(), key = { it }) { idx ->
-                        val entry = entries[idx]
-                        val isCurrent = idx == current
-                        ListItem(
-                            headlineContent = {
-                                Text(
-                                    entry.title.ifBlank { entry.url },
-                                    maxLines = 1,
-                                    fontWeight = if (isCurrent) {
-                                        FontWeight.Bold
-                                    } else {
-                                        FontWeight.Normal
-                                    }
-                                )
-                            },
-                            supportingContent = { Text(entry.url, maxLines = 1) },
-                            trailingContent = if (isCurrent) {
-                                { Text("当前页") }
-                            } else {
-                                null
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    showNavHistory = false
-                                    activeTab?.goToHistoryIndex(idx)
-                                }
-                        )
-                    }
                 }
             }
         }
@@ -9047,22 +7177,6 @@ private fun BrowserScreen(
                         }
                     }
                 }
-                if (!tabMultiSelect) {
-                    item(span = { GridItemSpan(maxLineSpan) }) {
-                        OutlinedButton(
-                            onClick = {
-                                saveAllTabsFolderName =
-                                    defaultSaveAllTabsFolderName(
-                                        java.time.LocalDate.now()
-                                    )
-                                showSaveAllTabsDialog = true
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("把全部标签存为书签")
-                        }
-                    }
-                }
                 if (!tabMultiSelect && recentClosed.isNotEmpty()) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         Column(modifier = Modifier.fillMaxWidth()) {
@@ -9305,8 +7419,6 @@ private fun EmptyState(icon: ImageVector, text: String) {
 private fun BookmarksScreen(
     bookmarks: List<Bookmark>,
     folders: List<String> = emptyList(),
-    sortOrder: BookmarkSortOrder = BookmarkSortOrder.DEFAULT,
-    onSortOrderChange: (BookmarkSortOrder) -> Unit = {},
     onBack: () -> Unit,
     onOpen: (Bookmark) -> Unit,
     onDelete: (Bookmark) -> Unit,
@@ -9689,21 +7801,7 @@ private fun BookmarksScreen(
             }
         )
     }
-    // Display sort (v0.63.0): filter first, then sort for display
-    // only — the stored list is never reordered. Local state seeded
-    // from the persisted preference; picking an option updates both
-    // at once, and re-entering the page re-reads the stored value.
-    // Identity audit (v0.63.0, why sorting cannot mis-target): every
-    // action on this page is keyed by the entry itself, never by
-    // row position — open/edit/pin/delete/long-press menu all carry
-    // the Bookmark object, batch selection is a set of URLs and
-    // batch delete filters the full stored list by those URLs, and
-    // the list rows themselves are keyed by URL. Reordering the
-    // display therefore cannot point any action at the wrong entry.
-    var activeSortOrder by remember { mutableStateOf(sortOrder) }
-    var sortMenuOpen by remember { mutableStateOf(false) }
-    val displayBookmarks =
-        sortedBookmarksForDisplay(visibleBookmarks, activeSortOrder)
+    val displayBookmarks = visibleBookmarks
     // Batch-manage mode: checkboxes on every row, a delete-selected
     // button on top, and clear ways out (back key, the close icon
     // and the "完成" button all leave the mode).
@@ -9831,45 +7929,6 @@ private fun BookmarksScreen(
                             }) {
                                 Text("批量管理")
                             }
-                            // Display-sort picker (v0.63.0): same
-                            // icon-button + dropdown-menu shape the
-                            // rest of the app uses. Sorting is
-                            // display-only and never rewrites the
-                            // stored order.
-                            Box {
-                                IconButton(onClick = { sortMenuOpen = true }) {
-                                    Icon(
-                                        Icons.Filled.Sort,
-                                        contentDescription = "书签排序"
-                                    )
-                                }
-                                DropdownMenu(
-                                    expanded = sortMenuOpen,
-                                    onDismissRequest = { sortMenuOpen = false }
-                                ) {
-                                    BookmarkSortOrder.entries.forEach { option ->
-                                        DropdownMenuItem(
-                                            text = { Text(option.label) },
-                                            onClick = {
-                                                sortMenuOpen = false
-                                                if (option != activeSortOrder) {
-                                                    activeSortOrder = option
-                                                    onSortOrderChange(option)
-                                                }
-                                            },
-                                            leadingIcon = {
-                                                if (option == activeSortOrder) {
-                                                    Icon(
-                                                        Icons.Filled.Check,
-                                                        contentDescription = null
-                                                    )
-                                                }
-                                            }
-                                        )
-                                    }
-                                }
-                            }
-                        }
                         IconButton(onClick = onImport) {
                             Icon(Icons.Filled.FileDownload, contentDescription = "导入书签")
                         }
@@ -10298,24 +8357,10 @@ private fun HistoryScreen(
     var siteDeleteTarget by remember {
         mutableStateOf<Pair<String, Int>?>(null)
     }
-    // "Only this site" filter (v0.65.0): page-local state, never
-    // persisted — same precedent as the downloads-page search
-    // (v0.64.0). The pipeline is settled in ONE place, in this
-    // order: site filter first (the shared hostMatchesSite rule —
-    // the site itself plus its subdomains, exactly the rule
-    // "delete this site's history" uses), then the search filter,
-    // then the date bucketing below reads only the final list, so
-    // group counts always describe what is actually shown.
-    var siteFilter by rememberSaveable { mutableStateOf<String?>(null) }
-    val siteFiltered = if (siteFilter == null) {
+    val filtered = if (query.isBlank()) {
         history
     } else {
-        history.filter { hostMatchesSite(hostOf(it.url), siteFilter!!) }
-    }
-    val filtered = if (query.isBlank()) {
-        siteFiltered
-    } else {
-        siteFiltered.filter {
+        history.filter {
             it.title.contains(query, ignoreCase = true) ||
                 it.url.contains(query, ignoreCase = true)
         }
@@ -10399,17 +8444,9 @@ private fun HistoryScreen(
             }
         }
     }
-    // System back (v0.37.0, layered in v0.84.0 — the rule this
-    // version settles for every page-level filter/search state:
-    // the search text clears first, then the filter, and only
-    // then does the key leave the page). Before this the key left
-    // the page outright even with a site filter or a search word
-    // active. The three handlers are mutually exclusive by
-    // enabled, declared weakest first.
-    BackHandler(enabled = siteFilter == null && query.isBlank()) { onBack() }
-    BackHandler(enabled = siteFilter != null && query.isBlank()) {
-        siteFilter = null
-    }
+    // System back (v0.37.0): with a search word active the key
+    // clears the search first; only then does it leave the page.
+    BackHandler(enabled = query.isBlank()) { onBack() }
     BackHandler(enabled = query.isNotBlank()) { query = "" }
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -10466,41 +8503,6 @@ private fun HistoryScreen(
                     }
                 }
             }
-            // Active site-filter chip (v0.65.0): official AssistChip
-            // under the search field, same shape as the clipboard
-            // hint; the close button clears the filter and restores
-            // the full list. It can coexist with a search query —
-            // the two filters stack in the pipeline above.
-            val activeSiteFilter = siteFilter
-            if (activeSiteFilter != null && history.isNotEmpty()) {
-                item {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        AssistChip(
-                            onClick = { },
-                            label = {
-                                Text(
-                                    "只看 $activeSiteFilter 的记录",
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            },
-                            modifier = Modifier.weight(1f)
-                        )
-                        IconButton(onClick = { siteFilter = null }) {
-                            Icon(
-                                Icons.Filled.Close,
-                                contentDescription = "关闭只看本站筛选"
-                            )
-                        }
-                    }
-                }
-            }
             if (history.isEmpty()) {
                 item {
                     EmptyState(Icons.Filled.History, "还没有历史记录。")
@@ -10509,14 +8511,7 @@ private fun HistoryScreen(
                 item {
                     EmptyState(
                         Icons.Filled.Search,
-                        // With only the site filter active, an empty
-                        // list means that site has no records left —
-                        // not that there is no history at all.
-                        if (siteFilter != null && query.isBlank()) {
-                            "这个网站暂时没有记录。"
-                        } else {
-                            "没有找到相关的历史记录。"
-                        }
+                        "没有找到相关的历史记录。"
                     )
                 }
             }
@@ -10679,19 +8674,6 @@ private fun HistoryScreen(
                         item {
                             ListItem(
                                 headlineContent = {
-                                    Text("只看这个网站的记录")
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        menuItem = null
-                                        siteFilter = siteHost
-                                    }
-                            )
-                        }
-                        item {
-                            ListItem(
-                                headlineContent = {
                                     Text("删除本站全部记录")
                                 },
                                 modifier = Modifier
@@ -10745,18 +8727,6 @@ private fun HistoryScreen(
                     siteDeleteTarget = null
                     commitPendingSwipeDelete()
                     onDeleteSite(host)
-                    // Settled rule (v0.65.0): when the site being
-                    // viewed through the "only this site" filter is
-                    // deleted wholesale, the filter clears itself —
-                    // the site's records are gone, so leaving the
-                    // filter on would strand the user on an empty
-                    // list they must dismiss by hand. Deleting a
-                    // single entry never touches the filter.
-                    if (siteFilter != null &&
-                        hostMatchesSite(siteFilter, host)
-                    ) {
-                        siteFilter = null
-                    }
                 }) { Text("删除") }
             },
             dismissButton = {
@@ -10772,432 +8742,9 @@ private fun HistoryScreen(
             onDismiss = { showClearDialog = false },
             onConfirm = { range ->
                 showClearDialog = false
-                // Clearing everything also drops the site filter
-                // (v0.65.0): nothing is left for it to filter. A
-                // windowed clear keeps the filter — entries outside
-                // the window survive, and the filtered view simply
-                // refreshes from the shared list.
-                if (range == HistoryClearRange.ALL) siteFilter = null
                 onClearRange(range)
             }
         )
-    }
-}
-
-/**
- * Reading list ("read it later"): pages saved from the browser menu,
- * newest first. Unread entries stand out with a bold title and a dot;
- * opening one marks it read. Stored locally like bookmarks — engine
- * agnostic, entries open through the usual openUrl path.
- */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
-@Composable
-private fun ReadingListScreen(
-    items: List<ReadingItem>,
-    onBack: () -> Unit,
-    onOpen: (ReadingItem) -> Unit,
-    onDelete: (ReadingItem) -> Unit,
-    onClearRead: () -> Unit,
-    onOpenInNewTab: (ReadingItem) -> Unit = {},
-    onCopyUrl: (ReadingItem) -> Unit = {},
-    onMarkAllRead: () -> Unit = {}
-) {
-    val timeFormat = remember {
-        java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
-    }
-    // Long-press menu target (v0.54.0, same shape as the history
-    // page's v0.53.0 menu). "Open" here calls the very same onOpen
-    // as a tap, so the mark-read step can never be bypassed by
-    // going through the menu.
-    var menuItem by remember { mutableStateOf<ReadingItem?>(null) }
-    // "Delete all read" asks first (v0.62.0): the dialog states the
-    // real read count, computed from the same items list the page
-    // renders, so the number can never drift from what is on screen.
-    var confirmDeleteRead by remember { mutableStateOf(false) }
-    // System back returns to the browser (v0.37.0).
-    BackHandler { onBack() }
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("阅读列表") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "返回"
-                        )
-                    }
-                }
-            )
-        }
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                bottom = 24.dp
-            )
-        ) {
-            if (items.isEmpty()) {
-                item {
-                    EmptyState(
-                        Icons.Filled.MenuBook,
-                        "阅读列表还是空的。打开网页后，在菜单里点「加入阅读列表」就能存进来稍后看。"
-                    )
-                }
-            } else {
-                // Section head (v0.62.0): live counts straight from
-                // the rendered list, plus the two batch actions.
-                // Each action disables itself when there is nothing
-                // it could act on, instead of silently doing nothing.
-                item {
-                    val unreadCount = items.count { !it.read }
-                    val readCount = items.size - unreadCount
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp)
-                    ) {
-                        Text(
-                            "共 ${items.size} 条 · 未读 $unreadCount 条",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End
-                        ) {
-                            TextButton(
-                                onClick = onMarkAllRead,
-                                enabled = unreadCount > 0
-                            ) {
-                                Text("全部标为已读")
-                            }
-                            TextButton(
-                                onClick = { confirmDeleteRead = true },
-                                enabled = readCount > 0
-                            ) {
-                                Text("删除全部已读")
-                            }
-                        }
-                    }
-                }
-                items(items, key = { it.url }) { item ->
-                    ListItem(
-                        headlineContent = {
-                            Text(
-                                item.title,
-                                fontWeight = if (item.read) {
-                                    FontWeight.Normal
-                                } else {
-                                    FontWeight.Bold
-                                }
-                            )
-                        },
-                        supportingContent = {
-                            Column {
-                                Text(item.url)
-                                Text(
-                                    "加入于 " +
-                                        timeFormat.format(java.util.Date(item.time))
-                                )
-                            }
-                        },
-                        leadingContent = {
-                            if (item.read) {
-                                Icon(
-                                    Icons.Filled.MenuBook,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            } else {
-                                Icon(
-                                    Icons.Filled.FiberManualRecord,
-                                    contentDescription = "未读",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(12.dp)
-                                )
-                            }
-                        },
-                        trailingContent = {
-                            IconButton(onClick = { onDelete(item) }) {
-                                Icon(
-                                    Icons.Filled.Delete,
-                                    contentDescription = "从阅读列表删除"
-                                )
-                            }
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .combinedClickable(
-                                onClick = { onOpen(item) },
-                                onLongClick = { menuItem = item }
-                            )
-                    )
-                    HorizontalDivider()
-                }
-            }
-        }
-    }
-    // "Delete all read" confirmation (v0.62.0): the count in the
-    // text is read from the live list at render time, and the copy
-    // states plainly that unread entries are not touched.
-    if (confirmDeleteRead) {
-        val readCount = items.count { it.read }
-        AlertDialog(
-            onDismissRequest = { confirmDeleteRead = false },
-            title = { Text("删除全部已读？") },
-            text = {
-                Text(
-                    "会把 $readCount 条已读条目从阅读列表里删掉，" +
-                        "未读的不会删。删掉后不能恢复。"
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        confirmDeleteRead = false
-                        onClearRead()
-                    }
-                ) {
-                    Text("删除")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmDeleteRead = false }) {
-                    Text("取消")
-                }
-            }
-        )
-    }
-    // Long-press menu (v0.54.0): same AlertDialog + LazyColumn +
-    // ListItem shape as the history page's menu (v0.53.0). Delete
-    // calls the same onDelete as the trailing delete button.
-    val rlMenuTarget = menuItem
-    if (rlMenuTarget != null) {
-        AlertDialog(
-            onDismissRequest = { menuItem = null },
-            title = {
-                Text(
-                    rlMenuTarget.title.ifBlank { rlMenuTarget.url },
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-            },
-            text = {
-                LazyColumn {
-                    item {
-                        Text(
-                            rlMenuTarget.url,
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 3,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
-                    }
-                    item {
-                        ListItem(
-                            headlineContent = { Text("打开") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    menuItem = null
-                                    onOpen(rlMenuTarget)
-                                }
-                        )
-                    }
-                    item {
-                        ListItem(
-                            headlineContent = { Text("在新标签打开") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    menuItem = null
-                                    onOpenInNewTab(rlMenuTarget)
-                                }
-                        )
-                    }
-                    item {
-                        ListItem(
-                            headlineContent = { Text("复制网址") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    menuItem = null
-                                    onCopyUrl(rlMenuTarget)
-                                }
-                        )
-                    }
-                    item {
-                        ListItem(
-                            headlineContent = { Text("删除") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    menuItem = null
-                                    onDelete(rlMenuTarget)
-                                }
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { menuItem = null }) {
-                    Text("取消")
-                }
-            }
-        )
-    }
-}
-
-/**
- * Page source page (v0.84.0, WebView tabs only; Gecko tabs never
- * reach this screen — the menu entry explains why and offers the
- * switch-engine path). An app-level page: it renders the source
- * fetched by BrowserApp into [PageSourceData] and never navigates
- * any tab, so it leaves no visit-history entry and no saved-tab
- * trace (see SOURCE_URL). The body is one scrollable LazyColumn:
- * the two actions on top, a truncation notice when the source is
- * longer than the display limit, then the source itself in a
- * monospace, selectable text. "复制全文" always copies the FULL
- * source; only the display is truncated, and the notice says so.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun SourceScreen(
-    data: PageSourceData?,
-    onBack: () -> Unit,
-    onRefetch: () -> Unit
-) {
-    val context = LocalContext.current
-    // System back returns to the browser, like every other
-    // sub-page since v0.37.0.
-    BackHandler { onBack() }
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            data?.title?.ifBlank { "网页源代码" }
-                                ?: "网页源代码",
-                            maxLines = 1
-                        )
-                        Text(
-                            data?.url ?: "",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1
-                        )
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "返回"
-                        )
-                    }
-                }
-            )
-        }
-    ) { padding ->
-        val source = data?.text
-        when {
-            source != null -> LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-            ) {
-                item {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(onClick = {
-                            val ok = copyTextToClipboard(
-                                context, "source", source
-                            )
-                            android.widget.Toast.makeText(
-                                context,
-                                if (ok) "源代码已复制" else "复制失败，请重试",
-                                android.widget.Toast.LENGTH_SHORT
-                            ).show()
-                        }) { Text("复制全文") }
-                        OutlinedButton(onClick = onRefetch) {
-                            Text("重新获取")
-                        }
-                    }
-                }
-                if (isSourceTruncated(source)) {
-                    item {
-                        ElevatedCard(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 4.dp)
-                        ) {
-                            Text(
-                                "源码比较长，这里只显示前面 " +
-                                    "$SOURCE_DISPLAY_LIMIT 个字符" +
-                                    "（一共有 ${source.length} 个）。" +
-                                    "「复制全文」复制的是完整源码，不受这个限制。",
-                                style = MaterialTheme.typography.bodyMedium,
-                                modifier = Modifier.padding(16.dp)
-                            )
-                        }
-                    }
-                }
-                item {
-                    SelectionContainer {
-                        Text(
-                            truncateSourceForDisplay(source),
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp)
-                        )
-                    }
-                }
-            }
-            data?.failed == true -> LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-            ) {
-                item {
-                    EmptyState(
-                        Icons.Filled.Code,
-                        "没取到源代码。这个网页可能还在加载，或者那个标签页已经关掉了。"
-                    )
-                }
-                item {
-                    Button(
-                        onClick = onRefetch,
-                        modifier = Modifier.padding(horizontal = 16.dp)
-                    ) { Text("重新获取") }
-                }
-            }
-            else -> Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-                    .padding(32.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                CircularProgressIndicator()
-                Text(
-                    "正在取这个网页的源代码…",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 16.dp)
-                )
-            }
-        }
     }
 }
 
@@ -12608,9 +10155,8 @@ private fun DownloadsScreen(
                                 style = MaterialTheme.typography.titleMedium
                             )
                             Text(
-                                "火狐标签下载的文件和系统 WebView 保存的网页存档" +
-                                    "由浏览器直接保存，不走系统下载管理，" +
-                                    "所以单独列在这里。",
+                                "火狐标签下载的文件由浏览器直接保存，" +
+                                    "不走系统下载管理，所以单独列在这里。",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -12677,8 +10223,8 @@ private fun DownloadsScreen(
                 Text(
                     text = "说明：同一个文件重复下载时，原来的文件不会被覆盖——" +
                         "系统可能给新文件自动改名保存，也可能提示「同名文件已经存在」。" +
-                        "火狐标签下载的文件和系统 WebView 保存的网页存档会列在上面的「应用内保存」一节里；" +
-                        "无痕标签里的下载和存档只保存文件、不留记录，所以不会出现在这里。",
+                        "火狐标签下载的文件会列在上面的「应用内保存」一节里；" +
+                        "无痕标签里的下载只保存文件、不留记录，所以不会出现在这里。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
@@ -12693,16 +10239,13 @@ private fun DownloadsScreen(
 private fun ClearDataScreen(
     geckoStarted: Boolean,
     onBack: () -> Unit,
-    onClear: (Boolean, Boolean, Boolean) -> Unit,
-    onClearSite: (String) -> Unit
+    onClear: (Boolean, Boolean, Boolean) -> Unit
 ) {
     var clearHistorySel by remember { mutableStateOf(true) }
     var clearWebView by remember { mutableStateOf(true) }
     var clearGecko by remember { mutableStateOf(true) }
     var showConfirm by remember { mutableStateOf(false) }
     var doneText by remember { mutableStateOf<String?>(null) }
-    var siteInput by remember { mutableStateOf("") }
-    var siteDoneText by remember { mutableStateOf<String?>(null) }
     // Storage usage of the app's own private directories, measured
     // on a background thread (recursive file walk). A null entry
     // means that directory does not exist / cannot be measured, and
@@ -12899,55 +10442,6 @@ private fun ClearDataScreen(
             if (doneText != null) {
                 item { Text(doneText!!) }
             }
-            item {
-                HorizontalDivider()
-            }
-            item {
-                Text("按网站清除", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "只想清某一个网站时用这里：输入域名，清掉火狐里这个网站的 Cookie 和网站数据，" +
-                        "并删掉本机保存的这个网站的历史记录。系统 WebView 的网站数据没法按网站单独清，" +
-                        "只能用上面那项整清（系统 WebView 不支持按网站清除）。",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            }
-            item {
-                OutlinedTextField(
-                    value = siteInput,
-                    onValueChange = { siteInput = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("网站域名") },
-                    placeholder = { Text("如 example.com") }
-                )
-            }
-            item {
-                OutlinedButton(
-                    onClick = {
-                        val host = hostOf(siteInput.trim())
-                            ?: hostOf("https://" + siteInput.trim())
-                        if (host == null) {
-                            siteDoneText = "这个域名看不懂，检查一下再试。"
-                        } else {
-                            onClearSite(host)
-                            storageTick++
-                            siteDoneText = if (geckoStarted) {
-                                "已清除 $host 在火狐里的数据和本机历史。"
-                            } else {
-                                "已删掉 $host 的本机历史。火狐这次还没启动过，" +
-                                    "没有它的数据需要清。"
-                            }
-                        }
-                    },
-                    enabled = siteInput.isNotBlank(),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("清除这个网站的数据")
-                }
-            }
-            if (siteDoneText != null) {
-                item { Text(siteDoneText!!) }
-            }
             item { Spacer(modifier = Modifier.padding(bottom = 24.dp)) }
         }
     }
@@ -12960,15 +10454,12 @@ private fun SettingsScreen(
     refreshTick: Int = 0,
     bookmarkCount: Int = 0,
     historyCount: Int = 0,
-    readingCount: Int = 0,
-    speedDialCount: Int = 0,
     onOpenReleaseUrl: (String) -> Unit = {},
     onBack: () -> Unit,
     onClearHistoryRange: (HistoryClearRange) -> Unit = {},
     historyClearCounts: Map<HistoryClearRange, Int> = emptyMap(),
     onRemoveCompatSite: (String) -> Unit,
     onRemoveDesktopSite: (String) -> Unit = {},
-    onRemoveReaderSite: (String) -> Unit = {},
     onClearDesktopSites: () -> Unit = {},
     onOpenClearData: () -> Unit,
     onExportBackup: () -> Unit = {},
@@ -12977,10 +10468,6 @@ private fun SettingsScreen(
     onSearchEngineChange: () -> Unit = {},
     onTextZoomChange: (Int) -> Unit,
     onWebDarkChange: (Boolean) -> Unit,
-    onUserAgentChange: () -> Unit = {},
-    onThirdPartyCookiesChange: (Boolean) -> Unit = {},
-    onBlockImagesChange: (Boolean) -> Unit = {},
-    onDisableJavaScriptChange: (Boolean) -> Unit = {},
     onReaderStyleChange: () -> Unit = {}
 ) {
     // Every state below mirrors a stored setting. In-page edits
@@ -12994,35 +10481,21 @@ private fun SettingsScreen(
     var mainEngine by remember(refreshTick) { mutableStateOf(store.mainEngine) }
     var incognitoEngine by remember(refreshTick) { mutableStateOf(store.incognitoEngine) }
     var searchEngine by remember(refreshTick) { mutableStateOf(store.searchEngine) }
-    var showCustomSearchDialog by remember { mutableStateOf(false) }
-    var customSearchName by remember(refreshTick) { mutableStateOf(store.customSearchName) }
-    var customSearchTemplate by remember(refreshTick) { mutableStateOf(store.customSearchTemplate) }
-    var customSearchError by remember { mutableStateOf<String?>(null) }
     var adBlock by remember(refreshTick) { mutableStateOf(store.adBlockEnabled) }
-    var adHideSlots by remember(refreshTick) { mutableStateOf(store.adHideSlots) }
-    var totalBlocked by remember(refreshTick) { mutableStateOf(store.totalBlocked) }
-    var blockedDaily by remember(refreshTick) {
-        mutableStateOf(store.blockedDailyCounts())
+    var guardScript by remember(refreshTick) {
+        mutableStateOf(store.guardScriptEnabled)
     }
+    var totalBlocked by remember(refreshTick) { mutableStateOf(store.totalBlocked) }
     var showResetBlockedConfirm by remember { mutableStateOf(false) }
+    // Diagnostics stay hidden until the version row on the About
+    // page is long-pressed (v0.91.0): they are a troubleshooting
+    // aid, not a setting, so they no longer take up About space.
+    var showDiagnostics by remember { mutableStateOf(false) }
     var textZoom by remember(refreshTick) { mutableStateOf(store.textZoomPercent) }
     var webDark by remember(refreshTick) { mutableStateOf(store.webDarkMode) }
-    var uaPreset by remember(refreshTick) { mutableStateOf(store.uaPreset) }
     var startupRestore by remember(refreshTick) { mutableStateOf(store.startupRestore) }
-    var allowThirdPartyCookies by remember(refreshTick) {
-        mutableStateOf(store.allowThirdPartyCookies)
-    }
     var httpsFirst by remember(refreshTick) {
         mutableStateOf(store.httpsFirstEnabled)
-    }
-    var blockImages by remember(refreshTick) {
-        mutableStateOf(store.blockImages)
-    }
-    var disableJavaScript by remember(refreshTick) {
-        mutableStateOf(store.disableJavaScript)
-    }
-    var searchSuggestions by remember(refreshTick) {
-        mutableStateOf(store.searchSuggestionsEnabled)
     }
     var downloadMode by remember(refreshTick) { mutableStateOf(store.downloadMode) }
     var historyRetention by remember(refreshTick) { mutableStateOf(store.historyRetention) }
@@ -13033,35 +10506,14 @@ private fun SettingsScreen(
     // categories, each opening its own sub-page. Back from a
     // sub-page returns here; back from home leaves settings.
     var settingsPage by remember { mutableStateOf("home") }
-    // Settings search (v0.71.0): home-only state, never persisted.
-    // While the query is non-blank the home list swaps its six
-    // category cards for the matching index entries; clearing the
-    // query (or tapping a result, which clears it too) brings the
-    // categories back.
-    // Saveable since v0.85.0 (second configuration-change audit):
-    // a half-typed settings search survives an activity recreation
-    // (uncovered configuration change / process death with state
-    // restore) instead of silently resetting to the category list.
-    var settingsQuery by rememberSaveable { mutableStateOf("") }
     BackHandler(enabled = settingsPage != "home") { settingsPage = "home" }
     // From the settings home the same back key leaves settings for
     // the browser (v0.37.0): before this, no handler was enabled on
     // the home page and the system finished the activity instead.
     // The two handlers are mutually exclusive by enabled.
     BackHandler(enabled = settingsPage == "home") { onBack() }
-    // With a search word typed on the settings home (v0.84.0 back
-    // audit, same settled rule as history/downloads: search text
-    // clears first), the key clears the word and restores the
-    // category list instead of leaving settings outright.
-    // Declared last so it wins over the plain home handler above
-    // whenever a query is present; the query only exists on the
-    // home page, so it can never shadow the sub-page handler.
-    BackHandler(
-        enabled = settingsPage == "home" && settingsQuery.isNotBlank()
-    ) { settingsQuery = "" }
     var compatList by remember(refreshTick) { mutableStateOf(store.loadCompatSites().sorted()) }
     var desktopList by remember(refreshTick) { mutableStateOf(store.loadDesktopSites().sorted()) }
-    var readerList by remember(refreshTick) { mutableStateOf(store.loadReaderSites().sorted()) }
     var showClearDesktopConfirm by remember { mutableStateOf(false) }
     var showCleared by remember { mutableStateOf(false) }
     var showHistoryClearDialog by remember { mutableStateOf(false) }
@@ -13236,114 +10688,32 @@ private fun SettingsScreen(
             )
         ) {
             if (settingsPage == "home") {
-                item {
-                    OutlinedTextField(
-                        value = settingsQuery,
-                        onValueChange = { settingsQuery = it },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 8.dp),
-                        singleLine = true,
-                        // A label, not just a placeholder (v0.78.0
-                        // accessibility pass): TalkBack announces
-                        // the label as the field's name, while a
-                        // placeholder alone is not a reliable name.
-                        label = { Text("搜索设置") },
-                        placeholder = {
-                            Text("搜索设置（比如：深色、历史、下载）")
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Filled.Search, contentDescription = null)
-                        },
-                        trailingIcon = if (settingsQuery.isNotEmpty()) {
-                            {
-                                IconButton(onClick = { settingsQuery = "" }) {
-                                    Icon(
-                                        Icons.Filled.Close,
-                                        contentDescription = "清空搜索"
-                                    )
-                                }
-                            }
-                        } else {
-                            null
-                        }
+                items(
+                    listOf(
+                        Triple("engine", "内核与搜索引擎", Icons.Filled.Language),
+                        Triple("appearance", "外观与字体", Icons.Filled.Palette),
+                        Triple("privacy", "隐私与数据", Icons.Filled.Lock),
+                        Triple("download", "下载", Icons.Filled.Download),
+                        Triple("adblock", "广告拦截", Icons.Filled.VisibilityOff),
+                        Triple("about", "关于", Icons.Filled.Info)
                     )
-                }
-                if (settingsQuery.isBlank()) {
-                    item {
-                        Text(
-                            "点一个分类进去改，改完点左上角返回。",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                    items(
-                        listOf(
-                            Triple("engine", "内核与搜索引擎", Icons.Filled.Language),
-                            Triple("appearance", "外观与字体", Icons.Filled.Palette),
-                            Triple("privacy", "隐私与数据", Icons.Filled.Lock),
-                            Triple("download", "下载", Icons.Filled.Download),
-                            Triple("adblock", "广告拦截", Icons.Filled.VisibilityOff),
-                            Triple("about", "关于", Icons.Filled.Info)
-                        )
-                    ) { (key, label, icon) ->
-                        ElevatedCard(
-                            onClick = { settingsPage = key },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            ListItem(
-                                headlineContent = { Text(label) },
-                                leadingContent = {
-                                    Icon(icon, contentDescription = null)
-                                },
-                                trailingContent = {
-                                    Icon(
-                                        Icons.Filled.ChevronRight,
-                                        contentDescription = "进入"
-                                    )
-                                }
-                            )
-                        }
-                    }
-                } else {
-                    val matches = filterSettingsIndex(
-                        SETTINGS_SEARCH_INDEX, settingsQuery
-                    )
-                    if (matches.isEmpty()) {
-                        item {
-                            EmptyState(
-                                Icons.Filled.Search,
-                                "没有找到相关的设置，换个词试试。"
-                            )
-                        }
-                    } else {
-                        items(matches, key = { it.page + "|" + it.name }) { entry ->
-                            ElevatedCard(
-                                onClick = {
-                                    settingsQuery = ""
-                                    settingsPage = entry.page
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                ListItem(
-                                    headlineContent = { Text(entry.name) },
-                                    supportingContent = {
-                                        Text("在「${entry.pageLabel}」里")
-                                    },
-                                    leadingContent = {
-                                        Icon(
-                                            Icons.Filled.Settings,
-                                            contentDescription = null
-                                        )
-                                    },
-                                    trailingContent = {
-                                        Icon(
-                                            Icons.Filled.ChevronRight,
-                                            contentDescription = "进入"
-                                        )
-                                    }
+                ) { (key, label, icon) ->
+                    ElevatedCard(
+                        onClick = { settingsPage = key },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        ListItem(
+                            headlineContent = { Text(label) },
+                            leadingContent = {
+                                Icon(icon, contentDescription = null)
+                            },
+                            trailingContent = {
+                                Icon(
+                                    Icons.Filled.ChevronRight,
+                                    contentDescription = "进入"
                                 )
                             }
-                        }
+                        )
                     }
                 }
             }
@@ -13351,7 +10721,7 @@ private fun SettingsScreen(
             item {
                 Text("主内核", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "新建的普通标签页用这个内核打开。已经打开的标签不会中途换内核，要换就点地址栏旁边的切换内核按钮。",
+                    "新建的普通标签页用此内核打开；已打开的标签不变。",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -13409,108 +10779,30 @@ private fun SettingsScreen(
             item {
                 Text("搜索引擎", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "在地址栏和首页搜索框里输入的词，用这个搜索引擎去搜。默认百度，国内能直接打开。",
+                    "地址栏和首页搜索框使用的搜索引擎。",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
             items(SearchEngine.entries) { engine ->
                 ElevatedCard(
                     onClick = {
-                        if (engine == SearchEngine.CUSTOM) {
-                            // Picking "custom" opens the editor; the
-                            // engine only becomes active once a valid
-                            // name + template are saved there.
-                            customSearchName = store.customSearchName
-                            customSearchTemplate = store.customSearchTemplate
-                            customSearchError = null
-                            showCustomSearchDialog = true
-                        } else {
-                            searchEngine = engine
-                            store.searchEngine = engine
-                            onSearchEngineChange()
-                        }
+                        searchEngine = engine
+                        store.searchEngine = engine
+                        onSearchEngineChange()
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     ListItem(
                         headlineContent = { Text(engine.label) },
-                        supportingContent = if (engine == SearchEngine.CUSTOM &&
-                            store.customSearchName.isNotBlank()
-                        ) {
-                            { Text(store.customSearchName) }
-                        } else {
-                            null
-                        },
                         trailingContent = {
                             RadioButton(
                                 selected = searchEngine == engine,
                                 onClick = {
-                                    if (engine == SearchEngine.CUSTOM) {
-                                        customSearchName = store.customSearchName
-                                        customSearchTemplate = store.customSearchTemplate
-                                        customSearchError = null
-                                        showCustomSearchDialog = true
-                                    } else {
-                                        searchEngine = engine
-                                        store.searchEngine = engine
-                                        onSearchEngineChange()
-                                    }
+                                    searchEngine = engine
+                                    store.searchEngine = engine
+                                    onSearchEngineChange()
                                 }
                             )
-                        }
-                    )
-                }
-            }
-            if (searchEngine == SearchEngine.CUSTOM) {
-                item {
-                    Text(
-                        if (isValidCustomSearchTemplate(store.customSearchTemplate)) {
-                            "正在用自定义搜索引擎「" +
-                                store.customSearchName.ifBlank { "自定义" } +
-                                "」。点上面的「自定义」可以修改。"
-                        } else {
-                            "自定义搜索引擎还没填好：先点上面的「自定义」填写，" +
-                                "没填好之前搜索会先用百度。"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-            // Online search suggestions (v0.50.0): sits directly
-            // under the search-engine choices because it only makes
-            // sense together with them — the suggestions come from
-            // whichever engine is selected above.
-            item {
-                Text("搜索建议", style = MaterialTheme.typography.titleMedium)
-            }
-            item {
-                ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-                    ListItem(
-                        headlineContent = { Text("获取联网搜索建议") },
-                        supportingContent = {
-                            Text(
-                                "默认关。开启后，你在地址栏输入的内容会发送给" +
-                                    "当前搜索引擎，用来获取建议词，显示在书签" +
-                                    "联想下面。无痕标签里永远不会获取建议词。" +
-                                    "自定义搜索引擎没有建议词接口，不支持这个" +
-                                    "功能。建议词只在内存里用一下，不会保存" +
-                                    "下来。"
-                            )
-                        },
-                        trailingContent = {
-                            Switch(
-                                checked = searchSuggestions,
-                                onCheckedChange = { checked ->
-                                    searchSuggestions = checked
-                                    store.searchSuggestionsEnabled = checked
-                                }
-                            )
-                        },
-                        modifier = Modifier.clickable {
-                            val checked = !searchSuggestions
-                            searchSuggestions = checked
-                            store.searchSuggestionsEnabled = checked
                         }
                     )
                 }
@@ -13518,14 +10810,14 @@ private fun SettingsScreen(
             item {
                 Text("兼容模式记住的网站", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "这些网站在火狐内核下打开时会自动改用兼容模式（系统 WebView）打开。删掉某个网站，它就恢复成用你选的主内核打开。",
+                    "这些网站自动用兼容模式（系统 WebView）打开；删除后恢复主内核。",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
             if (compatList.isEmpty()) {
                 item {
                     Text(
-                        "还没有。在火狐标签里打开某个网站觉得不对劲时，点地址栏旁边的切换内核按钮，把当前标签切换到系统 WebView 并勾选记住，就会记到这里。",
+                        "还没有。在火狐标签里点切换内核按钮、切到系统 WebView 并勾选记住，即可添加。",
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
@@ -13548,7 +10840,7 @@ private fun SettingsScreen(
             item {
                 Text("桌面模式站点", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "在某个网站打开「桌面版网站」后，这个网站会被记到这里，下次新打开它时自动用桌面版。关掉那个网站的桌面版开关，它就会从这里去掉。已经打开的标签页不会因为名单变化而改变。",
+                    "打开过「桌面版网站」的网站记在这里，下次打开自动用桌面版；已打开的标签不受名单变化影响。",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -13580,53 +10872,17 @@ private fun SettingsScreen(
                     }
                 }
             }
-            item {
-                Text("阅读模式记住的网站", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "这些网站在系统 WebView 标签里打开时，页面加载完会自动进入阅读模式。删掉某个网站，它就恢复成普通打开。阅读模式只支持系统 WebView，火狐标签不会自动进入。",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            }
-            if (readerList.isEmpty()) {
-                item {
-                    Text(
-                        "还没有。在系统 WebView 标签里打开某个网站，点右上角菜单打开「本站总是用阅读模式」，那个网站就会记到这里。",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-            } else {
-                items(readerList, key = { it }) { site ->
-                    ListItem(
-                        headlineContent = { Text(site) },
-                        trailingContent = {
-                            IconButton(onClick = {
-                                onRemoveReaderSite(site)
-                                readerList = readerList - site
-                            }) {
-                                Icon(Icons.Filled.Delete, contentDescription = "删除阅读模式记忆")
-                            }
-                        }
-                    )
-                    HorizontalDivider()
-                }
-            }
             }
             if (settingsPage == "adblock") {
             item {
                 Text("广告拦截", style = MaterialTheme.typography.titleMedium)
             }
 
-                item {
-                    Text(
-                        if (adBlock) "广告拦截已开" else "广告拦截已关",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
             item {
                 ListItem(
                     headlineContent = { Text("拦截广告和跟踪请求") },
                     supportingContent = {
-                        Text("系统 WebView 按内置名单拦截常见广告域名，立即生效；火狐内核用自带的反跟踪，重启应用后完全生效。关掉后所有网站原样加载。")
+                        Text("系统 WebView 按内置名单拦截；火狐用内核自带的反跟踪。")
                     },
                     trailingContent = {
                         Switch(
@@ -13641,18 +10897,16 @@ private fun SettingsScreen(
             }
             item {
                 ListItem(
-                    modifier = Modifier.alpha(if (adBlock) 1f else 0.5f),
-                    headlineContent = { Text("隐藏页面广告位") },
+                    headlineContent = { Text("内置净化脚本") },
                     supportingContent = {
-                        Text("把网页上拦掉广告后剩下的空广告位也藏起来。只认特征很明确的广告容器，宁可漏掉也不误藏正文。此项仅对系统 WebView 标签生效；火狐标签由内核自带的反跟踪处理。")
+                        Text("在系统 WebView 网页打开前运行，清理广告、拦截恶意跳转和跟踪指纹；火狐标签不支持。")
                     },
                     trailingContent = {
                         Switch(
-                            checked = adHideSlots,
-                            enabled = adBlock,
+                            checked = guardScript,
                             onCheckedChange = {
-                                adHideSlots = it
-                                store.adHideSlots = it
+                                guardScript = it
+                                store.guardScriptEnabled = it
                             }
                         )
                     }
@@ -13660,9 +10914,8 @@ private fun SettingsScreen(
             }
             item {
                 Text(
-                    "内置拦截名单共 ${AdBlocker.blockedHostCount} 个广告/跟踪域名。" +
-                        "系统 WebView 标签按这份名单拦截，单个页面拦下了几个可以在网站信息里看；" +
-                        "火狐标签用内核自带的反跟踪，没有个数统计。",
+                    "内置名单共 ${AdBlocker.blockedHostCount} 个域名；" +
+                        "单页拦截数可在网站信息里看，火狐标签不统计。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -13683,67 +10936,12 @@ private fun SettingsScreen(
                     }
                 }
             }
-            item {
-                Text(
-                    "这个累计数只统计系统 WebView 标签拦下的请求；火狐是内核级拦截，没法计数，不算在里面。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            item {
-                // Last-7-days view (v0.70.0): one official ListItem
-                // per day, oldest first, today last. The bar under
-                // each day is scaled to the busiest day of the seven,
-                // so a quiet week still reads honestly. Days with no
-                // blocks recorded show 0 — the series is zero-filled
-                // by recentBlockedSeries.
-                val today = java.time.LocalDate.now()
-                val series = recentBlockedSeries(blockedDaily, today)
-                val maxInWeek = series.maxOf { it.second }
-                Column {
-                    Text(
-                        "最近 7 天",
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.padding(bottom = 4.dp)
-                    )
-                    series.forEach { (dayKey, count) ->
-                        ListItem(
-                            headlineContent = {
-                                Text(
-                                    if (dayKey == blockedDayKey(today)) {
-                                        "$dayKey（今天）"
-                                    } else {
-                                        dayKey
-                                    }
-                                )
-                            },
-                            supportingContent = {
-                                LinearProgressIndicator(
-                                    progress = {
-                                        if (maxInWeek > 0) {
-                                            count.toFloat() / maxInWeek.toFloat()
-                                        } else {
-                                            0f
-                                        }
-                                    },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(top = 4.dp)
-                                )
-                            },
-                            trailingContent = { Text("$count 个") }
-                        )
-                    }
-                }
-            }
             }
             if (settingsPage == "download") {
             item {
                 Text("下载", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "在网页里点到下载链接、或者用资源嗅探下载文件时，文件交给谁来下。" +
-                        "TuxunDown 是多线程下载器，下大文件更快，需要另外安装这个 App；" +
-                        "没装的时候会自动改用系统下载，不会下不了。",
+                    "网页和资源嗅探的下载由谁处理。TuxunDown 需另行安装，未安装时自动改用系统下载。",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -13780,10 +10978,6 @@ private fun SettingsScreen(
             if (settingsPage == "appearance") {
             item {
                 Text("外观", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "应用界面用浅色还是深色。选完立刻生效，所有页面一起变。",
-                    style = MaterialTheme.typography.bodyMedium
-                )
             }
             items(ThemeMode.entries) { mode ->
                 ElevatedCard(
@@ -13811,9 +11005,7 @@ private fun SettingsScreen(
             }
             item {
                 Text(
-                    "注意：这里只管应用自己的界面（工具栏、设置、首页这些）。" +
-                        "网页内容是深色还是浅色由网页自己决定，和下面的「网页深色模式」设置有关，" +
-                        "跟这里不是一回事，别弄混。",
+                    "只影响应用界面；网页深浅见下方「网页深色模式」。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -13855,7 +11047,7 @@ private fun SettingsScreen(
                 ListItem(
                     headlineContent = { Text("网页深色模式") },
                     supportingContent = {
-                        Text("让网页按深色显示。系统 WebView 标签在 Android 13 以上生效；火狐内核的网页深浅跟随系统深色模式，系统开了深色它就是深色。")
+                        Text("系统 WebView 需 Android 13 以上；火狐跟随系统深色模式。")
                     },
                     trailingContent = {
                         Switch(
@@ -13870,60 +11062,9 @@ private fun SettingsScreen(
                 )
             }
             item {
-                Text("用户代理（UA）", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "网站靠「用户代理」判断你用的是什么浏览器、什么设备，再决定给你手机版还是电脑版页面。" +
-                        "在这里可以换一个身份，全局生效。两个内核都支持：系统 WebView 直接换，" +
-                        "火狐内核走官方的 UA 覆盖通路。已经打开的页面要刷新或新开标签才换过来；" +
-                        "改回「跟随系统默认」就恢复这台设备本来的 UA。" +
-                        "注意：这和菜单里按网站开的「桌面版网站」是两回事——那个是单个网站的开关，优先级更高，开了桌面版的网站不受这里影响。",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            }
-            items(UaPreset.entries) { preset ->
-                ElevatedCard(
-                    onClick = {
-                        uaPreset = preset
-                        store.uaPreset = preset
-                        onUserAgentChange()
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    ListItem(
-                        headlineContent = { Text("用户代理 · ${preset.label}") },
-                        supportingContent = {
-                            Text(
-                                when (preset) {
-                                    UaPreset.SYSTEM ->
-                                        "不改：网站看到的是这台设备系统默认的浏览器身份"
-                                    UaPreset.ANDROID_PHONE ->
-                                        "网站看到的是安卓手机上的 Chrome（用本机真实的安卓版本和机型拼）"
-                                    UaPreset.DESKTOP ->
-                                        "网站看到的是桌面电脑上的 Chrome，常用来让网站给电脑版页面"
-                                    UaPreset.IPHONE ->
-                                        "网站看到的是 iPhone 上的 Safari"
-                                }
-                            )
-                        },
-                        trailingContent = {
-                            RadioButton(
-                                selected = uaPreset == preset,
-                                onClick = {
-                                    uaPreset = preset
-                                    store.uaPreset = preset
-                                    onUserAgentChange()
-                                }
-                            )
-                        }
-                    )
-                }
-            }
-            item {
                 Text("阅读模式", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "阅读模式会把网页正文重新排版成一栏慢慢看的样子，下面两项管它的字号和背景。" +
-                        "阅读模式只支持系统 WebView 标签，火狐标签暂时用不了。" +
-                        "这两项和上面的「网页文字大小」是两回事：文字大小管所有网页，这两项只管阅读模式。",
+                    "阅读模式的字号和背景；仅系统 WebView 标签可用。",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -13964,19 +11105,10 @@ private fun SettingsScreen(
                 ) {
                     ListItem(
                         headlineContent = { Text("阅读背景 · ${bg.label}") },
-                        supportingContent = {
-                            Text(
-                                when (bg) {
-                                    ReaderBackground.FOLLOW ->
-                                        "按应用界面当前的深浅来：界面是深色就用深色背景，浅色就用浅色背景，进阅读模式那一刻定下来"
-                                    ReaderBackground.LIGHT ->
-                                        "一直用浅色背景，白天看更清楚"
-                                    ReaderBackground.BEIGE ->
-                                        "暖米色背景，长时间看长文章时眼睛没那么累"
-                                    ReaderBackground.DARK ->
-                                        "一直用深色背景，晚上看不刺眼"
-                                }
-                            )
+                        supportingContent = if (bg == ReaderBackground.FOLLOW) {
+                            { Text("跟随进入阅读模式时应用界面的深浅。") }
+                        } else {
+                            null
                         },
                         trailingContent = {
                             RadioButton(
@@ -13991,13 +11123,6 @@ private fun SettingsScreen(
                     )
                 }
             }
-            item {
-                Text(
-                    "正在阅读模式里改这两项，字号和背景会马上跟着换，不用退出重进。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
             }
             if (settingsPage == "privacy") {
             item {
@@ -14007,7 +11132,7 @@ private fun SettingsScreen(
                 ListItem(
                     headlineContent = { Text("启动时恢复上次的标签页") },
                     supportingContent = {
-                        Text("打开后接着上次没看完的页面继续看。关掉它，每次打开都从首页开始。无痕标签永远不会被恢复。")
+                        Text("无痕标签不会被恢复。")
                     },
                     trailingContent = {
                         Switch(
@@ -14094,10 +11219,6 @@ private fun SettingsScreen(
             }
             item {
                 Text("两个内核的差别", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "有些功能只有一边有，选内核时可以对照着看。",
-                    style = MaterialTheme.typography.bodyMedium
-                )
             }
             item {
                 ElevatedCard(modifier = Modifier.fillMaxWidth()) {
@@ -14110,13 +11231,12 @@ private fun SettingsScreen(
                             )
                         )
                         ListItem(headlineContent = { Text("资源嗅探") })
-                        ListItem(headlineContent = { Text("网页截图与长截图") })
+                        ListItem(headlineContent = { Text("网页截图") })
                         ListItem(headlineContent = { Text("标签预览图") })
                         ListItem(headlineContent = { Text("阅读模式与排版设置") })
                         ListItem(headlineContent = { Text("页内查找计数") })
                         ListItem(headlineContent = { Text("本页拦截计数") })
                         ListItem(headlineContent = { Text("广告位隐藏") })
-                        ListItem(headlineContent = { Text("无图模式") })
                         ListItem(headlineContent = { Text("打印 / 存为 PDF") })
                         HorizontalDivider()
                         Text(
@@ -14141,7 +11261,7 @@ private fun SettingsScreen(
                         ListItem(
                             headlineContent = { Text("选字菜单") },
                             supportingContent = {
-                                Text("长按选中文字可复制、全选、剪切、粘贴、粘贴为纯文本、分享或搜索选中文字")
+                                Text("长按选中文字可复制、剪切、粘贴、分享或搜索。")
                             }
                         )
                         ListItem(
@@ -14153,7 +11273,7 @@ private fun SettingsScreen(
                         ListItem(
                             headlineContent = { Text("下载有应用内记录") },
                             supportingContent = {
-                                Text("下载时能在下载页看到进度、也能取消；下好的文件会记进下载页的「应用内保存」一节，点按可打开")
+                                Text("可在下载页查看进度和取消；完成的文件在「应用内保存」里打开。")
                             }
                         )
                         HorizontalDivider()
@@ -14169,14 +11289,7 @@ private fun SettingsScreen(
                                 Text("文件上传、相机和麦克风、网站登录（基础认证）")
                             }
                         )
-                        ListItem(headlineContent = { Text("禁用 JavaScript 开关") })
                         ListItem(headlineContent = { Text("长按链接 / 图片菜单") })
-                        ListItem(
-                            headlineContent = { Text("联网搜索建议") },
-                            supportingContent = {
-                                Text("地址栏和首页搜索框都能用，默认关着；无痕时不获取")
-                            }
-                        )
                         ListItem(
                             headlineContent = { Text("下载") },
                             supportingContent = {
@@ -14194,8 +11307,7 @@ private fun SettingsScreen(
             item {
                 Text("隐私", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "历史记录保留多久。超过期限的记录会在下次打开应用时自动清掉。" +
-                        "无痕标签的访问本来就不记历史，不受这个设置影响。",
+                    "过期记录在下次打开应用时自动清除；无痕标签不记历史。",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -14231,12 +11343,8 @@ private fun SettingsScreen(
                     },
                     supportingContent = {
                         Text(
-                            "打开后，你输入、搜索、从别的 App 分享或点开的 http:// 网址，" +
-                                "会先换成 https:// 再打开，连接加密、更不容易被偷看或篡改。" +
-                                "这个开关默认开着。IP 地址和局域网地址（比如路由器设置页）" +
-                                "不会被换，因为它们大多没有 https。网页里面点来点去的链接不受影响。" +
-                                "万一某个网站换成 https 后打不开，错误页面上会有" +
-                                "「改用 http 打开这个网站」按钮，只对那一次有效。"
+                            "把输入或点开的 http:// 网址先换成 https:// 打开；" +
+                                "IP 和局域网地址不换，网页内链接不受影响。"
                         )
                     },
                     trailingContent = {
@@ -14245,102 +11353,6 @@ private fun SettingsScreen(
                             onCheckedChange = {
                                 httpsFirst = it
                                 store.httpsFirstEnabled = it
-                            }
-                        )
-                    }
-                )
-            }
-            item {
-                Text("网站登录", style = MaterialTheme.typography.titleMedium)
-            }
-            item {
-                ListItem(
-                    headlineContent = {
-                        Text("允许第三方 Cookie（系统 WebView 标签）")
-                    },
-                    supportingContent = {
-                        Text(
-                            "网页里嵌着的其他网站（比如跳转登录、网页版支付）" +
-                                "需要用到第三方 Cookie。这个开关默认开着：" +
-                                "浏览器里挡掉第三方 Cookie，打断登录的麻烦比好处大，" +
-                                "电脑上的浏览器默认也是允许的。关掉它更防跟踪，" +
-                                "但有些网站会登录不上。改了之后，已经打开的" +
-                                "系统 WebView 标签也会马上按新设置来；新开的标签同样生效。" +
-                                "火狐标签不受这个开关影响：火狐的第三方 Cookie " +
-                                "由火狐内核自带的反跟踪决定（只拦已知的跟踪网站，" +
-                                "不是全拦）。"
-                        )
-                    },
-                    trailingContent = {
-                        Switch(
-                            checked = allowThirdPartyCookies,
-                            onCheckedChange = {
-                                allowThirdPartyCookies = it
-                                store.allowThirdPartyCookies = it
-                                onThirdPartyCookiesChange(it)
-                            }
-                        )
-                    }
-                )
-            }
-            item {
-                Text("省流量与脚本", style = MaterialTheme.typography.titleMedium)
-            }
-            item {
-                ListItem(
-                    headlineContent = {
-                        Text("无图模式（系统 WebView 标签）")
-                    },
-                    supportingContent = {
-                        Text(
-                            "打开后，系统 WebView 标签打开的网页不再加载图片：" +
-                                "图片请求根本不会发出，省流量，网速慢的时候" +
-                                "页面打开也更快，只看文字更清净。这个开关默认关着。" +
-                                "改了之后会马上推给所有已经打开的系统 WebView 标签，" +
-                                "之后新加载的页面就不带图片了；页面里已经显示出来的" +
-                                "图片不会立刻消失，刷新一下或者打开新页面就没有了。" +
-                                "火狐标签不受这个开关影响：火狐内核没有给应用留" +
-                                "「不加载图片」的设置办法，火狐标签里的图片还是会照常加载。"
-                        )
-                    },
-                    trailingContent = {
-                        Switch(
-                            checked = blockImages,
-                            onCheckedChange = {
-                                blockImages = it
-                                store.blockImages = it
-                                onBlockImagesChange(it)
-                            }
-                        )
-                    }
-                )
-            }
-            item {
-                ListItem(
-                    headlineContent = {
-                        Text("禁用 JavaScript（两个内核）")
-                    },
-                    supportingContent = {
-                        Text(
-                            "打开后，网页里的脚本（JavaScript）不再运行：" +
-                                "有些网站会更干净、打开更快，弹窗和骚扰也更少。" +
-                                "这个开关默认关着，脚本照常运行。两个内核都管：" +
-                                "系统 WebView 和火狐标签都会按这个开关来。" +
-                                "改了之后会马上推给所有已经打开的标签，" +
-                                "但已经打开的页面要刷新一下、或者打开新页面才按新设置来。" +
-                                "要注意：很多网站离了脚本就没法正常用——" +
-                                "登录、按钮、评论、视频都可能失效，页面可能只剩文字甚至一片空白。" +
-                                "遇到网站打不开或不好用，先回到这里把开关关掉再刷新页面。" +
-                                "关掉开关后，一切恢复原样。"
-                        )
-                    },
-                    trailingContent = {
-                        Switch(
-                            checked = disableJavaScript,
-                            onCheckedChange = {
-                                disableJavaScript = it
-                                store.disableJavaScript = it
-                                onDisableJavaScriptChange(it)
                             }
                         )
                     }
@@ -14371,9 +11383,7 @@ private fun SettingsScreen(
             item {
                 Text("备份与恢复", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "把书签、历史、阅读列表、首页快捷方式和主要设置存成一个备份文件，" +
-                        "放在下载文件夹里；换手机或重装后，用导入把它们合并回来" +
-                        "（重复的会自动跳过，设置会被备份里的覆盖，导入前会先让你确认）。",
+                    "把书签、历史和主要设置存成备份文件，可导入合并恢复。",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -14396,13 +11406,19 @@ private fun SettingsScreen(
             }
             if (settingsPage == "about") {
             item {
-                Card(modifier = Modifier.fillMaxWidth()) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .combinedClickable(
+                            onClick = {},
+                            onLongClick = { showDiagnostics = true }
+                        )
+                ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text("关于 TuxunBrowse", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "版本 $versionName。免费开源的双内核浏览器：火狐内核（GeckoView）与系统 WebView 由用户自选，" +
-                                "首页是应用自己的页面（搜索框、快捷方式和常用书签快捷入口），不拿任何网站的页面冒充首页。" +
-                                "两个内核的登录状态互不相通，这是双内核的固有代价。",
+                            "版本 $versionName。免费开源双内核浏览器，内核由用户自选；" +
+                                "两个内核的登录状态互不相通。",
                             style = MaterialTheme.typography.bodyMedium
                         )
                         OutlinedButton(
@@ -14423,6 +11439,7 @@ private fun SettingsScreen(
                     }
                 }
             }
+            if (showDiagnostics) {
             item {
                 // Diagnostics card (v0.74.0): versions, counts and
                 // the blocked total only — no URLs, titles or any
@@ -14441,8 +11458,6 @@ private fun SettingsScreen(
                     storageText = diagnosticsStorageText ?: "正在计算…",
                     bookmarkCount = bookmarkCount,
                     historyCount = historyCount,
-                    readingCount = readingCount,
-                    speedDialCount = speedDialCount,
                     totalBlocked = totalBlocked
                 )
                 val diagnosticRows = listOf(
@@ -14463,8 +11478,6 @@ private fun SettingsScreen(
                     "应用存储占用" to diagnosticInfo.storageText,
                     "书签" to "${diagnosticInfo.bookmarkCount} 条",
                     "历史记录" to "${diagnosticInfo.historyCount} 条",
-                    "阅读列表" to "${diagnosticInfo.readingCount} 条",
-                    "首页快捷方式" to "${diagnosticInfo.speedDialCount} 条",
                     "广告拦截累计" to "${diagnosticInfo.totalBlocked} 个"
                 )
                 Card(modifier = Modifier.fillMaxWidth()) {
@@ -14524,6 +11537,7 @@ private fun SettingsScreen(
                     }
                 }
             }
+            }
             item { Spacer(modifier = Modifier.padding(bottom = 24.dp)) }            }
 
         }
@@ -14571,8 +11585,7 @@ private fun SettingsScreen(
             title = { Text("清零拦截统计？") },
             text = {
                 Text(
-                    "累计拦截数和最近 31 天的按日统计会一起清零，" +
-                        "清完从 0 重新数，没法恢复。"
+                    "累计拦截数会清零，清完从 0 重新数，没法恢复。"
                 )
             },
             confirmButton = {
@@ -14580,7 +11593,6 @@ private fun SettingsScreen(
                     showResetBlockedConfirm = false
                     store.resetTotalBlocked()
                     totalBlocked = 0L
-                    blockedDaily = emptyMap()
                     android.widget.Toast.makeText(
                         settingsContext, "拦截统计已清零",
                         android.widget.Toast.LENGTH_SHORT
@@ -14625,97 +11637,6 @@ private fun SettingsScreen(
             text = { Text("你现在用的 $versionName 就是最新版，不用更新。") },
             confirmButton = {
                 Button(onClick = { showUpToDate = false }) { Text("知道了") }
-            }
-        )
-    }
-    // Custom search engine editor: a name plus a URL template. The
-    // template must contain %s (where the search words go) and start
-    // with http:// or https://; anything else is explained in plain
-    // language and not saved.
-    if (showCustomSearchDialog) {
-        // Opens focused on the first field with the keyboard up.
-        val customSearchFocusRequester = remember { FocusRequester() }
-        LaunchedEffect(Unit) { customSearchFocusRequester.requestFocus() }
-        AlertDialog(
-            onDismissRequest = { showCustomSearchDialog = false },
-            title = { Text("自定义搜索引擎") },
-            text = {
-                LazyColumn {
-                    item {
-                        OutlinedTextField(
-                            value = customSearchName,
-                            onValueChange = { customSearchName = it },
-                            label = { Text("名称") },
-                            placeholder = { Text("比如：我的搜索") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .focusRequester(customSearchFocusRequester),
-                            singleLine = true
-                        )
-                    }
-                    item {
-                        OutlinedTextField(
-                            value = customSearchTemplate,
-                            onValueChange = { customSearchTemplate = it },
-                            label = { Text("网址模板") },
-                            placeholder = {
-                                Text("比如：https://example.com/search?q=%s")
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 8.dp),
-                            singleLine = true
-                        )
-                    }
-                    item {
-                        Text(
-                            "模板里必须有 %s，它会被换成你要搜的词；" +
-                                "网址要以 http:// 或 https:// 开头。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 8.dp)
-                        )
-                    }
-                    val error = customSearchError
-                    if (error != null) {
-                        item {
-                            Text(
-                                error,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.error,
-                                modifier = Modifier.padding(top = 8.dp)
-                            )
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                Button(onClick = {
-                    val template = customSearchTemplate.trim()
-                    customSearchError = when {
-                        !template.contains("%s") ->
-                            "模板里没有 %s，搜的时候没地方放要搜的词，请补上。"
-                        !template.startsWith("http://") &&
-                            !template.startsWith("https://") ->
-                            "网址要以 http:// 或 https:// 开头，请改一下。"
-                        else -> null
-                    }
-                    if (customSearchError == null) {
-                        store.customSearchName = customSearchName.trim()
-                        store.customSearchTemplate = template
-                        searchEngine = SearchEngine.CUSTOM
-                        store.searchEngine = SearchEngine.CUSTOM
-                        onSearchEngineChange()
-                        showCustomSearchDialog = false
-                    }
-                }) {
-                    Text("保存")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCustomSearchDialog = false }) {
-                    Text("取消")
-                }
             }
         )
     }

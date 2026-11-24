@@ -4,9 +4,7 @@ import com.tuxunbrowse.android.data.Bookmark
 import com.tuxunbrowse.android.data.Engine
 import com.tuxunbrowse.android.data.HOME_URL
 import com.tuxunbrowse.android.data.HistoryItem
-import com.tuxunbrowse.android.data.SETTINGS_SEARCH_INDEX
 import com.tuxunbrowse.android.data.SearchEngine
-import com.tuxunbrowse.android.data.SettingsIndexEntry
 import com.tuxunbrowse.android.data.allBookmarkFolders
 import com.tuxunbrowse.android.data.backupToJson
 import com.tuxunbrowse.android.data.BackupSettings
@@ -15,17 +13,13 @@ import com.tuxunbrowse.android.data.bookmarksInFolder
 import com.tuxunbrowse.android.data.bookmarksToJson
 import com.tuxunbrowse.android.data.clearBookmarksFolder
 import com.tuxunbrowse.android.data.derivedBookmarkFolders
-import com.tuxunbrowse.android.data.filterSettingsIndex
 import com.tuxunbrowse.android.data.historyRestoreIndex
 import com.tuxunbrowse.android.data.normalizeBookmarkFolderName
 import com.tuxunbrowse.android.data.parseBackup
 import com.tuxunbrowse.android.data.renameBookmarksFolder
 import com.tuxunbrowse.android.data.shouldPreheatGecko
-import com.tuxunbrowse.android.data.blockedDayKey
 import com.tuxunbrowse.android.data.bookmarksFromHtml
 import com.tuxunbrowse.android.data.compareVersionNames
-import com.tuxunbrowse.android.data.pruneBlockedDaily
-import com.tuxunbrowse.android.data.recentBlockedSeries
 import com.tuxunbrowse.android.data.extractFirstWebUrl
 import com.tuxunbrowse.android.data.DiagnosticInfo
 import com.tuxunbrowse.android.data.GECKOVIEW_VERSION
@@ -37,7 +31,6 @@ import com.tuxunbrowse.android.engine.AdBlocker
 import com.tuxunbrowse.android.engine.EngineSleepCandidate
 import com.tuxunbrowse.android.engine.selectSleepVictims
 import com.tuxunbrowse.android.engine.trimAliveLimit
-import com.tuxunbrowse.android.data.isReaderHost
 import com.tuxunbrowse.android.data.isUrlLikeInput
 import com.tuxunbrowse.android.data.matchSuggestions
 import com.tuxunbrowse.android.data.resolveInput
@@ -125,32 +118,8 @@ class ResolveInputTest {
     }
 
     @Test
-    fun customTemplateIsUsedWhenValid() {
-        assertEquals(
-            "https://example.org/find?q=hello+world",
-            resolveInput(
-                "hello world", SearchEngine.CUSTOM,
-                "https://example.org/find?q=%s"
-            )
-        )
-    }
 
     @Test
-    fun invalidCustomTemplateFallsBackToBaidu() {
-        // No %s placeholder: unusable, must not produce a broken URL.
-        assertEquals(
-            "https://www.baidu.com/s?wd=hello+world",
-            resolveInput(
-                "hello world", SearchEngine.CUSTOM,
-                "https://example.org/find"
-            )
-        )
-        // Missing template entirely.
-        assertEquals(
-            "https://www.baidu.com/s?wd=hello+world",
-            resolveInput("hello world", SearchEngine.CUSTOM, "")
-        )
-    }
 
     @Test
     fun urlLikeMirrorMatchesResolver() {
@@ -398,106 +367,6 @@ class BookmarksFromHtmlTest {
     }
 }
 
-/**
- * Per-day blocked-count helpers (v0.70.0): the ISO day key, the
- * 31-day pruning window and the zero-filled last-7-days series the
- * settings page renders.
- */
-class BlockedDailyTest {
-
-    private val today: java.time.LocalDate =
-        java.time.LocalDate.of(2026, 11, 24)
-
-    @Test
-    fun dayKeyIsIsoDate() {
-        assertEquals("2026-11-24", blockedDayKey(today))
-        assertEquals(
-            "2026-01-05",
-            blockedDayKey(java.time.LocalDate.of(2026, 1, 5))
-        )
-    }
-
-    @Test
-    fun pruneKeepsTodayAndThirtyDaysBack() {
-        val counts = mapOf(
-            "2026-11-24" to 3L, // today
-            "2026-10-26" to 2L, // 29 days back
-            "2026-10-25" to 1L // 30 days back: last kept day
-        )
-        val pruned = pruneBlockedDaily(counts, today)
-        assertEquals(counts, pruned)
-    }
-
-    @Test
-    fun pruneDropsDayThirtyOneAndOlder() {
-        val counts = mapOf(
-            "2026-11-24" to 3L,
-            "2026-10-24" to 9L, // 31 days back: outside the window
-            "2025-01-01" to 9L
-        )
-        val pruned = pruneBlockedDaily(counts, today)
-        assertEquals(mapOf("2026-11-24" to 3L), pruned)
-    }
-
-    @Test
-    fun pruneDropsUnparseableAndFutureKeys() {
-        val counts = mapOf(
-            "2026-11-24" to 3L,
-            "not-a-date" to 5L,
-            "2026-12-01" to 5L // future relative to today
-        )
-        val pruned = pruneBlockedDaily(counts, today)
-        assertEquals(mapOf("2026-11-24" to 3L), pruned)
-    }
-
-    @Test
-    fun pruneHonoursCustomWindow() {
-        val counts = mapOf(
-            "2026-11-24" to 1L,
-            "2026-11-18" to 1L, // 6 days back
-            "2026-11-17" to 1L // 7 days back
-        )
-        val pruned = pruneBlockedDaily(counts, today, keepDays = 7)
-        assertEquals(
-            mapOf("2026-11-24" to 1L, "2026-11-18" to 1L),
-            pruned
-        )
-    }
-
-    @Test
-    fun seriesIsSevenDaysOldestFirstEndingToday() {
-        val series = recentBlockedSeries(emptyMap(), today)
-        assertEquals(7, series.size)
-        assertEquals("2026-11-18", series.first().first)
-        assertEquals("2026-11-24", series.last().first)
-    }
-
-    @Test
-    fun seriesZeroFillsMissingDaysAndCarriesCounts() {
-        val counts = mapOf(
-            "2026-11-24" to 7L,
-            "2026-11-20" to 2L,
-            "2026-11-10" to 99L // outside the 7-day window: ignored
-        )
-        val series = recentBlockedSeries(counts, today)
-        assertEquals(
-            listOf(0L, 0L, 2L, 0L, 0L, 0L, 7L),
-            series.map { it.second }
-        )
-    }
-
-    @Test
-    fun seriesCrossesMonthBoundary() {
-        val marchFirst = java.time.LocalDate.of(2026, 3, 1)
-        val series = recentBlockedSeries(
-            mapOf("2026-02-28" to 4L), marchFirst
-        )
-        assertEquals("2026-02-23", series.first().first)
-        assertEquals("2026-03-01", series.last().first)
-        assertEquals(4L, series[5].second)
-    }
-}
-
 /** Gecko warm-up decision (v0.71.0): preheat iff either engine is Firefox. */
 class ShouldPreheatGeckoTest {
 
@@ -565,70 +434,6 @@ class HistoryRestoreIndexTest {
         assertEquals(
             listOf(300L, 250L, 200L, 100L),
             restored.map { it.time }
-        )
-    }
-}
-
-/** Settings-home search index matching (v0.71.0). */
-class FilterSettingsIndexTest {
-
-    @Test
-    fun blankQueryMatchesNothing() {
-        assertTrue(filterSettingsIndex(SETTINGS_SEARCH_INDEX, "").isEmpty())
-        assertTrue(filterSettingsIndex(SETTINGS_SEARCH_INDEX, "   ").isEmpty())
-    }
-
-    @Test
-    fun queryIsTrimmedBeforeMatching() {
-        assertEquals(
-            filterSettingsIndex(SETTINGS_SEARCH_INDEX, "深色"),
-            filterSettingsIndex(SETTINGS_SEARCH_INDEX, "  深色  ")
-        )
-    }
-
-    @Test
-    fun darkMatchesAcrossThreePages() {
-        val names = filterSettingsIndex(SETTINGS_SEARCH_INDEX, "深色")
-            .map { it.name }
-        assertEquals(
-            listOf("界面主题 · 深色", "网页深色模式", "阅读背景 · 深色"),
-            names
-        )
-    }
-
-    @Test
-    fun matchingIsCaseInsensitive() {
-        val lower = filterSettingsIndex(SETTINGS_SEARCH_INDEX, "google")
-        val upper = filterSettingsIndex(SETTINGS_SEARCH_INDEX, "GOOGLE")
-        assertEquals(lower, upper)
-        assertEquals(listOf("Google"), lower.map { it.name })
-    }
-
-    @Test
-    fun noMatchGivesEmpty() {
-        assertTrue(
-            filterSettingsIndex(SETTINGS_SEARCH_INDEX, "不存在的设置项").isEmpty()
-        )
-    }
-
-    @Test
-    fun customIndexKeepsEntryAndPageIntact() {
-        val index = listOf(
-            SettingsIndexEntry("甲选项", "engine", "内核与搜索引擎"),
-            SettingsIndexEntry("乙选项", "about", "关于")
-        )
-        val hits = filterSettingsIndex(index, "甲")
-        assertEquals(1, hits.size)
-        assertEquals("engine", hits[0].page)
-        assertEquals("内核与搜索引擎", hits[0].pageLabel)
-    }
-
-    @Test
-    fun indexCoversAllSixPagesWithValidKeys() {
-        val pages = SETTINGS_SEARCH_INDEX.map { it.page }.toSet()
-        assertEquals(
-            setOf("engine", "appearance", "privacy", "download", "adblock", "about"),
-            pages
         )
     }
 }
@@ -802,7 +607,7 @@ class BookmarkFolderJsonCompatTest {
             Bookmark("乙站", "https://b.example")
         )
         val json = backupToJson(
-            list, emptyList(), emptyList(), emptyList(),
+            list, emptyList(),
             BackupSettings(),
             bookmarkFolders = listOf("工作", "空夹")
         )
@@ -891,101 +696,33 @@ class ExtractFirstWebUrlTest {
     }
 }
 
-/**
- * v0.73.0: the per-site reader-mode memory matches hosts with the
- * same rule as the compat/desktop lists — the site itself and its
- * subdomains match, unrelated and parent hosts do not.
- */
-class ReaderHostMatchTest {
-
-    private val sites = setOf("example.com", "news.site.cn")
-
     @Test
-    fun exactAndSubdomainMatch() {
-        assertTrue(isReaderHost("example.com", sites))
-        assertTrue(isReaderHost("www.example.com", sites))
-        assertTrue(isReaderHost("a.b.example.com", sites))
-        assertTrue(isReaderHost("news.site.cn", sites))
-    }
-
-    @Test
-    fun unrelatedParentAndLookalikeDoNotMatch() {
-        assertFalse(isReaderHost("other.com", sites))
-        assertFalse(isReaderHost("site.cn", sites))
-        assertFalse(isReaderHost("notexample.com", sites))
-        assertFalse(isReaderHost("example.com.evil.com", sites))
-    }
-
-    @Test
-    fun blankInputsNeverMatch() {
-        assertFalse(isReaderHost(null, sites))
-        assertFalse(isReaderHost("", sites))
-        assertFalse(isReaderHost("example.com", emptySet()))
-    }
-
-    @Test
-    fun readerSitesSurviveBackupRoundTrip() {
-        val json = backupToJson(
-            emptyList(), emptyList(), emptyList(), emptyList(),
-            BackupSettings(),
-            readerSites = listOf("example.com", "news.site.cn")
+    fun missingWebViewPackageIsShownAsUnknown() {
+        val info = sampleInfo().copy(
+            webViewPackageName = null, webViewVersionName = null
         )
-        val data = parseBackup(json)
-        assertTrue(data != null)
-        assertEquals(
-            listOf("example.com", "news.site.cn"), data!!.readerSites
-        )
-    }
-
-    @Test
-    fun backupWithoutReaderSitesParsesAsEmpty() {
-        // A backup written before v0.73.0 has no readerSites key at
-        // all; it must still parse, with an empty list.
-        val raw = """
-            {"format":"tuxunbrowse-backup","version":1,"bookmarks":[]}
-        """.trimIndent()
-        val data = parseBackup(raw)
-        assertTrue(data != null)
-        assertEquals(emptyList<String>(), data!!.readerSites)
-    }
-
-    @Test
-    fun backupReaderSitesAreSanitizedOnParse() {
-        val raw = """
-            {"format":"tuxunbrowse-backup","version":1,
-             "bookmarks":[],
-             "readerSites":[" OK.example ","https://bad.example/x","",
-                            "ok.example","has space.example"]}
-        """.trimIndent()
-        val data = parseBackup(raw)
-        assertTrue(data != null)
-        assertEquals(listOf("ok.example"), data!!.readerSites)
+        val lines = diagnosticText(info).lines()
+        assertEquals("系统 WebView：未知", lines[3])
     }
 }
 
 /**
- * v0.74.0: the backup audit found the blocked counters were the
- * only user-accumulated data missing from the full backup. These
- * tests pin the round trip, the pre-v0.74.0 shape (no blockedStats
- * key at all — the counters must come back "absent", not zero, so
- * an import leaves the current counters untouched) and the
- * parse-time pruning of the daily map.
+ * The lifetime blocked total travels through backups (it cannot be
+ * rebuilt on a new device); a backup without it parses as absent
+ * and leaves the current counter alone.
  */
 class BlockedStatsBackupTest {
 
     @Test
-    fun blockedStatsSurviveBackupRoundTrip() {
-        val today = blockedDayKey(java.time.LocalDate.now())
+    fun blockedTotalSurvivesBackupRoundTrip() {
         val json = backupToJson(
-            emptyList(), emptyList(), emptyList(), emptyList(),
+            emptyList(), emptyList(),
             BackupSettings(),
-            totalBlocked = 1234L,
-            blockedDaily = mapOf(today to 42L)
+            totalBlocked = 1234L
         )
         val data = parseBackup(json)
         assertTrue(data != null)
         assertEquals(1234L, data!!.totalBlocked)
-        assertEquals(mapOf(today to 42L), data.blockedDaily)
     }
 
     @Test
@@ -996,50 +733,47 @@ class BlockedStatsBackupTest {
         val data = parseBackup(raw)
         assertTrue(data != null)
         assertEquals(null, data!!.totalBlocked)
-        assertTrue(data.blockedDaily.isEmpty())
     }
 
     @Test
     fun backupWrittenWithoutStatsOmitsThem() {
         val json = backupToJson(
-            emptyList(), emptyList(), emptyList(), emptyList(),
+            emptyList(), emptyList(),
             BackupSettings()
         )
         val data = parseBackup(json)
         assertTrue(data != null)
         assertEquals(null, data!!.totalBlocked)
-        assertTrue(data.blockedDaily.isEmpty())
     }
 
     @Test
-    fun blockedDailyIsPrunedAndSanitizedOnParse() {
-        val today = java.time.LocalDate.now()
-        val todayKey = blockedDayKey(today)
-        val staleKey = blockedDayKey(today.minusDays(60))
+    fun legacyListsInOldBackupFoldIntoBookmarks() {
+        // A pre-v0.91.0 backup carries the removed reading list and
+        // speed dials: they come back as bookmarks (dials pinned,
+        // reading entries in a 阅读列表 folder), never as the old
+        // lists themselves.
         val raw = """
             {"format":"tuxunbrowse-backup","version":1,
-             "bookmarks":[],
-             "blockedStats":{"total":99,
-               "daily":{"$todayKey":7,"$staleKey":500,"not-a-date":3,
-                        "${blockedDayKey(today.minusDays(1))}":0}}}
+             "bookmarks":[{"title":"已有","url":"https://a.example"}],
+             "readingList":[{"title":"稍后读","url":"https://b.example",
+               "time":1,"read":false}],
+             "speedDials":[{"title":"快捷","url":"https://c.example"}]}
         """.trimIndent()
         val data = parseBackup(raw)
         assertTrue(data != null)
-        assertEquals(99L, data!!.totalBlocked)
-        // Only today's positive count survives: the 60-day-old day
-        // is outside the kept window, the unparseable key is
-        // dropped by the prune, and the zero count is not stored.
-        assertEquals(mapOf(todayKey to 7L), data.blockedDaily)
+        val byUrl = data!!.bookmarks.associateBy { it.url }
+        assertEquals(3, data.bookmarks.size)
+        assertEquals("阅读列表", byUrl["https://b.example"]!!.folder)
+        assertTrue(byUrl["https://c.example"]!!.pinned)
     }
 }
 
 /**
- * v0.74.0: the diagnostics text is assembled from DiagnosticInfo,
- * a type that carries ONLY version numbers, counts and a storage
- * total — no URL, title or history field exists in it, so browsing
- * content cannot reach the text by construction. These tests pin
- * the exact line set and the honest "unknown" for a missing
- * system WebView.
+ * The diagnostics text is assembled from DiagnosticInfo, a type
+ * that carries ONLY version numbers, counts and a storage total —
+ * no URL, title or history field exists in it, so browsing content
+ * cannot reach the text by construction. These tests pin the exact
+ * line set and the honest "unknown" for a missing system WebView.
  */
 class DiagnosticTextTest {
 
@@ -1054,15 +788,13 @@ class DiagnosticTextTest {
         storageText = "312.4 MB",
         bookmarkCount = 12,
         historyCount = 34,
-        readingCount = 5,
-        speedDialCount = 6,
         totalBlocked = 789L
     )
 
     @Test
     fun diagnosticTextHasExactlyTheExpectedLines() {
         val lines = diagnosticText(sampleInfo()).lines()
-        assertEquals(11, lines.size)
+        assertEquals(9, lines.size)
         assertEquals("TuxunBrowse 诊断信息", lines[0])
         assertEquals("应用版本：0.74.0（版本号 74）", lines[1])
         assertEquals(
@@ -1076,9 +808,7 @@ class DiagnosticTextTest {
         assertEquals("应用存储占用：312.4 MB", lines[5])
         assertEquals("书签：12 条", lines[6])
         assertEquals("历史记录：34 条", lines[7])
-        assertEquals("阅读列表：5 条", lines[8])
-        assertEquals("首页快捷方式：6 条", lines[9])
-        assertEquals("广告拦截累计：789 个", lines[10])
+        assertEquals("广告拦截累计：789 个", lines[8])
     }
 
     @Test
@@ -1277,7 +1007,7 @@ class HttpsUpgradeTest {
     @Test
     fun httpsFirstTravelsThroughBackups() {
         val json = backupToJson(
-            emptyList(), emptyList(), emptyList(), emptyList(),
+            emptyList(), emptyList(),
             BackupSettings(httpsFirstEnabled = false)
         )
         val parsed = parseBackup(json)
@@ -1286,7 +1016,7 @@ class HttpsUpgradeTest {
         // parsed value stays null, so applying it keeps the current
         // setting instead of inventing one.
         val oldJson = backupToJson(
-            emptyList(), emptyList(), emptyList(), emptyList(),
+            emptyList(), emptyList(),
             BackupSettings()
         )
         assertEquals(null, parseBackup(oldJson)?.settings?.httpsFirstEnabled)
