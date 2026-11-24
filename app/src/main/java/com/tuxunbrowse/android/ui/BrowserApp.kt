@@ -10510,7 +10510,7 @@ private fun ClearDataScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun SettingsScreen(
     store: Store,
