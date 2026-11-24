@@ -223,6 +223,8 @@ import com.tuxunbrowse.android.data.ReaderFontSize
 import com.tuxunbrowse.android.data.compareVersionNames
 import com.tuxunbrowse.android.data.restoredActiveIndex
 import com.tuxunbrowse.android.data.pickLatestRelease
+import com.tuxunbrowse.android.data.UpdateFetchResult
+import com.tuxunbrowse.android.data.updateFetchResult
 import com.tuxunbrowse.android.data.SavedTab
 import com.tuxunbrowse.android.data.SearchEngine
 import com.tuxunbrowse.android.data.Store
@@ -11351,7 +11353,7 @@ private fun SettingsScreen(
         if (checkingUpdate) return
         checkingUpdate = true
         settingsScope.launch {
-            val latest = kotlinx.coroutines.withContext(
+            val result = kotlinx.coroutines.withContext(
                 kotlinx.coroutines.Dispatchers.IO
             ) {
                 // The connection and its response stream are closed
@@ -11360,6 +11362,22 @@ private fun SettingsScreen(
                 // was never called, so every manual update check —
                 // success, HTTP error or exception alike — left the
                 // connection hanging until the system reaped it.
+                //
+                // The source is the releases LIST, never the
+                // /releases/latest endpoint (v0.119.0 audit): every
+                // release in this repo is a prerelease, and GitHub's
+                // "latest" only ever names a non-prerelease release —
+                // against this repo it answers 404 (verified against
+                // the live API), so a check built on it could never
+                // find anything. The list includes prereleases; the
+                // highest version in it wins via pickLatestRelease.
+                // The version compared is tag_name, never the
+                // release title (titles carry extra words, e.g.
+                // "v0.118.0 测试版").
+                //
+                // The outcome is classified by updateFetchResult
+                // (v0.119.0): rate limiting and an empty list no
+                // longer masquerade as a network failure.
                 var conn: java.net.HttpURLConnection? = null
                 try {
                     conn = java.net.URL(
@@ -11371,8 +11389,9 @@ private fun SettingsScreen(
                         "Accept", "application/vnd.github+json"
                     )
                     conn.setRequestProperty("User-Agent", "TuxunBrowse")
-                    if (conn.responseCode !in 200..299) {
-                        null
+                    val code = conn.responseCode
+                    if (code !in 200..299) {
+                        updateFetchResult(code, null)
                     } else {
                         val raw = conn.inputStream.bufferedReader()
                             .use { it.readText() }
@@ -11381,10 +11400,10 @@ private fun SettingsScreen(
                             val o = arr.getJSONObject(i)
                             o.optString("tag_name") to o.optString("html_url")
                         }
-                        pickLatestRelease(pairs)
+                        updateFetchResult(code, pickLatestRelease(pairs))
                     }
                 } catch (t: Throwable) {
-                    null
+                    updateFetchResult(null, null)
                 } finally {
                     try {
                         conn?.disconnect()
@@ -11394,14 +11413,28 @@ private fun SettingsScreen(
                 }
             }
             checkingUpdate = false
-            when {
-                latest == null -> android.widget.Toast.makeText(
-                    settingsContext, "检查失败，请检查网络",
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
-                compareVersionNames(latest.first, versionName) > 0 ->
-                    updateAvailable = latest
-                else -> showUpToDate = true
+            when (result) {
+                is UpdateFetchResult.Found ->
+                    if (compareVersionNames(result.tag, versionName) > 0) {
+                        updateAvailable = result.tag to result.pageUrl
+                    } else {
+                        showUpToDate = true
+                    }
+                UpdateFetchResult.RateLimited ->
+                    android.widget.Toast.makeText(
+                        settingsContext, "检查太频繁了，请过一会儿再试",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                UpdateFetchResult.NoReleases ->
+                    android.widget.Toast.makeText(
+                        settingsContext, "暂时没查到版本信息，请稍后再试",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                UpdateFetchResult.Failed ->
+                    android.widget.Toast.makeText(
+                        settingsContext, "检查失败，请检查网络后重试",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
             }
         }
     }
@@ -12576,7 +12609,7 @@ private fun SettingsScreen(
             title = { Text("有新版本") },
             text = {
                 Text(
-                    "发现新版本 ${newRelease.first.removePrefix("v")}（你现在用的是 $versionName）。" +
+                    "发现新版本 ${newRelease.first.removePrefix("v").removePrefix("V")}（你现在用的是 $versionName）。" +
                         "点「打开下载页」会打开这个版本的下载页面，下载后需要你手动安装。"
                 )
             },

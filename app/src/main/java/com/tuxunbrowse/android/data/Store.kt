@@ -2238,3 +2238,70 @@ fun pickLatestRelease(
 ): Pair<String, String>? =
     releases.filter { isReleaseTag(it.first) }
         .maxWithOrNull { x, y -> compareVersionNames(x.first, y.first) }
+
+/**
+ * The page a release is downloaded from (v0.119.0 update-check
+ * audit). The html_url the API returns is authoritative and is
+ * used verbatim when present; only when it is missing/blank is
+ * the URL assembled from the tag, in the exact shape the repo's
+ * release pages use (".../releases/tag/vX.Y.Z"). A tag that is
+ * not a release tag yields "" — the caller treats that as "no
+ * page to open" instead of guessing. Pure function.
+ */
+fun releasePageUrl(tag: String, htmlUrl: String): String {
+    val fromApi = htmlUrl.trim()
+    if (fromApi.isNotBlank()) return fromApi
+    return if (isReleaseTag(tag)) {
+        "https://github.com/liyuzhou79-star/TuxunBrowse/releases/tag/" +
+            tag.trim()
+    } else {
+        ""
+    }
+}
+
+/**
+ * The four outcomes of one manual update check (v0.119.0 audit).
+ * Before this split, every failure — no network, a timeout, an
+ * HTTP error, GitHub rate limiting, even a successful response
+ * with no usable release in it — collapsed into the single
+ * toast "检查失败，请检查网络", which is wrong advice for most
+ * of them. The outcomes are kept distinct so the UI can say
+ * what actually happened and what to do next.
+ */
+sealed interface UpdateFetchResult {
+    /** A release list came back and [tag] is its highest version. */
+    data class Found(val tag: String, val pageUrl: String) :
+        UpdateFetchResult
+
+    /** The list came back fine but held no usable release. */
+    data object NoReleases : UpdateFetchResult
+
+    /** GitHub refused with 403/429: too many requests. */
+    data object RateLimited : UpdateFetchResult
+
+    /** No answer at all, or an HTTP error that is not limiting. */
+    data object Failed : UpdateFetchResult
+}
+
+/**
+ * Classify one finished update-check request from its HTTP
+ * status ([httpCode], null when the request never got a
+ * response) and the picked latest release ([latest], null when
+ * the response held none). Rate limiting is checked first so a
+ * 403/429 is never misreported as a network problem. Pure
+ * function.
+ */
+fun updateFetchResult(
+    httpCode: Int?,
+    latest: Pair<String, String>?
+): UpdateFetchResult = when {
+    httpCode == 403 || httpCode == 429 ->
+        UpdateFetchResult.RateLimited
+    httpCode == null || httpCode !in 200..299 ->
+        UpdateFetchResult.Failed
+    latest == null -> UpdateFetchResult.NoReleases
+    else -> UpdateFetchResult.Found(
+        latest.first,
+        releasePageUrl(latest.first, latest.second)
+    )
+}
