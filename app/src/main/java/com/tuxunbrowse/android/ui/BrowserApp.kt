@@ -68,6 +68,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Info
@@ -217,6 +218,7 @@ import com.tuxunbrowse.android.data.extractFirstWebUrl
 import com.tuxunbrowse.android.data.DiagnosticInfo
 import com.tuxunbrowse.android.data.GECKOVIEW_VERSION
 import com.tuxunbrowse.android.data.diagnosticText
+import com.tuxunbrowse.android.data.displayHostFor
 import com.tuxunbrowse.android.data.hasBlockedPageScheme
 import com.tuxunbrowse.android.data.isAllowedPageUrl
 import com.tuxunbrowse.android.data.SEARCH_SUGGESTION_DEBOUNCE_MS
@@ -349,6 +351,39 @@ private fun copyTextToClipboard(
 } catch (t: Throwable) {
     false
 }
+
+/**
+ * Voice input (v0.76.0): the system speech-recognition intent both
+ * mic buttons (address bar and home search box) fire. Recognition
+ * runs in the system's own service UI — the app never records audio
+ * itself and declares no RECORD_AUDIO permission for this; the
+ * language follows the system language and the prompt is one plain
+ * sentence. Callers check resolveActivity first: a device with no
+ * recognition service gets a toast, never a crash.
+ */
+private fun speechRecognitionIntent(): android.content.Intent =
+    android.content.Intent(
+        android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH
+    ).apply {
+        putExtra(
+            android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+            android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+        )
+        putExtra(
+            android.speech.RecognizerIntent.EXTRA_LANGUAGE,
+            java.util.Locale.getDefault().toLanguageTag()
+        )
+        putExtra(
+            android.speech.RecognizerIntent.EXTRA_PROMPT,
+            "请说出要打开的网址或要搜索的内容"
+        )
+    }
+
+/** The first recognition candidate of a speech result, if any. */
+private fun spokenTextFromResult(data: android.content.Intent?): String? =
+    data?.getStringArrayListExtra(
+        android.speech.RecognizerIntent.EXTRA_RESULTS
+    )?.firstOrNull()?.takeIf { it.isNotBlank() }
 
 /**
  * A long-press context menu waiting to be shown (v0.42.0). Carries
@@ -1586,6 +1621,33 @@ fun BrowserApp(
             bookmarks.add(0, Bookmark(tab.title.ifBlank { tab.url }, tab.url))
         }
         store.saveBookmarks(bookmarks)
+    }
+
+    /**
+     * Batch-bookmark a set of tabs (v0.76.0, the tab sheet's
+     * multi-select "加入书签"). Only normal tabs take part: an
+     * incognito tab is skipped and COUNTED (the caller reports the
+     * skip honestly in its toast — incognito never writes a
+     * bookmark, the same rule as the single-tab paths), the home
+     * page and non-web addresses are not bookmarkable, and a tab
+     * whose URL is already bookmarked is not added twice. Returns
+     * (addedCount, skippedIncognitoCount).
+     */
+    fun bookmarkTabs(selected: List<BrowserTab>): Pair<Int, Int> {
+        var added = 0
+        var skippedIncognito = 0
+        for (tab in selected) {
+            if (tab.incognito) {
+                skippedIncognito++
+                continue
+            }
+            if (tab.isHome || !tab.url.startsWith("http")) continue
+            if (bookmarks.any { it.url == tab.url }) continue
+            bookmarks.add(0, Bookmark(tab.title.ifBlank { tab.url }, tab.url))
+            added++
+        }
+        if (added > 0) store.saveBookmarks(bookmarks)
+        return added to skippedIncognito
     }
 
     // Session restore: reopen the tabs that were open when the app was
@@ -2850,6 +2912,7 @@ fun BrowserApp(
                 onCloseOtherTabs = { closeOtherTabs() },
                 onCloseOtherTabsFor = { closeOtherTabsKeeping(it) },
                 onToggleBookmarkFor = { toggleBookmarkForTab(it) },
+                onBookmarkTabs = { bookmarkTabs(it) },
                 recentClosed = recentClosedTabs,
                 onReopenClosed = { reopenClosedTab(it) },
                 onNewTab = { newTab(store.mainEngine, false) },
@@ -4633,6 +4696,40 @@ private fun HomeContent(
         homeOnlineSuggestions = emptyList()
         homeFocusManager.clearFocus()
     }
+    // Voice input (v0.76.0): the mic button in the home search box
+    // fires the system speech recognizer; the first candidate goes
+    // through the home box's own submit path above (same
+    // blocked-scheme refusal, same resolveInput), exactly like
+    // typing it and pressing search. A device with no recognition
+    // service gets a plain toast instead of a crash.
+    val homeSpeechLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val spoken = spokenTextFromResult(result.data)
+            if (spoken != null && submitHomeSearch(spoken)) {
+                finishHomeSuggestionPick()
+            }
+        }
+    }
+    fun launchHomeSpeechSearch() {
+        val intent = speechRecognitionIntent()
+        if (intent.resolveActivity(homeContext.packageManager) == null) {
+            android.widget.Toast.makeText(
+                homeContext, "这台设备没有可用的语音输入",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        try {
+            homeSpeechLauncher.launch(intent)
+        } catch (t: Throwable) {
+            android.widget.Toast.makeText(
+                homeContext, "这台设备没有可用的语音输入",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
     var dialEditing by remember { mutableStateOf<SpeedDial?>(null) }
     var dialName by remember { mutableStateOf("") }
     var dialUrl by remember { mutableStateOf("") }
@@ -5081,7 +5178,18 @@ private fun HomeContent(
                 placeholder = {
                     Text("用${engineShortName()}搜索，或输入网址", maxLines = 1)
                 },
-                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) }
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                trailingIcon = {
+                    // Voice input (v0.76.0): system speech
+                    // recognition, result goes through the same
+                    // submit path as typed text.
+                    IconButton(onClick = { launchHomeSpeechSearch() }) {
+                        Icon(
+                            Icons.Filled.Mic,
+                            contentDescription = "语音输入"
+                        )
+                    }
+                }
             ) {}
         }
         // Home search suggestions (v0.59.0): while the search box
@@ -5536,6 +5644,7 @@ private fun BrowserScreen(
     onCloseOtherTabs: () -> Unit,
     onCloseOtherTabsFor: (BrowserTab) -> Unit = {},
     onToggleBookmarkFor: (BrowserTab) -> Unit = {},
+    onBookmarkTabs: (List<BrowserTab>) -> Pair<Int, Int> = { 0 to 0 },
     recentClosed: List<ClosedTabInfo>,
     onReopenClosed: (ClosedTabInfo) -> Unit,
     onNewTab: () -> Unit,
@@ -5580,29 +5689,55 @@ private fun BrowserScreen(
     val context = LocalContext.current
     var showTabs by remember { mutableStateOf(false) }
     var tabQuery by remember { mutableStateOf("") }
+    // Tab sheet multi-select (v0.76.0): while on, card taps toggle
+    // a check instead of switching tabs. Selection is a set of tab
+    // ids, so it survives the sheet's search filtering untouched.
+    var tabMultiSelect by remember { mutableStateOf(false) }
+    var selectedTabIds by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    fun exitTabMultiSelect() {
+        tabMultiSelect = false
+        selectedTabIds = emptySet()
+    }
+    fun toggleTabSelected(tab: BrowserTab) {
+        selectedTabIds = if (tab.id in selectedTabIds) {
+            selectedTabIds - tab.id
+        } else {
+            selectedTabIds + tab.id
+        }
+    }
     var showMenu by remember { mutableStateOf(false) }
     var showIncognitoPicker by remember { mutableStateOf(false) }
     var showEngineSwitch by remember { mutableStateOf(false) }
     var showFindBar by remember { mutableStateOf(false) }
     var findQuery by remember { mutableStateOf("") }
+    // What the address bar shows for a tab while it is NOT being
+    // edited (v0.76.0): only the host for a web page
+    // (displayHostFor). Two surfaces are NOT dressed up as a bare
+    // domain: the home page (its bar stays empty with the
+    // placeholder showing, as before) and a page sitting on the
+    // load-error overlay (its full failed URL stays visible, as
+    // before). Declared before every use below (local-fun order).
+    fun addressDisplayFor(tab: BrowserTab?): String = when {
+        tab == null || tab.isHome -> ""
+        tab.loadError != null -> tab.url
+        else -> displayHostFor(tab.url)
+    }
     // The address bar edits a TextFieldValue (not a plain String) so
     // focus can select the whole URL: tapping the bar selects
     // everything and typing replaces it, the way other browsers
     // behave. addressText stays as the plain-text view of the value
-    // for the suggestion/search logic below.
+    // for the suggestion/search logic below. While unfocused the
+    // value holds the friendly display text above; gaining focus
+    // swaps it back to the full URL (see the focus effect below).
     var addressValue by remember(activeTab?.id) {
-        mutableStateOf(
-            TextFieldValue(activeTab?.takeUnless { it.isHome }?.url ?: "")
-        )
+        mutableStateOf(TextFieldValue(addressDisplayFor(activeTab)))
     }
     val addressText = addressValue.text
     var addressFocused by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
-    LaunchedEffect(activeTab?.url) {
+    LaunchedEffect(activeTab?.url, activeTab?.loadError) {
         if (!addressFocused && activeTab != null) {
-            addressValue = TextFieldValue(
-                if (activeTab.isHome) "" else activeTab.url
-            )
+            addressValue = TextFieldValue(addressDisplayFor(activeTab))
         }
     }
     // Switching tabs hands focus back to the page: the text above is
@@ -5611,13 +5746,25 @@ private fun BrowserScreen(
     LaunchedEffect(activeTab?.id) {
         focusManager.clearFocus()
     }
-    // Select-all on focus gain, done in an effect so it lands after
-    // the tap's own cursor placement and wins over it.
+    // Focus gain swaps the friendly host-only display back to the
+    // full URL and selects it whole; focus loss restores the
+    // display text. Done in an effect so it lands after the tap's
+    // own cursor placement and wins over it (v0.76.0; the select-all
+    // behaviour itself is the pre-existing one).
     LaunchedEffect(addressFocused) {
-        if (addressFocused && addressValue.text.isNotEmpty()) {
-            addressValue = addressValue.copy(
-                selection = TextRange(0, addressValue.text.length)
-            )
+        if (addressFocused) {
+            val tab = activeTab
+            if (tab != null && !tab.isHome) {
+                addressValue = TextFieldValue(
+                    tab.url, TextRange(0, tab.url.length)
+                )
+            } else if (addressValue.text.isNotEmpty()) {
+                addressValue = addressValue.copy(
+                    selection = TextRange(0, addressValue.text.length)
+                )
+            }
+        } else if (activeTab != null) {
+            addressValue = TextFieldValue(addressDisplayFor(activeTab))
         }
     }
     // Submitting the address bar navigates and hands focus (and the
@@ -5625,6 +5772,42 @@ private fun BrowserScreen(
     fun submitAddress() {
         onNavigate(addressValue.text)
         focusManager.clearFocus()
+    }
+    // Voice input (v0.76.0): the mic button in the address bar fires
+    // the system speech recognizer; the first candidate goes through
+    // the exact same path as typed input (onNavigate → resolveInput,
+    // so spoken words search and a spoken address opens). A device
+    // with no recognition service gets a plain toast instead of a
+    // crash — checked before launching, and the launch itself is
+    // guarded too.
+    val speechLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val spoken = spokenTextFromResult(result.data)
+            if (spoken != null) {
+                onNavigate(spoken)
+                focusManager.clearFocus()
+            }
+        }
+    }
+    fun launchSpeechSearch() {
+        val intent = speechRecognitionIntent()
+        if (intent.resolveActivity(context.packageManager) == null) {
+            android.widget.Toast.makeText(
+                context, "这台设备没有可用的语音输入",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        try {
+            speechLauncher.launch(intent)
+        } catch (t: Throwable) {
+            android.widget.Toast.makeText(
+                context, "这台设备没有可用的语音输入",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+        }
     }
     // The find bar grabs focus (and the keyboard) as soon as it opens.
     val findFocusRequester = remember { FocusRequester() }
@@ -5690,6 +5873,8 @@ private fun BrowserScreen(
         addressValue.selection.end == addressValue.text.length
     val showPasteRow = addressFocused && pasteCandidate != null &&
         (addressText.isBlank() || addressAllSelected)
+    // (The friendly host-only display text itself is computed by
+    // addressDisplayFor above, next to the address value's state.)
     var showRecentClosed by remember { mutableStateOf(false) }
     var showSiteInfo by remember { mutableStateOf(false) }
     var showMoreTools by remember { mutableStateOf(false) }
@@ -6189,6 +6374,17 @@ private fun BrowserScreen(
                                 else ->
                                     Icon(Icons.Filled.Warning, contentDescription = "非安全连接，点按看网站信息")
                             }
+                        }
+                    },
+                    trailingIcon = {
+                        // Voice input (v0.76.0): system speech
+                        // recognition, result goes through the same
+                        // resolveInput path as typed text.
+                        IconButton(onClick = { launchSpeechSearch() }) {
+                            Icon(
+                                Icons.Filled.Mic,
+                                contentDescription = "语音输入"
+                            )
                         }
                     },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
@@ -7045,9 +7241,13 @@ private fun BrowserScreen(
     val sheetState = rememberModalBottomSheetState()
     if (showTabs) {
         ModalBottomSheet(
-            onDismissRequest = { showTabs = false },
+            onDismissRequest = { showTabs = false; exitTabMultiSelect() },
             sheetState = sheetState
         ) {
+            // Back first leaves multi-select, only then closes the
+            // sheet (v0.76.0; same layering as the bookmarks batch
+            // mode's BackHandler, v0.19.0).
+            BackHandler(enabled = tabMultiSelect) { exitTabMultiSelect() }
             LazyVerticalGrid(
                 columns = GridCells.Fixed(2),
                 modifier = Modifier
@@ -7059,7 +7259,75 @@ private fun BrowserScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
-                    Text("标签页", style = MaterialTheme.typography.titleLarge)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            if (tabMultiSelect) {
+                                "已选 ${selectedTabIds.size} 个"
+                            } else {
+                                "标签页"
+                            },
+                            style = MaterialTheme.typography.titleLarge,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (tabMultiSelect) {
+                            TextButton(onClick = { exitTabMultiSelect() }) {
+                                Text("退出多选")
+                            }
+                        } else {
+                            TextButton(onClick = { tabMultiSelect = true }) {
+                                Text("多选")
+                            }
+                        }
+                    }
+                }
+                if (tabMultiSelect) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        val selectedTabs = tabs.filter {
+                            it.id in selectedTabIds
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                enabled = selectedTabs.isNotEmpty(),
+                                onClick = {
+                                    // The regular close path, one
+                                    // tab at a time: recently-closed
+                                    // stack, incognito WebView wipe
+                                    // and the active-tab fallback all
+                                    // behave exactly as closing by
+                                    // hand (v0.76.0).
+                                    selectedTabs.forEach { onCloseTab(it) }
+                                    exitTabMultiSelect()
+                                    showTabs = false
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("关闭所选") }
+                            FilledTonalButton(
+                                enabled = selectedTabs.isNotEmpty(),
+                                onClick = {
+                                    val (added, skipped) =
+                                        onBookmarkTabs(selectedTabs)
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        if (skipped > 0) {
+                                            "已加 $added 个书签，" +
+                                                "无痕标签跳过 $skipped 个"
+                                        } else {
+                                            "已加 $added 个书签"
+                                        },
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
+                                    exitTabMultiSelect()
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("加入书签") }
+                        }
+                    }
                 }
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     OutlinedTextField(
@@ -7094,11 +7362,24 @@ private fun BrowserScreen(
                             .fillMaxWidth()
                             .combinedClickable(
                                 onClick = {
-                                    onSelectTab(tab); showTabs = false
+                                    // Multi-select (v0.76.0): a tap
+                                    // toggles the check instead of
+                                    // switching to the tab.
+                                    if (tabMultiSelect) {
+                                        toggleTabSelected(tab)
+                                    } else {
+                                        onSelectTab(tab); showTabs = false
+                                    }
                                 },
-                                onLongClick = { tabMenuOpen = true }
+                                onLongClick = {
+                                    if (!tabMultiSelect) {
+                                        tabMenuOpen = true
+                                    }
+                                }
                             ),
-                        colors = if (isActive) {
+                        colors = if (isActive ||
+                            (tabMultiSelect && tab.id in selectedTabIds)
+                        ) {
                             CardDefaults.elevatedCardColors(
                                 containerColor = MaterialTheme.colorScheme.secondaryContainer
                             )
@@ -7125,11 +7406,24 @@ private fun BrowserScreen(
                                         )
                                     }
                                 )
-                                IconButton(onClick = { onCloseTab(tab) }) {
-                                    Icon(
-                                        Icons.Filled.Close,
-                                        contentDescription = "关闭标签"
+                                if (tabMultiSelect) {
+                                    // Multi-select (v0.76.0): the
+                                    // official Checkbox carries the
+                                    // selection state in place of
+                                    // the close button.
+                                    Checkbox(
+                                        checked = tab.id in selectedTabIds,
+                                        onCheckedChange = {
+                                            toggleTabSelected(tab)
+                                        }
                                     )
+                                } else {
+                                    IconButton(onClick = { onCloseTab(tab) }) {
+                                        Icon(
+                                            Icons.Filled.Close,
+                                            contentDescription = "关闭标签"
+                                        )
+                                    }
                                 }
                             }
                             // Preview area, same height on every card.
@@ -7320,15 +7614,17 @@ private fun BrowserScreen(
                     }
                     }
                 }
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    FilledTonalButton(
-                        onClick = { showTabs = false; onNewTab() },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("新建标签页")
+                if (!tabMultiSelect) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        FilledTonalButton(
+                            onClick = { showTabs = false; onNewTab() },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("新建标签页")
+                        }
                     }
                 }
-                if (recentClosed.isNotEmpty()) {
+                if (!tabMultiSelect && recentClosed.isNotEmpty()) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         Column(modifier = Modifier.fillMaxWidth()) {
                             OutlinedButton(
@@ -7399,7 +7695,7 @@ private fun BrowserScreen(
                         }
                     }
                 }
-                if (tabs.size > 1) {
+                if (!tabMultiSelect && tabs.size > 1) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         OutlinedButton(
                             onClick = { showCloseOthersConfirm = true },
@@ -7409,7 +7705,7 @@ private fun BrowserScreen(
                         }
                     }
                 }
-                if (tabs.size > 1) {
+                if (!tabMultiSelect && tabs.size > 1) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         OutlinedButton(
                             onClick = { showCloseAllConfirm = true },

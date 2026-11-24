@@ -745,6 +745,42 @@ fun hostOf(url: String): String? = try {
 }
 
 /**
+ * What the address bar shows for [url] while it is NOT being edited
+ * (v0.76.0): just the host for web pages — no scheme, no path, no
+ * query — because the full URL is noise at a glance and the domain
+ * is the part that tells the user where they are. A non-default
+ * port stays (it is part of "where"), the default ports (80 for
+ * http, 443 for https) are dropped. Internal `tuxun://` addresses
+ * return "" — the home page's bar is empty with its placeholder
+ * showing, exactly as before this display rule existed, and no
+ * internal address is ever dressed up as a domain. Anything that
+ * is not a parseable http(s) URL comes back unchanged, so an odd
+ * address is shown as-is rather than mangled. Tapping the bar
+ * switches back to the full URL for editing (BrowserScreen).
+ */
+fun displayHostFor(url: String): String {
+    val text = url.trim()
+    if (text.isEmpty()) return ""
+    if (text.startsWith("tuxun://")) return ""
+    val uri = try {
+        java.net.URI(text)
+    } catch (e: Exception) {
+        return text
+    }
+    val scheme = uri.scheme?.lowercase()
+    if (scheme != "http" && scheme != "https") return text
+    val host = uri.host?.lowercase() ?: return text
+    val displayHost = if (host.contains(":")) "[$host]" else host
+    val port = uri.port
+    val defaultPort = if (scheme == "http") 80 else 443
+    return if (port == -1 || port == defaultPort) {
+        displayHost
+    } else {
+        "$displayHost:$port"
+    }
+}
+
+/**
  * The project's one host-matching rule: [host] belongs to [site]
  * when it is the site itself or a subdomain of it. Every per-site
  * feature (compat memory, desktop-mode memory, per-site data

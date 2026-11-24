@@ -30,6 +30,7 @@ import com.tuxunbrowse.android.data.extractFirstWebUrl
 import com.tuxunbrowse.android.data.DiagnosticInfo
 import com.tuxunbrowse.android.data.GECKOVIEW_VERSION
 import com.tuxunbrowse.android.data.diagnosticText
+import com.tuxunbrowse.android.data.displayHostFor
 import com.tuxunbrowse.android.data.isReaderHost
 import com.tuxunbrowse.android.data.isUrlLikeInput
 import com.tuxunbrowse.android.data.matchSuggestions
@@ -1088,5 +1089,71 @@ class DiagnosticTextTest {
         )
         val lines = diagnosticText(info).lines()
         assertEquals("系统 WebView：未知", lines[3])
+    }
+}
+
+/**
+ * The address bar's not-editing display (v0.76.0): a web page shows
+ * only its host. These pin the cases the task calls out — https and
+ * http, a non-default port kept, the default ports dropped, paths
+ * and queries stripped, plain IP hosts, and the internal tuxun://
+ * home address returning "" (the bar stays empty on the home page,
+ * as it always has).
+ */
+class DisplayHostForTest {
+
+    @Test
+    fun httpsUrlShowsOnlyTheHost() {
+        assertEquals("example.com", displayHostFor("https://example.com/"))
+        assertEquals(
+            "www.example.com",
+            displayHostFor("https://www.example.com/some/page?x=1#frag")
+        )
+    }
+
+    @Test
+    fun httpUrlShowsOnlyTheHost() {
+        assertEquals("example.org", displayHostFor("http://example.org/a/b"))
+    }
+
+    @Test
+    fun nonDefaultPortIsKeptDefaultPortsAreDropped() {
+        assertEquals(
+            "example.com:8080",
+            displayHostFor("http://example.com:8080/page")
+        )
+        assertEquals(
+            "example.com:8443",
+            displayHostFor("https://example.com:8443/")
+        )
+        assertEquals("example.com", displayHostFor("http://example.com:80/"))
+        assertEquals("example.com", displayHostFor("https://example.com:443/"))
+    }
+
+    @Test
+    fun ipAddressHostsShowAsIs() {
+        assertEquals("192.168.1.10", displayHostFor("http://192.168.1.10/admin"))
+        assertEquals(
+            "192.168.1.10:9000",
+            displayHostFor("http://192.168.1.10:9000/admin")
+        )
+        assertEquals("[::1]:8080", displayHostFor("http://[::1]:8080/"))
+    }
+
+    @Test
+    fun internalAddressesReturnEmpty() {
+        assertEquals("", displayHostFor(HOME_URL))
+        assertEquals("", displayHostFor("tuxun://home"))
+        assertEquals("", displayHostFor(""))
+        assertEquals("", displayHostFor("   "))
+    }
+
+    @Test
+    fun unparseableOrNonWebInputComesBackUnchanged() {
+        assertEquals("not a url", displayHostFor("not a url"))
+        assertEquals(
+            "ftp://example.com/file",
+            displayHostFor("ftp://example.com/file")
+        )
     }
 }
