@@ -178,6 +178,9 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
@@ -720,15 +723,49 @@ fun BrowserApp(
         } catch (t: Throwable) {
             // Keep-screen-on is a comfort feature only; never crash.
         }
+        // Immersive system bars (v0.123.0 fullscreen audit): until
+        // this version nothing ever hid the system bars, so the
+        // status-bar icons and the navigation bar stayed drawn over
+        // fullscreen video (the activity is edge-to-edge). The bars
+        // now follow the same single derivation as keep-screen-on:
+        // hidden while either fullscreen state is live — a swipe
+        // from the edge brings them back transiently — and shown
+        // again by the same effect the moment fullscreen ends, so
+        // every exit path restores them without knowing about them.
+        try {
+            val activity = context as? android.app.Activity
+            val window = activity?.window
+            if (window != null) {
+                val controller =
+                    WindowCompat.getInsetsController(window, window.decorView)
+                if (anyFullscreen) {
+                    controller.systemBarsBehavior =
+                        WindowInsetsControllerCompat
+                            .BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    controller.hide(WindowInsetsCompat.Type.systemBars())
+                } else {
+                    controller.show(WindowInsetsCompat.Type.systemBars())
+                }
+            }
+        } catch (t: Throwable) {
+            // Immersion is a comfort feature only; never crash.
+        }
     }
     // If the whole UI goes away mid-fullscreen (activity destroyed),
     // do not leave the flag set on a dying window.
     DisposableEffect(Unit) {
         onDispose {
             try {
-                (context as? android.app.Activity)?.window?.clearFlags(
+                val window = (context as? android.app.Activity)?.window
+                window?.clearFlags(
                     android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
                 )
+                // Same for the system bars: never leave them hidden
+                // on a window whose UI is gone (v0.123.0).
+                if (window != null) {
+                    WindowCompat.getInsetsController(window, window.decorView)
+                        .show(WindowInsetsCompat.Type.systemBars())
+                }
             } catch (t: Throwable) {
                 // Window already gone; nothing left to clear.
             }

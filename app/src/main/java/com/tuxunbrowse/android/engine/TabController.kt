@@ -1647,6 +1647,14 @@ class BrowserTab(
         view.settings.setSupportMultipleWindows(false)
         view.settings.databaseEnabled = false
         view.settings.savePassword = false
+        // Media autoplay gate (v0.123.0 fullscreen audit): also a
+        // platform default pinned for the record — media playback
+        // requires a user gesture (the default true), so pages
+        // cannot start audible video on their own. Zero behaviour
+        // change. Gecko has no wired equivalent: nothing in the
+        // runtime/session settings touches autoplay, so the Gecko
+        // side simply follows the engine's own default policy.
+        view.settings.mediaPlaybackRequiresUserGesture = true
         view.settings.builtInZoomControls = true
         view.settings.displayZoomControls = false
         view.settings.textZoom = textZoomProvider()
@@ -2109,6 +2117,25 @@ class BrowserTab(
                 customView: android.view.View,
                 callback: CustomViewCallback
             ) {
+                // Re-entry guard (v0.123.0 fullscreen audit): a page
+                // that asks for fullscreen while one is already
+                // showing (a second video, a re-request from the
+                // same element) must be refused at once. Overwriting
+                // the stored callback without answering the old one
+                // breaks the WebView contract — the first element
+                // would never learn its fullscreen ended, and the
+                // later exit would only ever notify the newest
+                // callback. Standard behaviour (Chrome does the
+                // same): answer the NEW callback hidden and keep
+                // the fullscreen already on screen.
+                if (customViewCallback != null) {
+                    try {
+                        callback.onCustomViewHidden()
+                    } catch (t: Throwable) {
+                        // The page is gone; nothing left to answer.
+                    }
+                    return
+                }
                 customViewCallback = callback
                 onFullscreenShow(customView)
             }
