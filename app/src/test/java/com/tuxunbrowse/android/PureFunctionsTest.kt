@@ -31,6 +31,9 @@ import com.tuxunbrowse.android.data.DiagnosticInfo
 import com.tuxunbrowse.android.data.GECKOVIEW_VERSION
 import com.tuxunbrowse.android.data.diagnosticText
 import com.tuxunbrowse.android.data.displayHostFor
+import com.tuxunbrowse.android.data.downgradeToHttp
+import com.tuxunbrowse.android.data.upgradeToHttps
+import com.tuxunbrowse.android.engine.AdBlocker
 import com.tuxunbrowse.android.data.isReaderHost
 import com.tuxunbrowse.android.data.isUrlLikeInput
 import com.tuxunbrowse.android.data.matchSuggestions
@@ -1155,5 +1158,205 @@ class DisplayHostForTest {
             "ftp://example.com/file",
             displayHostFor("ftp://example.com/file")
         )
+    }
+}
+
+/**
+ * HTTPS-first upgrade rules (v0.77.0): only http:// addresses on
+ * public hosts are upgraded; IP literals, localhost and
+ * local-network names never are; port/path/query survive untouched;
+ * the switch being off disables everything.
+ */
+class HttpsUpgradeTest {
+
+    @Test
+    fun plainHttpIsUpgraded() {
+        assertEquals(
+            "https://example.com/",
+            upgradeToHttps("http://example.com/", true)
+        )
+        assertEquals(
+            "https://www.example.com/a/b",
+            upgradeToHttps("http://www.example.com/a/b", true)
+        )
+    }
+
+    @Test
+    fun portPathQueryAndFragmentArePreserved() {
+        assertEquals(
+            "https://example.com:8080/a/b?x=1&y=2#frag",
+            upgradeToHttps("http://example.com:8080/a/b?x=1&y=2#frag", true)
+        )
+    }
+
+    @Test
+    fun switchOffLeavesEverythingAlone() {
+        assertEquals(
+            "http://example.com/",
+            upgradeToHttps("http://example.com/", false)
+        )
+    }
+
+    @Test
+    fun httpsAndOtherSchemesAreUntouched() {
+        assertEquals(
+            "https://example.com/",
+            upgradeToHttps("https://example.com/", true)
+        )
+        assertEquals(
+            "ftp://example.com/file",
+            upgradeToHttps("ftp://example.com/file", true)
+        )
+        assertEquals(
+            "tuxun://home",
+            upgradeToHttps("tuxun://home", true)
+        )
+    }
+
+    @Test
+    fun ipLiteralHostsAreNotUpgraded() {
+        assertEquals(
+            "http://192.168.1.1/admin",
+            upgradeToHttps("http://192.168.1.1/admin", true)
+        )
+        assertEquals(
+            "http://203.0.113.9:9000/x",
+            upgradeToHttps("http://203.0.113.9:9000/x", true)
+        )
+        assertEquals(
+            "http://[::1]:8080/",
+            upgradeToHttps("http://[::1]:8080/", true)
+        )
+        assertEquals(
+            "http://[2001:db8::1]/",
+            upgradeToHttps("http://[2001:db8::1]/", true)
+        )
+    }
+
+    @Test
+    fun localNamesAreNotUpgraded() {
+        assertEquals(
+            "http://localhost:3000/dev",
+            upgradeToHttps("http://localhost:3000/dev", true)
+        )
+        assertEquals(
+            "http://router.local/",
+            upgradeToHttps("http://router.local/", true)
+        )
+        assertEquals(
+            "http://nas.home.lan/files",
+            upgradeToHttps("http://nas.home.lan/files", true)
+        )
+        assertEquals(
+            "http://printer.home/",
+            upgradeToHttps("http://printer.home/", true)
+        )
+        assertEquals(
+            "http://intranet/",
+            upgradeToHttps("http://intranet/", true)
+        )
+    }
+
+    @Test
+    fun downgradeSwapsOnlyTheScheme() {
+        assertEquals(
+            "http://example.com:8443/a?x=1",
+            downgradeToHttp("https://example.com:8443/a?x=1")
+        )
+        assertEquals(
+            "http://example.com/",
+            downgradeToHttp("http://example.com/")
+        )
+        assertEquals("tuxun://home", downgradeToHttp("tuxun://home"))
+    }
+
+    @Test
+    fun httpsFirstTravelsThroughBackups() {
+        val json = backupToJson(
+            emptyList(), emptyList(), emptyList(), emptyList(),
+            BackupSettings(httpsFirstEnabled = false)
+        )
+        val parsed = parseBackup(json)
+        assertEquals(false, parsed?.settings?.httpsFirstEnabled)
+        // A backup written before v0.77.0 carries no such key: the
+        // parsed value stays null, so applying it keeps the current
+        // setting instead of inventing one.
+        val oldJson = backupToJson(
+            emptyList(), emptyList(), emptyList(), emptyList(),
+            BackupSettings()
+        )
+        assertEquals(null, parseBackup(oldJson)?.settings?.httpsFirstEnabled)
+    }
+}
+
+/**
+ * Built-in ad/tracker blocklist hygiene (v0.77.0 expansion): the
+ * list must stay duplicate-free, every entry a plain domain (no
+ * scheme, path or wildcard), and ordinary sites — including their
+ * subdomains — must never be blocked, while known ad hosts and
+ * their subdomains are.
+ */
+class AdBlockerListTest {
+
+    @Test
+    fun listHasNoDuplicates() {
+        assertEquals(
+            AdBlocker.blockedHostList.size,
+            AdBlocker.blockedHostList.toSet().size
+        )
+        assertEquals(
+            AdBlocker.blockedHostList.size,
+            AdBlocker.blockedHostCount
+        )
+    }
+
+    @Test
+    fun everyEntryIsAPlainDomain() {
+        val domain = Regex("^[a-z0-9-]+(\\.[a-z0-9-]+)+$")
+        AdBlocker.blockedHostList.forEach { entry ->
+            assertTrue("bad entry: $entry", domain.matches(entry))
+        }
+    }
+
+    @Test
+    fun ordinarySitesAndTheirSubdomainsAreNotBlocked() {
+        val ordinary = listOf(
+            "baidu.com", "google.com", "github.com", "bilibili.com",
+            "taobao.com", "jd.com", "zhihu.com", "weibo.com"
+        )
+        ordinary.forEach { site ->
+            assertFalse(site, AdBlocker.isAdRequest("https://$site/"))
+            assertFalse(
+                "www.$site",
+                AdBlocker.isAdRequest("https://www.$site/")
+            )
+            assertFalse(
+                "m.$site",
+                AdBlocker.isAdRequest("https://m.$site/")
+            )
+            assertFalse(
+                "api.$site",
+                AdBlocker.isAdRequest("https://api.$site/v1")
+            )
+        }
+    }
+
+    @Test
+    fun knownAdHostsAndTheirSubdomainsAreBlocked() {
+        assertTrue(AdBlocker.isAdRequest("https://doubleclick.net/"))
+        assertTrue(
+            AdBlocker.isAdRequest("https://ads.doubleclick.net/serve")
+        )
+        assertTrue(
+            AdBlocker.isAdRequest("https://www.googlesyndication.com/pagead/js")
+        )
+        assertTrue(AdBlocker.isAdRequest("http://pos.baidu.com/"))
+        assertTrue(AdBlocker.isAdRequest("https://gdt.qq.com/"))
+        assertTrue(AdBlocker.isAdRequest("https://media.net/"))
+        assertTrue(
+            AdBlocker.isAdRequest("https://unityads.unity3d.com/")
+        )
+        assertFalse(AdBlocker.isAdRequest("https://example.com/"))
+        assertFalse(AdBlocker.isAdRequest("not a url"))
     }
 }

@@ -791,6 +791,54 @@ fun displayHostFor(url: String): String {
     }
 }
 
+private val IPV4_HOST_REGEX = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")
+
+/** Suffixes treated as intranet / local-network names (v0.77.0). */
+private val LOCAL_HOST_SUFFIXES = listOf(
+    ".local", ".lan", ".home", ".internal", ".intranet", ".corp"
+)
+
+/**
+ * HTTPS-first upgrade (v0.77.0): when [enabled] and [url] is an
+ * http:// page address on a public host, return the same address
+ * with the scheme swapped to https:// — port, path, query and
+ * fragment are preserved byte for byte. Everything else comes back
+ * unchanged:
+ * - the switch is off, or the URL is not http:// at all;
+ * - the host is an IP literal (IPv4 or IPv6) — intranet devices and
+ *   direct-IP services routinely have no certificate;
+ * - the host is localhost, a single-label name, or carries a
+ *   local-network suffix (.local/.lan/…) — same reasoning;
+ * - the host cannot be parsed at all — never mangle an address the
+ *   app does not understand.
+ * Callers apply this ONLY to the four inbound paths (typed address
+ * bar input, home search opens, the share sheet's "open" choice and
+ * external VIEW links); navigation generated inside a page never
+ * passes through it.
+ */
+fun upgradeToHttps(url: String, enabled: Boolean): String {
+    if (!enabled) return url
+    if (!url.startsWith("http://")) return url
+    val host = hostOf(url) ?: return url
+    if (IPV4_HOST_REGEX.matches(host) || host.contains(':')) return url
+    if (host == "localhost" || !host.contains('.')) return url
+    if (LOCAL_HOST_SUFFIXES.any { host.endsWith(it) }) return url
+    return "https://" + url.substring("http://".length)
+}
+
+/**
+ * The one-off escape hatch paired with [upgradeToHttps] (v0.77.0):
+ * the same address over plain http, for the error page's "open
+ * over http instead" button. Applied to that single load only —
+ * nothing is remembered and the HTTPS-first switch stays as it is.
+ */
+fun downgradeToHttp(url: String): String =
+    if (url.startsWith("https://")) {
+        "http://" + url.substring("https://".length)
+    } else {
+        url
+    }
+
 /**
  * The project's one host-matching rule: [host] belongs to [site]
  * when it is the site itself or a subdomain of it. Every per-site
@@ -980,6 +1028,7 @@ val SETTINGS_SEARCH_INDEX: List<SettingsIndexEntry> = listOf(
     SettingsIndexEntry("历史记录 · 永久保留", "privacy", "隐私与数据"),
     SettingsIndexEntry("历史记录 · 保留 30 天", "privacy", "隐私与数据"),
     SettingsIndexEntry("历史记录 · 保留 7 天", "privacy", "隐私与数据"),
+    SettingsIndexEntry("优先用 HTTPS 打开网站", "privacy", "隐私与数据"),
     SettingsIndexEntry("允许第三方 Cookie（系统 WebView 标签）", "privacy", "隐私与数据"),
     SettingsIndexEntry("无图模式（系统 WebView 标签）", "privacy", "隐私与数据"),
     SettingsIndexEntry("禁用 JavaScript（两个内核）", "privacy", "隐私与数据"),
@@ -1088,6 +1137,17 @@ class Store(context: Context) {
     var adBlockEnabled: Boolean
         get() = safeBoolean(KEY_AD_BLOCK, true)
         set(value) = prefs.edit().putBoolean(KEY_AD_BLOCK, value).apply()
+
+    /**
+     * HTTPS first (v0.77.0): open http:// addresses from the four
+     * inbound paths as https:// instead. Default ON. See
+     * [upgradeToHttps] for the exact rule (IP literals and local
+     * names are never upgraded). Incognito tabs follow the same
+     * rule — upgrading writes nothing anywhere.
+     */
+    var httpsFirstEnabled: Boolean
+        get() = safeBoolean(KEY_HTTPS_FIRST, true)
+        set(value) = prefs.edit().putBoolean(KEY_HTTPS_FIRST, value).apply()
 
     /**
      * Sub-option of ad blocking: also hide the (often empty) ad slots
@@ -1583,6 +1643,7 @@ class Store(context: Context) {
         private const val KEY_CUSTOM_SEARCH_NAME = "custom_search_name"
         private const val KEY_CUSTOM_SEARCH_TEMPLATE = "custom_search_template"
         private const val KEY_AD_BLOCK = "ad_block"
+        private const val KEY_HTTPS_FIRST = "https_first"
         private const val KEY_AD_HIDE_SLOTS = "ad_hide_slots"
         private const val KEY_ALLOW_THIRD_PARTY_COOKIES = "allow_third_party_cookies"
         private const val KEY_BLOCK_IMAGES = "block_images"
@@ -1681,7 +1742,10 @@ data class BackupSettings(
     val readerBackground: ReaderBackground? = null,
     // Added in v0.63.0: bookmarks-page display sort. Same
     // optional-on-read treatment as the v0.51.0 additions.
-    val bookmarkSortOrder: BookmarkSortOrder? = null
+    val bookmarkSortOrder: BookmarkSortOrder? = null,
+    // Added in v0.77.0: HTTPS-first switch. Same optional-on-read
+    // treatment as the v0.51.0 additions.
+    val httpsFirstEnabled: Boolean? = null
 ) {
     /** Plain-language list of what applying these settings would overwrite. */
     fun overwriteSummary(): List<String> {
@@ -1704,6 +1768,7 @@ data class BackupSettings(
         if (readerFontSize != null) out.add("阅读字号")
         if (readerBackground != null) out.add("阅读背景")
         if (bookmarkSortOrder != null) out.add("书签排序（默认顺序 / 按名称）")
+        if (httpsFirstEnabled != null) out.add("优先用 HTTPS 打开网站")
         return out
     }
 }
@@ -1831,6 +1896,9 @@ fun backupToJson(
     }
     settings.bookmarkSortOrder?.let {
         settingsObj.put("bookmarkSortOrder", it.id)
+    }
+    settings.httpsFirstEnabled?.let {
+        settingsObj.put("httpsFirstEnabled", it)
     }
     val compatArr = JSONArray()
     compatSites.forEach { compatArr.put(it) }
@@ -2001,7 +2069,12 @@ fun parseBackup(raw: String): BackupData? {
             readerBackground = s.optString("readerBackground")
                 .takeIf { it.isNotBlank() }?.let { ReaderBackground.fromId(it) },
             bookmarkSortOrder = s.optString("bookmarkSortOrder")
-                .takeIf { it.isNotBlank() }?.let { BookmarkSortOrder.fromId(it) }
+                .takeIf { it.isNotBlank() }?.let { BookmarkSortOrder.fromId(it) },
+            httpsFirstEnabled = if (s.has("httpsFirstEnabled")) {
+                s.optBoolean("httpsFirstEnabled")
+            } else {
+                null
+            }
         )
     }
     // Compat sites (v0.51.0): plain host names only — anything with

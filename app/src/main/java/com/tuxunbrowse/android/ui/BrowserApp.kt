@@ -67,6 +67,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.OpenInNew
@@ -240,6 +241,8 @@ import com.tuxunbrowse.android.data.renameBookmarksFolder
 import com.tuxunbrowse.android.data.matchRange
 import com.tuxunbrowse.android.data.matchSuggestions
 import com.tuxunbrowse.android.data.resolveInput
+import com.tuxunbrowse.android.data.upgradeToHttps
+import com.tuxunbrowse.android.data.downgradeToHttp
 import com.tuxunbrowse.android.engine.ALIVE_ENGINE_LIMIT
 import com.tuxunbrowse.android.engine.AdBlocker
 import com.tuxunbrowse.android.engine.BrowserTab
@@ -1879,7 +1882,8 @@ fun BrowserApp(
                 searchSuggestionsEnabled = store.searchSuggestionsEnabled,
                 readerFontSize = store.readerFontSize,
                 readerBackground = store.readerBackground,
-                bookmarkSortOrder = store.bookmarkSortOrder
+                bookmarkSortOrder = store.bookmarkSortOrder,
+                httpsFirstEnabled = store.httpsFirstEnabled
             ),
             compatSites = store.loadCompatSites().sorted(),
             desktopSites = store.loadDesktopSites().sorted(),
@@ -2026,6 +2030,10 @@ fun BrowserApp(
         // bookmarks page reads it when it is next composed, exactly
         // like the settings-page picker writes it.
         s.bookmarkSortOrder?.let { store.bookmarkSortOrder = it }
+        // HTTPS first (v0.77.0): plain Store write — the four
+        // inbound paths read it at open time, exactly like the
+        // settings-page switch writes it.
+        s.httpsFirstEnabled?.let { store.httpsFirstEnabled = it }
         if (s.readerFontSize != null || s.readerBackground != null) {
             tabs.forEach { it.applyReaderStyle() }
         }
@@ -2675,7 +2683,7 @@ fun BrowserApp(
         }
     }
 
-    fun openUrl(url: String) {
+    fun openUrl(url: String, httpsUpgrade: Boolean = false) {
         // The one inbound gate (v0.31.0): every "open this as a page"
         // request that arrives from outside a web page funnels through
         // here — links handed over by other apps, the clipboard hint,
@@ -2695,20 +2703,39 @@ fun BrowserApp(
             ).show()
             return
         }
-        var tab = activeTab() ?: newTab(store.mainEngine, false, url)
+        // HTTPS first (v0.77.0): only the callers on the four
+        // inbound paths pass httpsUpgrade = true (external VIEW
+        // links, home search opens, the share sheet's "open"); the
+        // other openUrl callers (bookmarks, history, reading list,
+        // suggestions…) deliberately keep the address exactly as
+        // stored. The tab is marked when WE upgraded its address,
+        // so a failure can offer the one-off http fallback.
+        val target =
+            if (httpsUpgrade) upgradeToHttps(url, store.httpsFirstEnabled) else url
+        val existing = activeTab()
+        var tab = existing ?: newTab(store.mainEngine, false, target)
+        // A tab created for this address loads target on its own;
+        // only the upgrade marker is ours to set.
+        if (existing == null && target != url) tab.httpsUpgraded = true
         if (tab.engine == Engine.GECKO &&
-            effectiveEngine(Engine.GECKO, url) == Engine.WEBVIEW
+            effectiveEngine(Engine.GECKO, target) == Engine.WEBVIEW
         ) {
             tab = replaceTabEngine(tab, Engine.WEBVIEW)
+            // The replacement loads target afresh, so an upgraded
+            // open stays marked across the engine switch.
+            if (target != url) tab.httpsUpgraded = true
         }
-        if (tab.url != url) tab.load(url)
+        if (tab.url != target) {
+            tab.load(target)
+            if (target != url) tab.httpsUpgraded = true
+        }
         screen = Screen.BROWSER
     }
 
     // A link opened from another app: show it once the session is ready.
     LaunchedEffect(initialUrl, startupDone) {
         if (startupDone && initialUrl != null) {
-            openUrl(initialUrl)
+            openUrl(initialUrl, httpsUpgrade = true)
             onInitialUrlConsumed()
         }
     }
@@ -2722,7 +2749,7 @@ fun BrowserApp(
      * active one. Engine choice still flows through newTab, so a
      * compat-listed host lands on WebView exactly as with openUrl.
      */
-    fun openUrlInNewTab(url: String) {
+    fun openUrlInNewTab(url: String, httpsUpgrade: Boolean = false) {
         if (!isAllowedPageUrl(url)) {
             android.widget.Toast.makeText(
                 context,
@@ -2731,7 +2758,12 @@ fun BrowserApp(
             ).show()
             return
         }
-        newTab(store.mainEngine, false, url)
+        // HTTPS first (v0.77.0): only the share sheet's "open" path
+        // passes httpsUpgrade = true; see openUrl for the rule.
+        val target =
+            if (httpsUpgrade) upgradeToHttps(url, store.httpsFirstEnabled) else url
+        val tab = newTab(store.mainEngine, false, target)
+        if (target != url) tab.httpsUpgraded = true
         screen = Screen.BROWSER
     }
 
@@ -2739,7 +2771,7 @@ fun BrowserApp(
     fun openSharedText(text: String) {
         val url = extractFirstWebUrl(text)
         when {
-            url != null -> openUrlInNewTab(url)
+            url != null -> openUrlInNewTab(url, httpsUpgrade = true)
             // No URL inside: the text itself is the input. A blocked
             // scheme is refused with the same message as everywhere
             // else; anything else goes through resolveInput, so
@@ -2750,7 +2782,8 @@ fun BrowserApp(
                 android.widget.Toast.LENGTH_LONG
             ).show()
             else -> openUrlInNewTab(
-                resolveInput(text, store.searchEngine, store.customSearchTemplate)
+                resolveInput(text, store.searchEngine, store.customSearchTemplate),
+                httpsUpgrade = true
             )
         }
     }
@@ -2935,9 +2968,20 @@ fun BrowserApp(
                             android.widget.Toast.LENGTH_LONG
                         ).show()
                     } else {
-                        activeTab()?.load(
-                            resolveInput(text, store.searchEngine, store.customSearchTemplate)
+                        // HTTPS first (v0.77.0): typed address-bar
+                        // input is one of the four inbound paths —
+                        // an http:// address is upgraded before the
+                        // load, and the tab is marked so a failure
+                        // can offer the one-off http fallback.
+                        val resolved = resolveInput(
+                            text, store.searchEngine, store.customSearchTemplate
                         )
+                        val target = upgradeToHttps(resolved, store.httpsFirstEnabled)
+                        val tab = activeTab()
+                        tab?.load(target)
+                        if (tab != null && target != resolved) {
+                            tab.httpsUpgraded = true
+                        }
                     }
                 },
                 bookmarks = bookmarks,
@@ -2959,6 +3003,19 @@ fun BrowserApp(
                     val error = tab?.loadError
                     if (tab != null && error != null) {
                         openLoadErrorInOtherEngine(tab, error.failedUrl)
+                    }
+                },
+                onOpenHttpFallback = {
+                    // HTTPS-first escape hatch (v0.77.0): the page
+                    // WE upgraded failed to load — reopen the failed
+                    // address over plain http, this once only. The
+                    // switch stays on, nothing is remembered, and
+                    // load() clears the upgrade marker, so if the
+                    // http load fails too there is no loop.
+                    val tab = activeTab()
+                    val error = tab?.loadError
+                    if (tab != null && error != null && tab.httpsUpgraded) {
+                        tab.load(downgradeToHttp(error.failedUrl))
                     }
                 },
                 onSwitchEngine = { engine, rememberSite ->
@@ -3203,7 +3260,7 @@ fun BrowserApp(
                             store.searchEngine = SearchEngine.CUSTOM
                             searchEngineState = SearchEngine.CUSTOM
                         },
-                        onSearchUrl = { url -> openUrl(url) },
+                        onSearchUrl = { url -> openUrl(url, httpsUpgrade = true) },
                         onOpenBookmark = { openUrl(it.url) },
                         onDeleteBookmark = {
                             bookmarks.remove(it)
@@ -5558,7 +5615,13 @@ private fun LoadErrorContent(
     // engine, following the failing tab's current engine, so after a
     // failed switch it points back the way it came.
     switchEngineLabel: String? = null,
-    onSwitchEngine: () -> Unit = {}
+    onSwitchEngine: () -> Unit = {},
+    // "Open over http instead" escape hatch (v0.77.0): only passed
+    // when this tab's failed page is one the app itself upgraded
+    // from http to https — a site that cannot do https must never
+    // leave the user stuck on this error page.
+    showHttpFallback: Boolean = false,
+    onOpenHttpFallback: () -> Unit = {}
 ) {
     Column(
         modifier = Modifier
@@ -5601,6 +5664,25 @@ private fun LoadErrorContent(
         Button(onClick = onReload) {
             Icon(Icons.Filled.Refresh, contentDescription = null)
             Text("重新加载", modifier = Modifier.padding(start = 8.dp))
+        }
+        if (showHttpFallback) {
+            OutlinedButton(
+                onClick = onOpenHttpFallback,
+                modifier = Modifier.padding(top = 12.dp)
+            ) {
+                Icon(Icons.Filled.LockOpen, contentDescription = null)
+                Text(
+                    "改用 http 打开这个网站",
+                    modifier = Modifier.padding(start = 8.dp)
+                )
+            }
+            Text(
+                "这个网站是按你的设置先换成 https 打开的，可能它还不支持 https。" +
+                    "改用 http 只对这一次有效，不会关掉「优先用 HTTPS」设置。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp)
+            )
         }
         if (switchEngineLabel != null) {
             OutlinedButton(
@@ -5661,6 +5743,7 @@ private fun BrowserScreen(
     onGoHome: () -> Unit,
     onReloadPage: () -> Unit,
     onOpenInOtherEngine: () -> Unit = {},
+    onOpenHttpFallback: () -> Unit = {},
     onSwitchEngine: (Engine, Boolean) -> Unit,
     onToggleSiteCompat: () -> Unit = {},
     onClearSiteData: (String) -> Unit = {},
@@ -6794,7 +6877,10 @@ private fun BrowserScreen(
                                         Engine.WEBVIEW -> "用火狐内核打开"
                                     }
                                 } else null,
-                            onSwitchEngine = onOpenInOtherEngine
+                            onSwitchEngine = onOpenInOtherEngine,
+                            showHttpFallback = tab.httpsUpgraded &&
+                                tab.loadError!!.failedUrl.startsWith("https://"),
+                            onOpenHttpFallback = onOpenHttpFallback
                         )
                     else -> TabContent(tab = tab, modifier = Modifier.fillMaxSize())
                 }
@@ -11087,6 +11173,9 @@ private fun SettingsScreen(
     var allowThirdPartyCookies by remember(refreshTick) {
         mutableStateOf(store.allowThirdPartyCookies)
     }
+    var httpsFirst by remember(refreshTick) {
+        mutableStateOf(store.httpsFirstEnabled)
+    }
     var blockImages by remember(refreshTick) {
         mutableStateOf(store.blockImages)
     }
@@ -12223,6 +12312,35 @@ private fun SettingsScreen(
                         }
                     )
                 }
+            }
+            item {
+                Text("打开网站", style = MaterialTheme.typography.titleMedium)
+            }
+            item {
+                ListItem(
+                    headlineContent = {
+                        Text("优先用 HTTPS 打开网站")
+                    },
+                    supportingContent = {
+                        Text(
+                            "打开后，你输入、搜索、从别的 App 分享或点开的 http:// 网址，" +
+                                "会先换成 https:// 再打开，连接加密、更不容易被偷看或篡改。" +
+                                "这个开关默认开着。IP 地址和局域网地址（比如路由器设置页）" +
+                                "不会被换，因为它们大多没有 https。网页里面点来点去的链接不受影响。" +
+                                "万一某个网站换成 https 后打不开，错误页面上会有" +
+                                "「改用 http 打开这个网站」按钮，只对那一次有效。"
+                        )
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = httpsFirst,
+                            onCheckedChange = {
+                                httpsFirst = it
+                                store.httpsFirstEnabled = it
+                            }
+                        )
+                    }
+                )
             }
             item {
                 Text("网站登录", style = MaterialTheme.typography.titleMedium)

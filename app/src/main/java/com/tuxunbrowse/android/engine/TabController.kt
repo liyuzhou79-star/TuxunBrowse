@@ -663,6 +663,18 @@ class BrowserTab(
     var loadError by mutableStateOf<TabLoadError?>(null)
 
     /**
+     * True while this tab's current page load is one the app itself
+     * upgraded from http to https (v0.77.0 HTTPS first). Set by the
+     * app side right after it loads an upgraded address; cleared by
+     * [load] (any fresh load starts unmarked), and cleared again
+     * once a load finishes successfully — what remains marked is
+     * exactly "this tab is showing an error for a page WE upgraded",
+     * which is when the error page offers the one-off
+     * "open over http instead" escape hatch.
+     */
+    var httpsUpgraded by mutableStateOf(false)
+
+    /**
      * Latest tab thumbnail (WebView tabs only). At most one bitmap is
      * ever referenced per tab — a fresh capture replaces the reference
      * and the old bitmap is left to the GC (it is NOT recycled here:
@@ -835,6 +847,7 @@ class BrowserTab(
 
     fun load(target: String) {
         loadError = null
+        httpsUpgraded = false
         blockedCount = 0
         certIssuedTo = ""
         certIssuedBy = ""
@@ -1716,6 +1729,14 @@ class BrowserTab(
 
             override fun onPageFinished(wv: WebView, finishedUrl: String?) {
                 super.onPageFinished(wv, finishedUrl)
+                // HTTPS-first marker (v0.77.0): a load that finished
+                // without an error state has succeeded, so the tab
+                // is no longer "showing an upgraded page that
+                // failed". A failed main-frame load also reaches
+                // onPageFinished, but onReceivedError has already
+                // set loadError by then, so the marker survives
+                // exactly for the error page's http fallback button.
+                if (loadError == null) httpsUpgraded = false
                 val u = finishedUrl ?: return
                 if (readerActive) {
                     // A real navigation out of (or the reload ending)
@@ -2091,6 +2112,11 @@ class BrowserTab(
 
             override fun onPageStop(s: GeckoSession, success: Boolean) {
                 progress = 100
+                // HTTPS-first marker (v0.77.0): cleared on a
+                // successful stop with no error state, kept when
+                // the load failed (onLoadError set loadError), so
+                // the error page can offer its http fallback.
+                if (success && loadError == null) httpsUpgraded = false
             }
         }
         // GeckoView 132 reports page titles on ContentDelegate, not on
