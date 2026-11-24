@@ -43,6 +43,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
@@ -74,6 +75,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.SwapHoriz
@@ -156,6 +158,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.tuxunbrowse.android.data.Bookmark
+import com.tuxunbrowse.android.data.BookmarkSortOrder
+import com.tuxunbrowse.android.data.sortedBookmarksForDisplay
 import com.tuxunbrowse.android.data.DownloadMode
 import com.tuxunbrowse.android.data.GeckoDownloadRecord
 import com.tuxunbrowse.android.data.Engine
@@ -1528,7 +1532,8 @@ fun BrowserApp(
                 disableJavaScript = store.disableJavaScript,
                 searchSuggestionsEnabled = store.searchSuggestionsEnabled,
                 readerFontSize = store.readerFontSize,
-                readerBackground = store.readerBackground
+                readerBackground = store.readerBackground,
+                bookmarkSortOrder = store.bookmarkSortOrder
             ),
             compatSites = store.loadCompatSites().sorted(),
             desktopSites = store.loadDesktopSites().sorted()
@@ -1667,6 +1672,10 @@ fun BrowserApp(
         // page).
         s.readerFontSize?.let { store.readerFontSize = it }
         s.readerBackground?.let { store.readerBackground = it }
+        // Bookmark display sort (v0.63.0): plain Store write — the
+        // bookmarks page reads it when it is next composed, exactly
+        // like the settings-page picker writes it.
+        s.bookmarkSortOrder?.let { store.bookmarkSortOrder = it }
         if (s.readerFontSize != null || s.readerBackground != null) {
             tabs.forEach { it.applyReaderStyle() }
         }
@@ -2659,6 +2668,8 @@ fun BrowserApp(
 
         Screen.BOOKMARKS -> BookmarksScreen(
             bookmarks = bookmarks,
+            sortOrder = store.bookmarkSortOrder,
+            onSortOrderChange = { store.bookmarkSortOrder = it },
             onBack = { screen = Screen.BROWSER },
             onOpen = { openUrl(it.url) },
             onDelete = {
@@ -6688,6 +6699,8 @@ private fun EmptyState(icon: ImageVector, text: String) {
 @Composable
 private fun BookmarksScreen(
     bookmarks: List<Bookmark>,
+    sortOrder: BookmarkSortOrder = BookmarkSortOrder.DEFAULT,
+    onSortOrderChange: (BookmarkSortOrder) -> Unit = {},
     onBack: () -> Unit,
     onOpen: (Bookmark) -> Unit,
     onDelete: (Bookmark) -> Unit,
@@ -6773,6 +6786,21 @@ private fun BookmarksScreen(
                 it.url.contains(bookmarkQuery, ignoreCase = true)
         }
     }
+    // Display sort (v0.63.0): filter first, then sort for display
+    // only — the stored list is never reordered. Local state seeded
+    // from the persisted preference; picking an option updates both
+    // at once, and re-entering the page re-reads the stored value.
+    // Identity audit (v0.63.0, why sorting cannot mis-target): every
+    // action on this page is keyed by the entry itself, never by
+    // row position — open/edit/pin/delete/long-press menu all carry
+    // the Bookmark object, batch selection is a set of URLs and
+    // batch delete filters the full stored list by those URLs, and
+    // the list rows themselves are keyed by URL. Reordering the
+    // display therefore cannot point any action at the wrong entry.
+    var activeSortOrder by remember { mutableStateOf(sortOrder) }
+    var sortMenuOpen by remember { mutableStateOf(false) }
+    val displayBookmarks =
+        sortedBookmarksForDisplay(visibleBookmarks, activeSortOrder)
     // Batch-manage mode: checkboxes on every row, a delete-selected
     // button on top, and clear ways out (back key, the close icon
     // and the "完成" button all leave the mode).
@@ -6877,6 +6905,44 @@ private fun BookmarksScreen(
                             }) {
                                 Text("批量管理")
                             }
+                            // Display-sort picker (v0.63.0): same
+                            // icon-button + dropdown-menu shape the
+                            // rest of the app uses. Sorting is
+                            // display-only and never rewrites the
+                            // stored order.
+                            Box {
+                                IconButton(onClick = { sortMenuOpen = true }) {
+                                    Icon(
+                                        Icons.Filled.Sort,
+                                        contentDescription = "书签排序"
+                                    )
+                                }
+                                DropdownMenu(
+                                    expanded = sortMenuOpen,
+                                    onDismissRequest = { sortMenuOpen = false }
+                                ) {
+                                    BookmarkSortOrder.entries.forEach { option ->
+                                        DropdownMenuItem(
+                                            text = { Text(option.label) },
+                                            onClick = {
+                                                sortMenuOpen = false
+                                                if (option != activeSortOrder) {
+                                                    activeSortOrder = option
+                                                    onSortOrderChange(option)
+                                                }
+                                            },
+                                            leadingIcon = {
+                                                if (option == activeSortOrder) {
+                                                    Icon(
+                                                        Icons.Filled.Check,
+                                                        contentDescription = null
+                                                    )
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                            }
                         }
                         IconButton(onClick = onImport) {
                             Icon(Icons.Filled.FileDownload, contentDescription = "导入书签")
@@ -6925,7 +6991,7 @@ private fun BookmarksScreen(
                     }
                 }
             }
-            if (batchMode && visibleBookmarks.isNotEmpty()) {
+            if (batchMode && displayBookmarks.isNotEmpty()) {
                 item {
                     Button(
                         onClick = { showBatchDeleteConfirm = true },
@@ -6938,7 +7004,7 @@ private fun BookmarksScreen(
                     }
                 }
             }
-            items(visibleBookmarks, key = { it.url }) { bookmark ->
+            items(displayBookmarks, key = { it.url }) { bookmark ->
                 val selected = bookmark.url in selectedUrls
                 ListItem(
                     headlineContent = { Text(bookmark.title) },

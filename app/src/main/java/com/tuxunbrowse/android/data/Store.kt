@@ -77,6 +77,49 @@ enum class SearchEngine(
 }
 
 data class Bookmark(val title: String, val url: String, val pinned: Boolean = false)
+
+/**
+ * Bookmarks-page display sort (v0.63.0). Display-only: the stored
+ * list order is never rewritten by sorting — this only decides the
+ * order rows are rendered in. There is deliberately no "by time
+ * added" option: [Bookmark] carries no timestamp field, and the
+ * stored JSON format is not being changed to invent one.
+ */
+enum class BookmarkSortOrder(val id: String, val label: String) {
+    DEFAULT("default", "默认顺序"),
+    NAME("name", "按名称");
+
+    companion object {
+        fun fromId(id: String?): BookmarkSortOrder =
+            entries.firstOrNull { it.id == id } ?: DEFAULT
+    }
+}
+
+/**
+ * The bookmarks page's display order (v0.63.0): pinned entries
+ * first (same rule as the home grid), then — in DEFAULT — the
+ * stored order as-is, or — in NAME — a locale collation of the
+ * titles via the platform [java.text.Collator] (on a Chinese
+ * locale that collates Chinese titles by pinyin; that is the
+ * platform collator's own behaviour, not a custom rule). Equal
+ * titles fall back to URL so the order is fully deterministic.
+ * The name sort applies inside the pinned group and inside the
+ * unpinned group separately; the input list is never mutated.
+ */
+fun sortedBookmarksForDisplay(
+    bookmarks: List<Bookmark>,
+    order: BookmarkSortOrder
+): List<Bookmark> {
+    val pinned = bookmarks.filter { it.pinned }
+    val unpinned = bookmarks.filter { !it.pinned }
+    if (order == BookmarkSortOrder.DEFAULT) return pinned + unpinned
+    val collator = java.text.Collator.getInstance()
+    val byName = Comparator<Bookmark> { a, b ->
+        val byTitle = collator.compare(a.title, b.title)
+        if (byTitle != 0) byTitle else a.url.compareTo(b.url)
+    }
+    return pinned.sortedWith(byName) + unpinned.sortedWith(byName)
+}
 data class HistoryItem(val title: String, val url: String, val time: Long)
 
 /** One "read it later" entry: a saved page, with its read/unread state. */
@@ -670,6 +713,15 @@ class Store(context: Context) {
         get() = ReaderBackground.fromId(safeString(KEY_READER_BACKGROUND, null))
         set(value) = prefs.edit().putString(KEY_READER_BACKGROUND, value.id).apply()
 
+    /**
+     * Bookmarks-page display sort (v0.63.0); see [BookmarkSortOrder].
+     * Display preference only — the stored bookmark list itself is
+     * never reordered.
+     */
+    var bookmarkSortOrder: BookmarkSortOrder
+        get() = BookmarkSortOrder.fromId(safeString(KEY_BOOKMARK_SORT_ORDER, null))
+        set(value) = prefs.edit().putString(KEY_BOOKMARK_SORT_ORDER, value.id).apply()
+
     /** Ask web pages to render dark (WebView algorithmic darkening). */
     var webDarkMode: Boolean
         get() = safeBoolean(KEY_WEB_DARK, false)
@@ -991,6 +1043,7 @@ class Store(context: Context) {
         private const val KEY_COMPAT_SITES = "compat_sites"
         private const val KEY_DESKTOP_SITES = "desktop_sites"
         private const val KEY_BOOKMARKS = "bookmarks"
+        private const val KEY_BOOKMARK_SORT_ORDER = "bookmark_sort_order"
         private const val KEY_HISTORY = "history"
         private const val KEY_READING_LIST = "reading_list"
         private const val KEY_GECKO_DOWNLOADS = "gecko_downloads"
@@ -1068,7 +1121,10 @@ data class BackupSettings(
     // Added in v0.58.0: reader-mode typesetting. Same optional-on-read
     // treatment as the v0.51.0 additions.
     val readerFontSize: ReaderFontSize? = null,
-    val readerBackground: ReaderBackground? = null
+    val readerBackground: ReaderBackground? = null,
+    // Added in v0.63.0: bookmarks-page display sort. Same
+    // optional-on-read treatment as the v0.51.0 additions.
+    val bookmarkSortOrder: BookmarkSortOrder? = null
 ) {
     /** Plain-language list of what applying these settings would overwrite. */
     fun overwriteSummary(): List<String> {
@@ -1090,6 +1146,7 @@ data class BackupSettings(
         if (searchSuggestionsEnabled != null) out.add("联网搜索建议开关")
         if (readerFontSize != null) out.add("阅读字号")
         if (readerBackground != null) out.add("阅读背景")
+        if (bookmarkSortOrder != null) out.add("书签排序（默认顺序 / 按名称）")
         return out
     }
 }
@@ -1180,6 +1237,9 @@ fun backupToJson(
     settings.readerFontSize?.let { settingsObj.put("readerFontSize", it.id) }
     settings.readerBackground?.let {
         settingsObj.put("readerBackground", it.id)
+    }
+    settings.bookmarkSortOrder?.let {
+        settingsObj.put("bookmarkSortOrder", it.id)
     }
     val compatArr = JSONArray()
     compatSites.forEach { compatArr.put(it) }
@@ -1325,7 +1385,9 @@ fun parseBackup(raw: String): BackupData? {
             readerFontSize = s.optString("readerFontSize")
                 .takeIf { it.isNotBlank() }?.let { ReaderFontSize.fromId(it) },
             readerBackground = s.optString("readerBackground")
-                .takeIf { it.isNotBlank() }?.let { ReaderBackground.fromId(it) }
+                .takeIf { it.isNotBlank() }?.let { ReaderBackground.fromId(it) },
+            bookmarkSortOrder = s.optString("bookmarkSortOrder")
+                .takeIf { it.isNotBlank() }?.let { BookmarkSortOrder.fromId(it) }
         )
     }
     // Compat sites (v0.51.0): plain host names only — anything with
