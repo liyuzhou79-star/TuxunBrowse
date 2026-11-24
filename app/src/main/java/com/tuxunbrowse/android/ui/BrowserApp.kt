@@ -3021,7 +3021,16 @@ fun BrowserApp(
             onDismissRequest = { showExportFormatDialog = false },
             title = { Text("导出书签") },
             text = {
-                Column {
+                // Scrollable body (v0.115.0 extreme-viewport pass):
+                // the two radio rows carry long supporting lines;
+                // at font scale 1.3 in a 360dp-tall landscape window
+                // the unscrollable Column overflowed and clipped
+                // the second row's tail. verticalScroll changes
+                // nothing when the content fits (see the history
+                // clear dialog for the full accounting).
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState())
+                ) {
                     Text("导出成哪种文件？都会存到下载文件夹。")
                     ListItem(
                         headlineContent = { Text("本应用 JSON 格式") },
@@ -8860,7 +8869,17 @@ private fun HistoryRangeClearDialog(
         onDismissRequest = onDismiss,
         title = { Text("清除历史记录") },
         text = {
-            Column {
+            // Scrollable body (v0.115.0 extreme-viewport pass):
+            // three two-line radio rows plus the intro line total
+            // roughly 270dp at font scale 1.3, which with the title
+            // and button row overflows a 360dp-tall landscape
+            // window — the stock AlertDialog does not scroll its
+            // text, so the last range was clipped. A plain
+            // verticalScroll is a no-op whenever the content fits,
+            // so normal viewports render exactly as before.
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState())
+            ) {
                 Text("选择要清除的时间范围，范围之外的记录会保留。")
                 HistoryClearRange.entries.forEach { range ->
                     ListItem(
