@@ -769,10 +769,21 @@ fun displayHostFor(url: String): String {
     }
     val scheme = uri.scheme?.lowercase()
     if (scheme != "http" && scheme != "https") return text
-    val host = uri.host?.lowercase() ?: return text
-    val displayHost = if (host.contains(":")) "[$host]" else host
-    val port = uri.port
     val defaultPort = if (scheme == "http") 80 else 443
+    val host = uri.host?.lowercase()
+    if (host == null) {
+        // URI could not parse a server-style host (some literal
+        // forms): fall back to the raw authority, minus any
+        // userinfo and minus a default port.
+        val authority = uri.authority
+            ?.substringAfterLast("@")?.lowercase() ?: return text
+        return authority.removeSuffix(":$defaultPort")
+    }
+    // An IPv6 host may come back already bracketed or bare,
+    // depending on the runtime; normalize to exactly one pair.
+    val bareHost = host.removeSurrounding("[", "]")
+    val displayHost = if (bareHost.contains(":")) "[$bareHost]" else bareHost
+    val port = uri.port
     return if (port == -1 || port == defaultPort) {
         displayHost
     } else {
