@@ -212,6 +212,8 @@ import com.tuxunbrowse.android.data.isAppDarkTheme
 import com.tuxunbrowse.android.data.hostMatchesSite
 import com.tuxunbrowse.android.data.isCompatHost
 import com.tuxunbrowse.android.data.isDesktopHost
+import com.tuxunbrowse.android.data.isReaderHost
+import com.tuxunbrowse.android.data.extractFirstWebUrl
 import com.tuxunbrowse.android.data.hasBlockedPageScheme
 import com.tuxunbrowse.android.data.isAllowedPageUrl
 import com.tuxunbrowse.android.data.SEARCH_SUGGESTION_DEBOUNCE_MS
@@ -430,6 +432,8 @@ private data class SslPromptState(
 fun BrowserApp(
     initialUrl: String? = null,
     onInitialUrlConsumed: () -> Unit = {},
+    sharedText: String? = null,
+    onSharedTextConsumed: () -> Unit = {},
     onThemeModeChanged: (ThemeMode) -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -472,6 +476,16 @@ fun BrowserApp(
     val desktopSites = remember {
         mutableStateListOf<String>().apply { addAll(store.loadDesktopSites()) }
     }
+    // Reader-mode sites (v0.73.0) stay synchronous for the same
+    // reason: the auto-reader check runs when a tab's first page
+    // finishes loading, and the set is a handful of host strings.
+    val readerSites = remember {
+        mutableStateListOf<String>().apply { addAll(store.loadReaderSites()) }
+    }
+    // Text another app shared to us, waiting for the user's choice
+    // in the share dialog (v0.73.0). Nothing is opened or saved
+    // until the user picks — and the clipboard is never involved.
+    var pendingShareText by remember { mutableStateOf<String?>(null) }
     // Stored bookmark folder names (v0.72.0): synchronous like the
     // two site lists — a handful of short strings. This list exists
     // so EMPTY folders survive; the folder list the UI offers is
@@ -1119,7 +1133,19 @@ fun BrowserApp(
             isAdHideSlotsEnabled = {
                 store.adBlockEnabled && store.adHideSlots
             },
-            onBlockedRequest = { store.noteBlocked() }
+            onBlockedRequest = { store.noteBlocked() },
+            autoReaderProvider = { finishedUrl ->
+                // Per-site reader memory (v0.73.0): only WebView
+                // tabs ever consult this (their onPageFinished is
+                // the only caller). Incognito tabs neither read nor
+                // write the list — the same rule as desktop memory —
+                // and reader mode needs JavaScript, so the global
+                // disable-JavaScript switch vetoes it too (the menu
+                // item refuses with an explanation in that state;
+                // silently staying out is the honest auto behaviour).
+                !incognito && !store.disableJavaScript &&
+                    isReaderHost(hostOf(finishedUrl), readerSites.toSet())
+            }
         )
         created = tab
         return tab
@@ -1304,6 +1330,27 @@ fun BrowserApp(
     fun removeDesktopSite(domain: String) {
         store.removeDesktopSite(domain)
         desktopSites.remove(domain)
+    }
+
+    fun addReaderSite(domain: String) {
+        store.addReaderSite(domain)
+        if (domain !in readerSites) readerSites.add(domain)
+    }
+
+    fun removeReaderSite(domain: String) {
+        store.removeReaderSite(domain)
+        readerSites.remove(domain)
+    }
+
+    /**
+     * Forget the reader-mode memory covering [host]: every stored
+     * entry this host belongs to (the host itself may have been
+     * remembered through a parent domain) is removed. Twin of
+     * [removeDesktopMemoryForHost].
+     */
+    fun removeReaderMemoryForHost(host: String) {
+        readerSites.filter { hostMatchesSite(host, it) }
+            .forEach { removeReaderSite(it) }
     }
 
     /**
@@ -1771,7 +1818,8 @@ fun BrowserApp(
             ),
             compatSites = store.loadCompatSites().sorted(),
             desktopSites = store.loadDesktopSites().sorted(),
-            bookmarkFolders = allBookmarkFolders(bookmarks, bookmarkFolders)
+            bookmarkFolders = allBookmarkFolders(bookmarks, bookmarkFolders),
+            readerSites = store.loadReaderSites().sorted()
         )
         val fileName = "tuxunbrowse-backup.json"
         try {
@@ -1931,6 +1979,14 @@ fun BrowserApp(
                 addedDesktop++
             }
         }
+        // Reader-mode sites merge the same way (union, v0.73.0).
+        var addedReader = 0
+        data.readerSites.forEach { domain ->
+            if (domain !in readerSites) {
+                addReaderSite(domain)
+                addedReader++
+            }
+        }
         // Bookmark folder names merge the same way (union,
         // v0.72.0): a restore must never delete a folder the user
         // made on this device. (Folders of the imported bookmarks
@@ -1945,7 +2001,7 @@ fun BrowserApp(
         }
         if (addedFolders > 0) store.saveBookmarkFolders(bookmarkFolders)
         if (data.settings.overwriteSummary().isNotEmpty() ||
-            addedCompat > 0 || addedDesktop > 0
+            addedCompat > 0 || addedDesktop > 0 || addedReader > 0
         ) {
             // The store was just rewritten behind the settings
             // page's back: sync this level's search-engine mirror at
@@ -1961,6 +2017,7 @@ fun BrowserApp(
             "阅读列表 +$addedReading 条、快捷方式 +$addedDials 条" +
             (if (addedCompat > 0) "、兼容名单 +$addedCompat 个" else "") +
             (if (addedDesktop > 0) "、桌面模式站点 +$addedDesktop 个" else "") +
+            (if (addedReader > 0) "、阅读模式站点 +$addedReader 个" else "") +
             (if (addedFolders > 0) "、书签文件夹 +$addedFolders 个" else "")
     }
 
@@ -1990,6 +2047,64 @@ fun BrowserApp(
                 android.widget.Toast.LENGTH_LONG
             ).show()
         }
+    }
+
+    // Incoming share (v0.73.0): another app handed us text and the
+    // user decides what happens — open it, save its URL to the
+    // reading list, or drop it. Nothing runs before this choice,
+    // and dismissing the dialog is the same as cancelling.
+    val shareText = pendingShareText
+    if (shareText != null) {
+        val sharedUrl = extractFirstWebUrl(shareText)
+        AlertDialog(
+            onDismissRequest = { pendingShareText = null },
+            title = { Text("收到一段分享内容") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(shareText)
+                    if (sharedUrl != null) {
+                        Text(
+                            "\n里面找到的网址：$sharedUrl",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Text(
+                            "\n里面没有现成的网址，点「打开」会按输入内容打开或搜索。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    pendingShareText = null
+                    openSharedText(shareText)
+                }) {
+                    Text("打开")
+                }
+            },
+            dismissButton = {
+                Row {
+                    if (sharedUrl != null) {
+                        TextButton(onClick = {
+                            pendingShareText = null
+                            saveSharedUrlToReadingList(sharedUrl)
+                        }) {
+                            Text("存入阅读列表")
+                        }
+                    }
+                    TextButton(onClick = { pendingShareText = null }) {
+                        Text("取消")
+                    }
+                }
+            }
+        )
     }
 
     // Backup import confirmation: lists merge (duplicates skipped),
@@ -2579,6 +2694,81 @@ fun BrowserApp(
         }
     }
 
+    /**
+     * Open [url] in a brand-new normal tab (v0.73.0, for the share
+     * dialog's "open" choice). Goes through the same v0.31.0
+     * inbound gate as openUrl — the refusal is identical — but a
+     * share must never hijack the page the user is currently
+     * reading, so it gets its own tab instead of reusing the
+     * active one. Engine choice still flows through newTab, so a
+     * compat-listed host lands on WebView exactly as with openUrl.
+     */
+    fun openUrlInNewTab(url: String) {
+        if (!isAllowedPageUrl(url)) {
+            android.widget.Toast.makeText(
+                context,
+                "这个链接打不开：只支持打开 http 或 https 开头的网址",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        newTab(store.mainEngine, false, url)
+        screen = Screen.BROWSER
+    }
+
+    /** The share dialog's "open" choice (v0.73.0). */
+    fun openSharedText(text: String) {
+        val url = extractFirstWebUrl(text)
+        when {
+            url != null -> openUrlInNewTab(url)
+            // No URL inside: the text itself is the input. A blocked
+            // scheme is refused with the same message as everywhere
+            // else; anything else goes through resolveInput, so
+            // words become a search and a bare host becomes a site.
+            hasBlockedPageScheme(text) -> android.widget.Toast.makeText(
+                context,
+                "这个链接打不开：只支持打开 http 或 https 开头的网址",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            else -> openUrlInNewTab(
+                resolveInput(text, store.searchEngine, store.customSearchTemplate)
+            )
+        }
+    }
+
+    /** The share dialog's "save to reading list" choice (v0.73.0). */
+    fun saveSharedUrlToReadingList(url: String) {
+        if (readingList.any { it.url == url }) {
+            android.widget.Toast.makeText(
+                context, "这篇文章已经在阅读列表里了",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        readingList.add(
+            0,
+            ReadingItem(url, url, System.currentTimeMillis(), false)
+        )
+        // Same 200-entry cap as the in-browser add path.
+        while (readingList.size > 200) {
+            readingList.removeAt(readingList.lastIndex)
+        }
+        store.saveReadingList(readingList)
+        android.widget.Toast.makeText(
+            context, "已存入阅读列表",
+            android.widget.Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    // Shared text waits for the session to be ready, then asks the
+    // user what to do with it — it is never opened on its own.
+    LaunchedEffect(sharedText, startupDone) {
+        if (startupDone && sharedText != null) {
+            pendingShareText = sharedText
+            onSharedTextConsumed()
+        }
+    }
+
     BackHandler(enabled = fullscreenView != null) {
         activeTab()?.exitFullscreen()
         fullscreenView = null
@@ -2746,6 +2936,53 @@ fun BrowserApp(
                             android.widget.Toast.LENGTH_LONG
                         ).show()
                         else -> tab.enterReaderMode()
+                    }
+                },
+                readerSiteRemembered = current?.let {
+                    !it.incognito && it.engine == Engine.WEBVIEW &&
+                        isReaderHost(hostOf(it.url), readerSites.toSet())
+                } ?: false,
+                onToggleReaderSiteMemory = { enabled ->
+                    val tab = activeTab() ?: return@BrowserScreen
+                    // The menu only offers this on a normal WebView
+                    // tab; these guards are the second line of
+                    // defence so no other caller can write the list
+                    // from an incognito or Gecko tab either.
+                    when {
+                        tab.isHome -> android.widget.Toast.makeText(
+                            context, "先打开一个网页再设置",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                        tab.incognito -> android.widget.Toast.makeText(
+                            context, "无痕标签里不会记住网站设置",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                        tab.engine == Engine.GECKO -> android.widget.Toast.makeText(
+                            context,
+                            "阅读模式暂时只支持系统 WebView 标签，火狐标签可以先切换内核再开",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                        else -> {
+                            val host = hostOf(tab.url)
+                            if (host == null) {
+                                android.widget.Toast.makeText(
+                                    context, "这个页面没有可记住的网站地址",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            } else if (enabled) {
+                                addReaderSite(host)
+                                android.widget.Toast.makeText(
+                                    context, "已记住：这个网站会自动用阅读模式打开",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            } else {
+                                removeReaderMemoryForHost(host)
+                                android.widget.Toast.makeText(
+                                    context, "已取消这个网站的阅读模式记忆",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
                     }
                 },
                 onPrintPage = {
@@ -3083,6 +3320,7 @@ fun BrowserApp(
             },
             onRemoveCompatSite = { removeCompatSite(it) },
             onRemoveDesktopSite = { removeDesktopSite(it) },
+            onRemoveReaderSite = { removeReaderSite(it) },
             onClearDesktopSites = { clearDesktopSites() },
             onOpenClearData = { screen = Screen.CLEAR_DATA },
             onExportBackup = { exportBackup() },
@@ -5305,6 +5543,8 @@ private fun BrowserScreen(
     chromeHidden: Boolean,
     onExitFullscreen: () -> Unit,
     onToggleReaderMode: () -> Unit,
+    readerSiteRemembered: Boolean = false,
+    onToggleReaderSiteMemory: (Boolean) -> Unit = {},
     onPrintPage: () -> Unit,
     onOpenSniffer: () -> Unit,
     onScreenshot: () -> Unit,
@@ -5685,6 +5925,42 @@ private fun BrowserScreen(
                             },
                             onClick = { showMenu = false; onToggleReaderMode() }
                         )
+                        // Per-site reader memory (v0.73.0): shown
+                        // only where it can actually be written —
+                        // a real page (not home), a normal tab (not
+                        // incognito: incognito never writes the list,
+                        // the same rule as the other per-site
+                        // memories), and a WebView tab (reader mode
+                        // itself is WebView-only; a Gecko tab keeps
+                        // the plain "阅读模式" item above, whose tap
+                        // already explains the limitation).
+                        if (activeTab?.isHome != true &&
+                            activeTab?.incognito != true &&
+                            activeTab?.engine == Engine.WEBVIEW
+                        ) {
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text("本站总是用阅读模式")
+                                    Text(
+                                        "打开后，这个网站的页面加载完会自动进入阅读模式；关掉就取消记住",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Filled.MenuBook, contentDescription = null)
+                            },
+                            trailingIcon = {
+                                Switch(
+                                    checked = readerSiteRemembered,
+                                    onCheckedChange = { onToggleReaderSiteMemory(it) }
+                                )
+                            },
+                            onClick = { onToggleReaderSiteMemory(!readerSiteRemembered) }
+                        )
+                        }
                         // The home tab has no site and no engine:
                         // a desktop-mode switch there flips a state
                         // that can never take effect, so the item is
@@ -10449,6 +10725,7 @@ private fun SettingsScreen(
     onClearHistory: () -> Unit,
     onRemoveCompatSite: (String) -> Unit,
     onRemoveDesktopSite: (String) -> Unit = {},
+    onRemoveReaderSite: (String) -> Unit = {},
     onClearDesktopSites: () -> Unit = {},
     onOpenClearData: () -> Unit,
     onExportBackup: () -> Unit = {},
@@ -10522,6 +10799,7 @@ private fun SettingsScreen(
     BackHandler(enabled = settingsPage == "home") { onBack() }
     var compatList by remember(refreshTick) { mutableStateOf(store.loadCompatSites().sorted()) }
     var desktopList by remember(refreshTick) { mutableStateOf(store.loadDesktopSites().sorted()) }
+    var readerList by remember(refreshTick) { mutableStateOf(store.loadReaderSites().sorted()) }
     var showClearDesktopConfirm by remember { mutableStateOf(false) }
     var showCleared by remember { mutableStateOf(false) }
     var defaultTick by remember { mutableStateOf(0) }
@@ -10977,6 +11255,36 @@ private fun SettingsScreen(
                     TextButton(onClick = { showClearDesktopConfirm = true }) {
                         Text("清空全部桌面模式站点")
                     }
+                }
+            }
+            item {
+                Text("阅读模式记住的网站", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "这些网站在系统 WebView 标签里打开时，页面加载完会自动进入阅读模式。删掉某个网站，它就恢复成普通打开。阅读模式只支持系统 WebView，火狐标签不会自动进入。",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            if (readerList.isEmpty()) {
+                item {
+                    Text(
+                        "还没有。在系统 WebView 标签里打开某个网站，点右上角菜单打开「本站总是用阅读模式」，那个网站就会记到这里。",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            } else {
+                items(readerList, key = { it }) { site ->
+                    ListItem(
+                        headlineContent = { Text(site) },
+                        trailingContent = {
+                            IconButton(onClick = {
+                                onRemoveReaderSite(site)
+                                readerList = readerList - site
+                            }) {
+                                Icon(Icons.Filled.Delete, contentDescription = "删除阅读模式记忆")
+                            }
+                        }
+                    )
+                    HorizontalDivider()
                 }
             }
             }

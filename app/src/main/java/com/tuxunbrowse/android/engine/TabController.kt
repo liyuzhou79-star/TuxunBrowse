@@ -618,7 +618,15 @@ class BrowserTab(
     // Fired from the exact same code path that increments the
     // per-page blocked counter, so the lifetime total in the Store
     // can never drift from the per-page numbers.
-    private val onBlockedRequest: () -> Unit = {}
+    private val onBlockedRequest: () -> Unit = {},
+    // Whether a just-finished WebView page should drop straight
+    // into reader mode (v0.73.0 per-site reader memory). Consulted
+    // only from onPageFinished, which is a WebView-only callback,
+    // so Gecko tabs can never auto-enter — matching the rule that
+    // reader mode itself is WebView-only. The app side folds the
+    // site list, the incognito flag and the disable-JavaScript
+    // switch into this one answer.
+    private val autoReaderProvider: (String) -> Boolean = { false }
 ) {
     val id: Int = nextTabId++
     var url by mutableStateOf(startUrl)
@@ -687,7 +695,17 @@ class BrowserTab(
      * (a light reader page forced dark, a dark one darkened twice).
      * It is restored from the provider on exit / next page finish.
      */
+    /**
+     * The page the user just exited reader mode on (v0.73.0).
+     * Exiting reloads the original page, and that reload's
+     * onPageFinished must not auto-enter reader mode again or the
+     * exit button would look broken. Cleared as soon as a different
+     * URL finishes loading, and by a manual enterReaderMode.
+     */
+    private var readerSuppressedUrl: String? = null
+
     fun enterReaderMode() {
+        readerSuppressedUrl = null
         val view = webView ?: return
         setAlgorithmicDarkening(false)
         view.evaluateJavascript(
@@ -723,6 +741,9 @@ class BrowserTab(
     }
 
     fun exitReaderMode() {
+        // The reload below lands on this same URL; remember it so
+        // the per-site auto-reader does not immediately re-enter.
+        readerSuppressedUrl = url
         readerActive = false
         // Restore the web-dark setting before the reload repaints the
         // original page (enterReaderMode turned darkening off).
@@ -1736,6 +1757,19 @@ class BrowserTab(
                     } catch (t: Throwable) {
                         // Injection is best-effort only.
                     }
+                }
+                // Per-site reader memory (v0.73.0): a remembered
+                // site drops straight into reader mode once its
+                // page has finished loading, through the exact same
+                // enterReaderMode path as the menu item. The one
+                // exception is the reload caused by the user just
+                // exiting reader mode on this very page — honour
+                // that exit instead of bouncing straight back in.
+                if (u == readerSuppressedUrl) {
+                    // Just exited here; stay out for this load.
+                } else {
+                    readerSuppressedUrl = null
+                    if (autoReaderProvider(u)) enterReaderMode()
                 }
             }
         }

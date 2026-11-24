@@ -22,6 +22,15 @@ class MainActivity : ComponentActivity() {
     private var externalUrl by mutableStateOf<String?>(null)
 
     /**
+     * Text another app shared to us (ACTION_SEND, v0.73.0). Kept
+     * apart from [externalUrl] on purpose: a VIEW intent is a link
+     * to open at once, while shared text is a question — BrowserApp
+     * shows a dialog and lets the user choose open / save / cancel,
+     * and the text may not even contain a URL.
+     */
+    private var sharedText by mutableStateOf<String?>(null)
+
+    /**
      * The one theme-mode state the whole activity reads: MainActivity
      * picks the colour scheme from it and BrowserApp's settings page
      * writes it (through the callback below), so changing the setting
@@ -39,6 +48,7 @@ class MainActivity : ComponentActivity() {
         externalUrl = intent?.dataString?.takeIf {
             it.startsWith("http://") || it.startsWith("https://")
         }
+        sharedText = extractSharedText(intent)
         setContent {
             val darkTheme = when (themeMode) {
                 ThemeMode.SYSTEM -> isSystemInDarkTheme()
@@ -59,6 +69,8 @@ class MainActivity : ComponentActivity() {
                 BrowserApp(
                     initialUrl = externalUrl,
                     onInitialUrlConsumed = { externalUrl = null },
+                    sharedText = sharedText,
+                    onSharedTextConsumed = { sharedText = null },
                     onThemeModeChanged = { themeMode = it }
                 )
             }
@@ -71,5 +83,18 @@ class MainActivity : ComponentActivity() {
         externalUrl = intent.dataString?.takeIf {
             it.startsWith("http://") || it.startsWith("https://")
         }
+        extractSharedText(intent)?.let { sharedText = it }
+    }
+
+    /**
+     * The text of an ACTION_SEND share (text/plain only, matching
+     * the manifest filter), or null for any other intent. Blank
+     * shares count as no share at all.
+     */
+    private fun extractSharedText(intent: Intent?): String? {
+        if (intent?.action != Intent.ACTION_SEND) return null
+        if (intent.type != "text/plain") return null
+        return intent.getStringExtra(Intent.EXTRA_TEXT)
+            ?.takeIf { it.isNotBlank() }
     }
 }

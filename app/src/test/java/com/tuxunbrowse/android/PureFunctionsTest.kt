@@ -26,6 +26,8 @@ import com.tuxunbrowse.android.data.bookmarksFromHtml
 import com.tuxunbrowse.android.data.compareVersionNames
 import com.tuxunbrowse.android.data.pruneBlockedDaily
 import com.tuxunbrowse.android.data.recentBlockedSeries
+import com.tuxunbrowse.android.data.extractFirstWebUrl
+import com.tuxunbrowse.android.data.isReaderHost
 import com.tuxunbrowse.android.data.isUrlLikeInput
 import com.tuxunbrowse.android.data.matchSuggestions
 import com.tuxunbrowse.android.data.resolveInput
@@ -812,5 +814,140 @@ class BookmarkFolderJsonCompatTest {
         val data = parseBackup(raw)
         assertTrue(data != null)
         assertEquals(listOf("正常"), data!!.bookmarkFolders)
+    }
+}
+
+/**
+ * v0.73.0: extracting the first web URL out of shared text. The
+ * share dialog's three choices all hinge on this — a found URL is
+ * opened directly / offered for the reading list, no URL means the
+ * text is treated as words to search for.
+ */
+class ExtractFirstWebUrlTest {
+
+    @Test
+    fun nullBlankAndPlainTextHaveNoUrl() {
+        assertEquals(null, extractFirstWebUrl(null))
+        assertEquals(null, extractFirstWebUrl(""))
+        assertEquals(null, extractFirstWebUrl("   "))
+        assertEquals(null, extractFirstWebUrl("只是一段没有网址的文字"))
+        assertEquals(null, extractFirstWebUrl("看看 example.com 这个站"))
+    }
+
+    @Test
+    fun bareUrlIsExtractedAsIs() {
+        assertEquals(
+            "https://example.com/a?b=1",
+            extractFirstWebUrl("https://example.com/a?b=1")
+        )
+        assertEquals(
+            "http://example.com",
+            extractFirstWebUrl("http://example.com")
+        )
+    }
+
+    @Test
+    fun urlBuriedInBlurbIsFound() {
+        assertEquals(
+            "https://news.example/story/42",
+            extractFirstWebUrl("这篇文章不错：正文摘要…… https://news.example/story/42 快看")
+        )
+    }
+
+    @Test
+    fun firstUrlWinsWhenSeveralAreShared() {
+        assertEquals(
+            "https://first.example/1",
+            extractFirstWebUrl("https://first.example/1 和 https://second.example/2")
+        )
+    }
+
+    @Test
+    fun gluedOnPunctuationIsTrimmed() {
+        assertEquals(
+            "https://example.com/x",
+            extractFirstWebUrl("链接是这个（https://example.com/x）。")
+        )
+        assertEquals(
+            "https://example.com/y",
+            extractFirstWebUrl("看这里: https://example.com/y, 很好")
+        )
+    }
+
+    @Test
+    fun schemeOnlyIsNotAUrl() {
+        assertEquals(null, extractFirstWebUrl("https:// 后面什么都没有"))
+    }
+}
+
+/**
+ * v0.73.0: the per-site reader-mode memory matches hosts with the
+ * same rule as the compat/desktop lists — the site itself and its
+ * subdomains match, unrelated and parent hosts do not.
+ */
+class ReaderHostMatchTest {
+
+    private val sites = setOf("example.com", "news.site.cn")
+
+    @Test
+    fun exactAndSubdomainMatch() {
+        assertTrue(isReaderHost("example.com", sites))
+        assertTrue(isReaderHost("www.example.com", sites))
+        assertTrue(isReaderHost("a.b.example.com", sites))
+        assertTrue(isReaderHost("news.site.cn", sites))
+    }
+
+    @Test
+    fun unrelatedParentAndLookalikeDoNotMatch() {
+        assertFalse(isReaderHost("other.com", sites))
+        assertFalse(isReaderHost("site.cn", sites))
+        assertFalse(isReaderHost("notexample.com", sites))
+        assertFalse(isReaderHost("example.com.evil.com", sites))
+    }
+
+    @Test
+    fun blankInputsNeverMatch() {
+        assertFalse(isReaderHost(null, sites))
+        assertFalse(isReaderHost("", sites))
+        assertFalse(isReaderHost("example.com", emptySet()))
+    }
+
+    @Test
+    fun readerSitesSurviveBackupRoundTrip() {
+        val json = backupToJson(
+            emptyList(), emptyList(), emptyList(), emptyList(),
+            BackupSettings(),
+            readerSites = listOf("example.com", "news.site.cn")
+        )
+        val data = parseBackup(json)
+        assertTrue(data != null)
+        assertEquals(
+            listOf("example.com", "news.site.cn"), data!!.readerSites
+        )
+    }
+
+    @Test
+    fun backupWithoutReaderSitesParsesAsEmpty() {
+        // A backup written before v0.73.0 has no readerSites key at
+        // all; it must still parse, with an empty list.
+        val raw = """
+            {"format":"tuxunbrowse-backup","version":1,"bookmarks":[]}
+        """.trimIndent()
+        val data = parseBackup(raw)
+        assertTrue(data != null)
+        assertEquals(emptyList<String>(), data!!.readerSites)
+    }
+
+    @Test
+    fun backupReaderSitesAreSanitizedOnParse() {
+        val raw = """
+            {"format":"tuxunbrowse-backup","version":1,
+             "bookmarks":[],
+             "readerSites":[" OK.example ","https://bad.example/x","",
+                            "ok.example","has space.example"]}
+        """.trimIndent()
+        val data = parseBackup(raw)
+        assertTrue(data != null)
+        assertEquals(listOf("ok.example"), data!!.readerSites)
     }
 }

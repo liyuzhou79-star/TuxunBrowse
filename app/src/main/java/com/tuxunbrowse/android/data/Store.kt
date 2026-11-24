@@ -705,6 +705,45 @@ fun isDesktopHost(host: String?, sites: Set<String>): Boolean {
     return sites.any { site -> hostMatchesSite(host, site) }
 }
 
+/**
+ * True when [host] is a remembered reader-mode site or a subdomain
+ * of one (v0.73.0). Same shared host-matching rule as the compat
+ * and desktop lists, so "this site" means the same thing for all
+ * three per-site memories.
+ */
+fun isReaderHost(host: String?, sites: Set<String>): Boolean {
+    if (host.isNullOrBlank()) return false
+    return sites.any { site -> hostMatchesSite(host, site) }
+}
+
+private val SHARED_URL_REGEX = Regex("https?://\\S+")
+
+/**
+ * Trailing characters that share-sheet text commonly glues onto the
+ * end of a URL (sentence punctuation, closing brackets and quotes,
+ * in both ASCII and CJK forms). They are trimmed off the end of an
+ * extracted URL; a real URL path never ends in these in practice,
+ * and keeping them would break the link.
+ */
+private const val SHARED_URL_TRAILING = ".,;:!?)]}>，。；：！？、）】」』\"'"
+
+/**
+ * The first http(s) URL inside an arbitrary shared text (v0.73.0),
+ * or null when the text carries none. Other apps share a page as
+ * "title + blurb + URL" more often than as a bare URL, so the share
+ * dialog works off this extraction: when it finds a URL, "open"
+ * goes straight to it and "save to reading list" is offered; when
+ * it finds none, the whole text is treated as words to search for.
+ * Only the FIRST URL is taken — a share is about one page.
+ */
+fun extractFirstWebUrl(text: String?): String? {
+    if (text.isNullOrBlank()) return null
+    val raw = SHARED_URL_REGEX.find(text)?.value ?: return null
+    val trimmed = raw.trimEnd { it in SHARED_URL_TRAILING }
+    return trimmed.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+        ?.takeIf { it.length > "https://".length }
+}
+
 /** How many days of per-day blocked counts are kept (v0.70.0). */
 const val BLOCKED_DAILY_KEEP_DAYS = 31
 
@@ -804,6 +843,7 @@ val SETTINGS_SEARCH_INDEX: List<SettingsIndexEntry> = listOf(
     SettingsIndexEntry("获取联网搜索建议", "engine", "内核与搜索引擎"),
     SettingsIndexEntry("兼容模式记住的网站", "engine", "内核与搜索引擎"),
     SettingsIndexEntry("桌面模式站点", "engine", "内核与搜索引擎"),
+    SettingsIndexEntry("阅读模式记住的网站", "engine", "内核与搜索引擎"),
     SettingsIndexEntry("清空全部桌面模式站点", "engine", "内核与搜索引擎"),
     SettingsIndexEntry("默认浏览器", "engine", "内核与搜索引擎"),
     SettingsIndexEntry("重新检测默认浏览器状态", "engine", "内核与搜索引擎"),
@@ -1198,6 +1238,36 @@ class Store(context: Context) {
         prefs.edit().putString(KEY_DESKTOP_SITES, arr.toString()).apply()
     }
 
+    // Reader-mode sites (v0.73.0): hosts the user asked to always
+    // open in reader mode. Stored exactly like the compat/desktop
+    // lists — a JSON array of plain host names — and matched with
+    // the same shared hostMatchesSite rule (see isReaderHost).
+    fun loadReaderSites(): MutableSet<String> {
+        val raw = safeString(KEY_READER_SITES, null) ?: return mutableSetOf()
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).map { arr.getString(it) }.toMutableSet()
+        } catch (e: Exception) {
+            mutableSetOf()
+        }
+    }
+
+    fun addReaderSite(domain: String) {
+        val sites = loadReaderSites()
+        if (sites.add(domain)) saveReaderSites(sites)
+    }
+
+    fun removeReaderSite(domain: String) {
+        val sites = loadReaderSites()
+        if (sites.remove(domain)) saveReaderSites(sites)
+    }
+
+    private fun saveReaderSites(sites: Set<String>) {
+        val arr = JSONArray()
+        sites.forEach { arr.put(it) }
+        prefs.edit().putString(KEY_READER_SITES, arr.toString()).apply()
+    }
+
     fun loadBookmarks(): MutableList<Bookmark> = readList(KEY_BOOKMARKS) {
         // folder (v0.72.0): optString yields "" when the key is
         // absent, so archives written before folders existed load
@@ -1378,6 +1448,7 @@ class Store(context: Context) {
         private const val KEY_SEARCH_SUGGESTIONS = "search_suggestions"
         private const val KEY_COMPAT_SITES = "compat_sites"
         private const val KEY_DESKTOP_SITES = "desktop_sites"
+        private const val KEY_READER_SITES = "reader_sites"
         private const val KEY_BOOKMARKS = "bookmarks"
         private const val KEY_BOOKMARK_FOLDERS = "bookmark_folders"
         private const val KEY_BOOKMARK_SORT_ORDER = "bookmark_sort_order"
@@ -1520,7 +1591,14 @@ data class BackupData(
      * no bookmark derives. Merges (union) on import, like the two
      * site lists. Empty when the backup predates v0.72.0.
      */
-    val bookmarkFolders: List<String> = emptyList()
+    val bookmarkFolders: List<String> = emptyList(),
+    /**
+     * Per-site reader-mode list (v0.73.0). Same treatment as the
+     * compat/desktop lists: merges (union) on import. Empty when
+     * the backup predates v0.73.0. Purely additive optional field,
+     * so the backup format version stays 1 (the v0.51.0 rule).
+     */
+    val readerSites: List<String> = emptyList()
 )
 
 /** Serialize a full backup (lists + main settings) to one JSON text. */
@@ -1532,7 +1610,8 @@ fun backupToJson(
     settings: BackupSettings,
     compatSites: List<String> = emptyList(),
     desktopSites: List<String> = emptyList(),
-    bookmarkFolders: List<String> = emptyList()
+    bookmarkFolders: List<String> = emptyList(),
+    readerSites: List<String> = emptyList()
 ): String {
     val bookmarkArr = JSONArray()
     bookmarks.forEach {
@@ -1594,6 +1673,8 @@ fun backupToJson(
     compatSites.forEach { compatArr.put(it) }
     val desktopArr = JSONArray()
     desktopSites.forEach { desktopArr.put(it) }
+    val readerArr = JSONArray()
+    readerSites.forEach { readerArr.put(it) }
     val folderArr = JSONArray()
     bookmarkFolders.map { it.trim() }.filter { it.isNotEmpty() }
         .distinct().forEach { folderArr.put(it) }
@@ -1606,6 +1687,7 @@ fun backupToJson(
         .put("speedDials", dialArr)
         .put("compatSites", compatArr)
         .put("desktopSites", desktopArr)
+        .put("readerSites", readerArr)
         .put("bookmarkFolders", folderArr)
         .put("settings", settingsObj)
         .toString(2)
@@ -1794,9 +1876,25 @@ fun parseBackup(raw: String): BackupData? {
             name.takeIf { it.isNotEmpty() && it.length <= 60 }
         }.distinct()
     }
+    // Reader-mode sites (v0.73.0): same plain-host-name guard as
+    // the desktop list above. Absent in older backups: empty list.
+    val readerArr = obj.optJSONArray("readerSites")
+    val readerSites = if (readerArr == null) {
+        emptyList()
+    } else {
+        val count = minOf(readerArr.length(), MAX_IMPORT_ENTRIES)
+        (0 until count).mapNotNull { i ->
+            val host = readerArr.optString(i).trim().lowercase()
+            host.takeIf {
+                it.isNotEmpty() && it.length <= 253 &&
+                    !it.contains("://") && !it.contains("/") &&
+                    !it.contains(":") && it.none { c -> c.isWhitespace() }
+            }
+        }.distinct()
+    }
     return BackupData(
         bookmarks, history, reading, dials, settings, compatSites,
-        desktopSites, bookmarkFolders
+        desktopSites, bookmarkFolders, readerSites
     )
 }
 

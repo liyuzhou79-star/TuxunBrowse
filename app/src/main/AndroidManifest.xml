@@ -37,6 +37,15 @@
                 <data android:scheme="http" />
                 <data android:scheme="https" />
             </intent-filter>
+            <!-- Receive text other apps share (v0.73.0): the app
+                 asks the user what to do with it (open / save to
+                 the reading list / cancel) and never opens it
+                 on its own. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
         </activity>
     </application>
 
