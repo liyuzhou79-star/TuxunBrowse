@@ -7209,10 +7209,24 @@ private fun HistoryScreen(
     var siteDeleteTarget by remember {
         mutableStateOf<Pair<String, Int>?>(null)
     }
-    val filtered = if (query.isBlank()) {
+    // "Only this site" filter (v0.65.0): page-local state, never
+    // persisted — same precedent as the downloads-page search
+    // (v0.64.0). The pipeline is settled in ONE place, in this
+    // order: site filter first (the shared hostMatchesSite rule —
+    // the site itself plus its subdomains, exactly the rule
+    // "delete this site's history" uses), then the search filter,
+    // then the date bucketing below reads only the final list, so
+    // group counts always describe what is actually shown.
+    var siteFilter by remember { mutableStateOf<String?>(null) }
+    val siteFiltered = if (siteFilter == null) {
         history
     } else {
-        history.filter {
+        history.filter { hostMatchesSite(hostOf(it.url), siteFilter!!) }
+    }
+    val filtered = if (query.isBlank()) {
+        siteFiltered
+    } else {
+        siteFiltered.filter {
             it.title.contains(query, ignoreCase = true) ||
                 it.url.contains(query, ignoreCase = true)
         }
@@ -7281,12 +7295,53 @@ private fun HistoryScreen(
                 }
                 item {
                     OutlinedButton(
-                        onClick = onClear,
+                        onClick = {
+                            // Clearing everything also drops the
+                            // site filter (v0.65.0): nothing is left
+                            // for it to filter.
+                            siteFilter = null
+                            onClear()
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 8.dp)
                     ) {
                         Text("清除全部历史")
+                    }
+                }
+            }
+            // Active site-filter chip (v0.65.0): official AssistChip
+            // under the search field, same shape as the clipboard
+            // hint; the close button clears the filter and restores
+            // the full list. It can coexist with a search query —
+            // the two filters stack in the pipeline above.
+            val activeSiteFilter = siteFilter
+            if (activeSiteFilter != null && history.isNotEmpty()) {
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        AssistChip(
+                            onClick = { },
+                            label = {
+                                Text(
+                                    "只看 $activeSiteFilter 的记录",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = { siteFilter = null }) {
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = "关闭只看本站筛选"
+                            )
+                        }
                     }
                 }
             }
@@ -7296,7 +7351,17 @@ private fun HistoryScreen(
                 }
             } else if (filtered.isEmpty()) {
                 item {
-                    EmptyState(Icons.Filled.Search, "没有找到相关的历史记录。")
+                    EmptyState(
+                        Icons.Filled.Search,
+                        // With only the site filter active, an empty
+                        // list means that site has no records left —
+                        // not that there is no history at all.
+                        if (siteFilter != null && query.isBlank()) {
+                            "这个网站暂时没有记录。"
+                        } else {
+                            "没有找到相关的历史记录。"
+                        }
+                    )
                 }
             }
             groups.forEach { (bucket, bucketItems) ->
@@ -7407,6 +7472,19 @@ private fun HistoryScreen(
                         item {
                             ListItem(
                                 headlineContent = {
+                                    Text("只看这个网站的记录")
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        menuItem = null
+                                        siteFilter = siteHost
+                                    }
+                            )
+                        }
+                        item {
+                            ListItem(
+                                headlineContent = {
                                     Text("删除本站全部记录")
                                 },
                                 modifier = Modifier
@@ -7459,6 +7537,18 @@ private fun HistoryScreen(
                 Button(onClick = {
                     siteDeleteTarget = null
                     onDeleteSite(host)
+                    // Settled rule (v0.65.0): when the site being
+                    // viewed through the "only this site" filter is
+                    // deleted wholesale, the filter clears itself —
+                    // the site's records are gone, so leaving the
+                    // filter on would strand the user on an empty
+                    // list they must dismiss by hand. Deleting a
+                    // single entry never touches the filter.
+                    if (siteFilter != null &&
+                        hostMatchesSite(siteFilter, host)
+                    ) {
+                        siteFilter = null
+                    }
                 }) { Text("删除") }
             },
             dismissButton = {
