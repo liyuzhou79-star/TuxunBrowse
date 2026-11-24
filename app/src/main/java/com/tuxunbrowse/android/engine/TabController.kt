@@ -944,17 +944,34 @@ class BrowserTab(
      * (a light reader page forced dark, a dark one darkened twice).
      * It is restored from the provider on exit / next page finish.
      */
-    fun enterReaderMode() {
-        val view = webView ?: return
+    fun enterReaderMode(onFailed: () -> Unit = {}) {
+        val view = webView
+        if (view == null) {
+            onFailed()
+            return
+        }
         setAlgorithmicDarkening(false)
         view.evaluateJavascript(
             buildReaderJs(
                 readerFontSizeProvider(),
                 readerPaletteFor(readerBackgroundProvider(), appDarkProvider())
-            ),
-            null
-        )
-        readerActive = true
+            )
+        ) { raw ->
+            // The script answers "ok" only after it found a
+            // qualifying block and rewrote the page; "fail" (or no
+            // answer at all) means there is no article to extract,
+            // so the tab stays on the original page: readerActive is
+            // only set on success (v0.116.0 — before this the flag
+            // was set unconditionally and a failed extraction still
+            // switched the tab into a reader state over an
+            // un-extracted or near-empty page).
+            if (raw != null && raw.contains("ok")) {
+                readerActive = true
+            } else {
+                setAlgorithmicDarkening(webDarkProvider())
+                onFailed()
+            }
+        }
     }
 
     /**
@@ -3901,21 +3918,32 @@ private val SNIFF_JS = """
 """
 
 /**
- * Reader mode script (WebView only): pick the element with the most
- * text, keep its HTML, strip scripts/nav/forms, and restyle the page
- * as a clean single column. Reloading the page exits reader mode.
- */
-/**
- * Reader-mode extraction + typesetting (WebView only). The
- * extraction half is unchanged since v0.6.0: pick the element with
- * the most innerText, keep its HTML under the page title, strip
- * scripts/styles/iframes/forms/nav/header/footer/aside, and reflow
- * single-column. The typesetting half is parameterized since
- * v0.58.0: [font] gives the body/heading sizes, [palette] the
- * background/text/link colours, both resolved from the user's
- * reader settings at entry time (see ReaderFontSize /
- * ReaderBackground in the data layer). Line height (1.75), column
- * width (720px) and padding (16px) stay fixed — never settings.
+ * Reader-mode extraction + typesetting (WebView only).
+ *
+ * Extraction (rewritten v0.116.0; v0.6.0–v0.115.0 simply took the
+ * longest-innerText element, which on real pages is the outer page
+ * wrapper): every article/main/section/div candidate is scored by
+ * the exact formula in ReaderScoring.kt — non-link text ×
+ * (1 − link density) × tag weight — the best score sets the bar,
+ * and among candidates reaching 60% of it the one with the smallest
+ * total text (the tightest block holding the article) is kept.
+ * The winner needs at least 200 non-link characters; when nothing
+ * qualifies the script changes NOTHING and answers 'fail', so the
+ * tab stays on the original page instead of opening an empty
+ * reader page. The kept HTML goes under the page title (inserted
+ * as a text node, never parsed as markup), then
+ * scripts/styles/iframes/forms/nav/header/footer/aside and form
+ * controls inside it are stripped, and the result is reflowed
+ * single-column. Images and videos are kept, scaled to the column;
+ * tables stay tables and scroll sideways inside the column rather
+ * than crushing the text (see [readerCss]).
+ *
+ * The typesetting half is parameterized since v0.58.0: [font] gives
+ * the body/heading sizes, [palette] the background/text/link
+ * colours, both resolved from the user's reader settings at entry
+ * time (see ReaderFontSize / ReaderBackground in the data layer).
+ * Line height (1.75), column width (720px) and padding (16px) stay
+ * fixed — never settings.
  *
  * The injected style element carries the fixed id
  * "tuxunbrowse-reader-style" so [buildReaderStyleJs] can find and
@@ -3927,25 +3955,52 @@ private val SNIFF_JS = """
 private fun readerCss(font: ReaderFontSize, palette: ReaderPalette): String =
     "html,body{background:" + palette.background + ";color:" + palette.text + "}" +
         "body{font-family:sans-serif;line-height:1.75;padding:16px;" +
-        "max-width:720px;margin:0 auto;font-size:" + font.bodyPx + "px}" +
+        "max-width:720px;margin:0 auto;font-size:" + font.bodyPx + "px;" +
+        "overflow-wrap:break-word}" +
         "a{color:" + palette.link + "}" +
         "img,video{max-width:100%;height:auto}" +
-        "pre,code{white-space:pre-wrap;word-break:break-word}"
+        "pre,code{white-space:pre-wrap;word-break:break-word}" +
+        "table{display:block;max-width:100%;overflow-x:auto;" +
+        "border-collapse:collapse}"
 
 private fun buildReaderJs(font: ReaderFontSize, palette: ReaderPalette): String =
     """
 (function() {
-  var candidates = document.querySelectorAll('article, main, section, div');
-  var best = null, bestLen = 0;
-  candidates.forEach(function(el) {
-    var t = (el.innerText || '').length;
-    if (t > bestLen) { bestLen = t; best = el; }
+  if (document.getElementById('tuxunbrowse-reader-style')) return 'ok';
+  var els = document.querySelectorAll('article, main, section, div');
+  var feats = [];
+  els.forEach(function(el) {
+    var text = (el.innerText || '');
+    var linkText = 0;
+    el.querySelectorAll('a').forEach(function(a) {
+      linkText += (a.innerText || '').length;
+    });
+    var tag = el.tagName.toLowerCase();
+    var weight = tag === 'article' ? 1.5 : (tag === 'main' ? 1.4 : (tag === 'section' ? 1.1 : 1.0));
+    var nonLink = Math.max(0, text.length - linkText);
+    var density = text.length > 0 ? Math.min(1, Math.max(0, linkText / text.length)) : 1;
+    feats.push({ el: el, textLen: text.length, nonLink: nonLink,
+      score: nonLink * (1 - density) * weight });
   });
-  var pageTitle = document.title || '';
-  var content = best ? best.innerHTML : document.body.innerHTML;
-  document.body.innerHTML =
-    '<h1 style="font-size:""" + font.headingPx + """px;line-height:1.4">' + pageTitle + '</h1>' + content;
-  document.body.querySelectorAll('script,style,iframe,form,nav,header,footer,aside')
+  var best = null;
+  feats.forEach(function(f) { if (!best || f.score > best.score) best = f; });
+  if (!best || best.nonLink < 200) return 'fail';
+  var bar = best.score * 0.6;
+  var pick = null;
+  feats.forEach(function(f) {
+    if (f.score < bar) return;
+    if (!pick || f.textLen < pick.textLen ||
+        (f.textLen === pick.textLen && f.score > pick.score)) pick = f;
+  });
+  if (!pick) return 'fail';
+  var content = pick.el.innerHTML;
+  document.body.innerHTML = content;
+  var h1 = document.createElement('h1');
+  h1.style.fontSize = '""" + font.headingPx + """px';
+  h1.style.lineHeight = '1.4';
+  h1.textContent = document.title || '';
+  document.body.insertBefore(h1, document.body.firstChild);
+  document.body.querySelectorAll('script,style,iframe,form,nav,header,footer,aside,button,select,textarea,input')
     .forEach(function(e) { e.remove(); });
   var st = document.createElement('style');
   st.id = 'tuxunbrowse-reader-style';

@@ -3475,7 +3475,12 @@ fun BrowserApp(
                             android.widget.Toast.LENGTH_LONG
                         ).show()
                         tab.readerActive -> tab.exitReaderMode()
-                        else -> tab.enterReaderMode()
+                        else -> tab.enterReaderMode {
+                            android.widget.Toast.makeText(
+                                context, "这个页面没有找到适合阅读的正文",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        }
                     }
                 },
                 onPrintPage = {
