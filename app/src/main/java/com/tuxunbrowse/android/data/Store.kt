@@ -485,6 +485,18 @@ data class SavedTab(val engine: Engine, val url: String, val desktopMode: Boolea
 const val HOME_URL = "tuxun://home"
 
 /**
+ * Internal URL of the native page-source page (v0.84.0). Same rule
+ * as [HOME_URL]: it names an app-rendered page, and
+ * [com.tuxunbrowse.android.engine.BrowserTab.load] refuses to hand
+ * it to a web engine. The source page itself is app-level UI (it is
+ * not a tab navigation), so it never enters the visit history —
+ * history is recorded only from engine page-finished callbacks for
+ * http(s) URLs — and never enters the saved-tab archive, which
+ * stores tab URLs and is untouched by opening the source page.
+ */
+const val SOURCE_URL = "tuxun://source"
+
+/**
  * Inbound-URL guard (v0.31.0 security audit). Anything that arrives
  * from OUTSIDE the app and is about to be opened as a page — a link
  * handed over by another app, the clipboard hint, a release page URL

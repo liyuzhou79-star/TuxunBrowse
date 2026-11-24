@@ -37,6 +37,7 @@ import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -47,6 +48,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
@@ -175,6 +177,7 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -282,12 +285,32 @@ import com.tuxunbrowse.android.engine.trimAliveLimit
 import com.tuxunbrowse.android.engine.savePageScreenshot
 import com.tuxunbrowse.android.engine.sharePageScreenshot
 import com.tuxunbrowse.android.engine.resolveDownloadFileName
+import com.tuxunbrowse.android.engine.SOURCE_DISPLAY_LIMIT
+import com.tuxunbrowse.android.engine.isSourceTruncated
 import com.tuxunbrowse.android.engine.startSystemDownload
+import com.tuxunbrowse.android.engine.truncateSourceForDisplay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import org.mozilla.geckoview.GeckoSession
 
-private enum class Screen { PICKER, BROWSER, BOOKMARKS, HISTORY, SETTINGS, DOWNLOADS, CLEAR_DATA, SNIFF, READING_LIST }
+private enum class Screen { PICKER, BROWSER, BOOKMARKS, HISTORY, SETTINGS, DOWNLOADS, CLEAR_DATA, SNIFF, READING_LIST, SOURCE }
+
+/**
+ * The page-source page's content (v0.84.0): which tab the source
+ * belongs to, that page's title and URL at fetch time, and the
+ * fetch outcome — [text] null with [failed] false means the fetch
+ * is still running; [failed] true means it came back empty.
+ * App-level state, not a tab property: opening the source page
+ * never navigates the tab, so the tab's URL (and with it the
+ * visit history and the saved-tab archive) is untouched.
+ */
+private data class PageSourceData(
+    val tabId: Int,
+    val title: String,
+    val url: String,
+    val text: String?,
+    val failed: Boolean
+)
 
 /**
  * One recently closed tab, kept in memory only (never on disk) so it
@@ -3107,6 +3130,67 @@ fun BrowserApp(
     }
 
 
+    // Page source (v0.84.0): fetched on demand from the active
+    // WebView tab and shown on the app-level SOURCE screen. The
+    // fetch is asynchronous; the screen renders the loading state
+    // from this state and then the text or the empty state.
+    var pageSource by remember { mutableStateOf<PageSourceData?>(null) }
+    fun fetchPageSource(tab: BrowserTab) {
+        pageSource = PageSourceData(
+            tabId = tab.id,
+            title = tab.title,
+            url = tab.url,
+            text = null,
+            failed = false
+        )
+        tab.fetchPageSource { html ->
+            // A late answer for a tab the user has since replaced
+            // (re-fetched another tab's source) must not overwrite
+            // the newer fetch.
+            val current = pageSource
+            if (current != null && current.tabId == tab.id &&
+                current.text == null && !current.failed
+            ) {
+                pageSource = if (html == null) {
+                    current.copy(failed = true)
+                } else {
+                    current.copy(text = html)
+                }
+            }
+        }
+    }
+    fun openPageSource() {
+        val tab = activeTab() ?: return
+        // BrowserScreen only calls this for a WebView tab on a real
+        // page; the guard is repeated here so no other caller can
+        // land on the source screen with nothing to fetch.
+        if (tab.isHome || tab.engine != Engine.WEBVIEW) return
+        // Same guard as the sniffer (v0.80.0 call site): reading
+        // the source runs a script in the page, so with JavaScript
+        // disabled there is honestly nothing to fetch.
+        if (store.disableJavaScript) {
+            android.widget.Toast.makeText(
+                context,
+                "禁用 JavaScript 还开着，查看源代码需要运行脚本才能取到；先到设置里关掉它再试",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        fetchPageSource(tab)
+        screen = Screen.SOURCE
+    }
+    fun refetchPageSource() {
+        val data = pageSource ?: return
+        val tab = tabs.firstOrNull { it.id == data.tabId }
+        if (tab == null || tab.engine != Engine.WEBVIEW || tab.isHome) {
+            // The tab is gone (or stopped being a WebView page):
+            // say so through the empty state instead of spinning.
+            pageSource = data.copy(text = null, failed = true)
+            return
+        }
+        fetchPageSource(tab)
+    }
+
     BackHandler(enabled = fullscreenView != null) {
         activeTab()?.exitFullscreen()
         fullscreenView = null
@@ -3415,6 +3499,7 @@ fun BrowserApp(
                         }
                     }
                 },
+                onViewSource = { openPageSource() },
                 onScreenshot = {
                     val tab = activeTab()
                     when {
@@ -3818,6 +3903,12 @@ fun BrowserApp(
                     }
                 }
             }
+        )
+
+        Screen.SOURCE -> SourceScreen(
+            data = pageSource,
+            onBack = { screen = Screen.BROWSER },
+            onRefetch = { refetchPageSource() }
         )
 
         Screen.READING_LIST -> ReadingListScreen(
@@ -6157,6 +6248,7 @@ private fun BrowserScreen(
     onToggleReaderSiteMemory: (Boolean) -> Unit = {},
     onPrintPage: () -> Unit,
     onOpenSniffer: () -> Unit,
+    onViewSource: () -> Unit = {},
     onScreenshot: () -> Unit,
     onOpenDownloads: () -> Unit,
     onOpenBookmarks: () -> Unit,
@@ -6386,6 +6478,46 @@ private fun BrowserScreen(
     var showRecentClosed by remember { mutableStateOf(false) }
     var showSiteInfo by remember { mutableStateOf(false) }
     var showMoreTools by remember { mutableStateOf(false) }
+    // View-source on a Gecko tab (v0.84.0): GeckoView has no
+    // channel for handing the page's source to the app, so the
+    // menu item explains that in plain language and offers the
+    // existing switch-engine path instead of pretending.
+    var showGeckoSourceNote by remember { mutableStateOf(false) }
+    fun handleViewSource() {
+        val tab = activeTab
+        when {
+            tab == null || tab.isHome -> android.widget.Toast.makeText(
+                context, "先打开一个网页再看源代码",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+            tab.loadError != null -> android.widget.Toast.makeText(
+                context, "这个网页没打开成功，先重新加载试试",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+            tab.engine == Engine.GECKO -> showGeckoSourceNote = true
+            else -> onViewSource()
+        }
+    }
+    if (showGeckoSourceNote) {
+        AlertDialog(
+            onDismissRequest = { showGeckoSourceNote = false },
+            title = { Text("火狐内核取不到源代码") },
+            text = {
+                Text("火狐内核没有把网页源代码交给应用的通路，这个标签页取不到源码。可以先用系统 WebView 打开这一页，再看源代码。")
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showGeckoSourceNote = false
+                    onOpenInOtherEngine()
+                }) { Text("用 WebView 打开本页") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showGeckoSourceNote = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
     // Long-press on back/forward: this tab's real back/forward stack.
     var navHistory by remember {
         mutableStateOf<Pair<List<NavHistoryEntry>, Int>?>(null)
@@ -6478,6 +6610,19 @@ private fun BrowserScreen(
             !activeTab.isHome && activeTab.canGoBack
     ) {
         activeTab?.goBack()
+    }
+    // Engine-unavailable fallback page (v0.84.0 back audit): the
+    // engine never loaded anything, so web-history back is
+    // meaningless there and the key used to fall through and exit
+    // the app. The fallback page is an app page — back does what
+    // its own "回首页" button does. Declared after web back (it
+    // wins when both could apply) and before the stronger layers
+    // below, so a focused address bar or an open find bar on the
+    // fallback page still gets the key first.
+    BackHandler(
+        enabled = !chromeHidden && activeTab?.engineUnavailable == true
+    ) {
+        onGoHome()
     }
     BackHandler(enabled = !chromeHidden && activeTab?.readerActive == true) {
         onToggleReaderMode()
@@ -7555,6 +7700,20 @@ private fun BrowserScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable { showMoreTools = false; onOpenSniffer() }
+                    )
+                }
+                item {
+                    ListItem(
+                        headlineContent = { Text("查看源代码") },
+                        supportingContent = {
+                            Text("只支持系统 WebView 标签页")
+                        },
+                        leadingContent = {
+                            Icon(Icons.Filled.Code, contentDescription = null)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showMoreTools = false; handleViewSource() }
                     )
                 }
                 item {
@@ -9661,9 +9820,18 @@ private fun HistoryScreen(
             }
         }
     }
-    // System back returns to the browser (v0.37.0); before this the
-    // key finished the activity from every sub-page.
-    BackHandler { onBack() }
+    // System back (v0.37.0, layered in v0.84.0 — the rule this
+    // version settles for every page-level filter/search state:
+    // the search text clears first, then the filter, and only
+    // then does the key leave the page). Before this the key left
+    // the page outright even with a site filter or a search word
+    // active. The three handlers are mutually exclusive by
+    // enabled, declared weakest first.
+    BackHandler(enabled = siteFilter == null && query.isBlank()) { onBack() }
+    BackHandler(enabled = siteFilter != null && query.isBlank()) {
+        siteFilter = null
+    }
+    BackHandler(enabled = query.isNotBlank()) { query = "" }
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
@@ -10305,6 +10473,157 @@ private fun ReadingListScreen(
 }
 
 /**
+/**
+ * Page source page (v0.84.0, WebView tabs only; Gecko tabs never
+ * reach this screen — the menu entry explains why and offers the
+ * switch-engine path). An app-level page: it renders the source
+ * fetched by BrowserApp into [PageSourceData] and never navigates
+ * any tab, so it leaves no visit-history entry and no saved-tab
+ * trace (see SOURCE_URL). The body is one scrollable LazyColumn:
+ * the two actions on top, a truncation notice when the source is
+ * longer than the display limit, then the source itself in a
+ * monospace, selectable text. "复制全文" always copies the FULL
+ * source; only the display is truncated, and the notice says so.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SourceScreen(
+    data: PageSourceData?,
+    onBack: () -> Unit,
+    onRefetch: () -> Unit
+) {
+    val context = LocalContext.current
+    // System back returns to the browser, like every other
+    // sub-page since v0.37.0.
+    BackHandler { onBack() }
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text(
+                            data?.title?.ifBlank { "网页源代码" }
+                                ?: "网页源代码",
+                            maxLines = 1
+                        )
+                        Text(
+                            data?.url ?: "",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "返回"
+                        )
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        val source = data?.text
+        when {
+            source != null -> LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+            ) {
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(onClick = {
+                            val ok = copyTextToClipboard(
+                                context, "source", source
+                            )
+                            android.widget.Toast.makeText(
+                                context,
+                                if (ok) "源代码已复制" else "复制失败，请重试",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        }) { Text("复制全文") }
+                        OutlinedButton(onClick = onRefetch) {
+                            Text("重新获取")
+                        }
+                    }
+                }
+                if (isSourceTruncated(source)) {
+                    item {
+                        ElevatedCard(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                "源码比较长，这里只显示前面 " +
+                                    "$SOURCE_DISPLAY_LIMIT 个字符" +
+                                    "（一共有 ${source.length} 个）。" +
+                                    "「复制全文」复制的是完整源码，不受这个限制。",
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(16.dp)
+                            )
+                        }
+                    }
+                }
+                item {
+                    SelectionContainer {
+                        Text(
+                            truncateSourceForDisplay(source),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp)
+                        )
+                    }
+                }
+            }
+            data?.failed == true -> LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+            ) {
+                item {
+                    EmptyState(
+                        Icons.Filled.Code,
+                        "没取到源代码。这个网页可能还在加载，或者那个标签页已经关掉了。"
+                    )
+                }
+                item {
+                    Button(
+                        onClick = onRefetch,
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    ) { Text("重新获取") }
+                }
+            }
+            else -> Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                CircularProgressIndicator()
+                Text(
+                    "正在取这个网页的源代码…",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 16.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
  * Page resource sniffer (WebView tabs only; Gecko tabs never reach
  * this screen — the menu entry explains why). Runs the collection
  * script once when the screen appears, then lists what was found
@@ -10359,8 +10678,15 @@ private fun SniffScreen(
             }
         }
     }
-    // System back returns to the browser (v0.37.0).
-    BackHandler { onBack() }
+    // System back (v0.37.0, layered in v0.84.0): in multi-select
+    // mode the key first leaves the mode — the same layering as
+    // the bookmarks batch mode and the tab multi-select, which
+    // this screen was missing: its single unconditional handler
+    // used to leave the whole page mid-selection. Outside the
+    // mode the key returns to the browser. The two handlers are
+    // mutually exclusive by enabled.
+    BackHandler(enabled = selectMode) { exitSniffSelectMode() }
+    BackHandler(enabled = !selectMode) { onBack() }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -11369,8 +11695,20 @@ private fun DownloadsScreen(
             ).show()
         }
     }
-    // System back returns to the browser (v0.37.0).
-    BackHandler { onBack() }
+    // System back (v0.37.0, layered in v0.84.0 — same settled
+    // rule as the history page: search text clears first, then
+    // the status filter, and only then does the key leave the
+    // page). Before this the key left the page outright even
+    // with a search word or a non-default filter active. The
+    // three handlers are mutually exclusive by enabled, declared
+    // weakest first.
+    BackHandler(enabled = downloadQuery.isBlank() && statusFilter == 0) {
+        onBack()
+    }
+    BackHandler(enabled = downloadQuery.isBlank() && statusFilter != 0) {
+        statusFilter = 0
+    }
+    BackHandler(enabled = downloadQuery.isNotBlank()) { downloadQuery = "" }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -12100,6 +12438,16 @@ private fun SettingsScreen(
     // the home page and the system finished the activity instead.
     // The two handlers are mutually exclusive by enabled.
     BackHandler(enabled = settingsPage == "home") { onBack() }
+    // With a search word typed on the settings home (v0.84.0 back
+    // audit, same settled rule as history/downloads: search text
+    // clears first), the key clears the word and restores the
+    // category list instead of leaving settings outright.
+    // Declared last so it wins over the plain home handler above
+    // whenever a query is present; the query only exists on the
+    // home page, so it can never shadow the sub-page handler.
+    BackHandler(
+        enabled = settingsPage == "home" && settingsQuery.isNotBlank()
+    ) { settingsQuery = "" }
     var compatList by remember(refreshTick) { mutableStateOf(store.loadCompatSites().sorted()) }
     var desktopList by remember(refreshTick) { mutableStateOf(store.loadDesktopSites().sorted()) }
     var readerList by remember(refreshTick) { mutableStateOf(store.loadReaderSites().sorted()) }

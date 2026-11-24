@@ -35,6 +35,7 @@ import androidx.webkit.WebViewFeature
 import com.tuxunbrowse.android.data.Engine
 import com.tuxunbrowse.android.data.GeckoDownloadRecord
 import com.tuxunbrowse.android.data.HOME_URL
+import com.tuxunbrowse.android.data.SOURCE_URL
 import com.tuxunbrowse.android.data.ReaderBackground
 import com.tuxunbrowse.android.data.ReaderFontSize
 import com.tuxunbrowse.android.data.ReaderPalette
@@ -396,6 +397,28 @@ private fun parseSniffResult(raw: String?): List<SniffedResource> {
         emptyList()
     }
 }
+
+/**
+ * How much of a page's source the source page renders (v0.84.0).
+ * The full text is kept whole in memory and is what "复制全文"
+ * copies; only the DISPLAY is cut to this many leading characters,
+ * with a notice stating the total — a multi-megabyte document
+ * rendered as one selectable text node would jank the page.
+ */
+const val SOURCE_DISPLAY_LIMIT = 200_000
+
+/** The leading part of [source] the source page displays. */
+fun truncateSourceForDisplay(
+    source: String,
+    limit: Int = SOURCE_DISPLAY_LIMIT
+): String =
+    if (source.length <= limit) source else source.substring(0, limit)
+
+/** True when [source] is longer than what the source page displays. */
+fun isSourceTruncated(
+    source: String,
+    limit: Int = SOURCE_DISPLAY_LIMIT
+): Boolean = source.length > limit
 
 /** Plain-language reason for a WebView main-frame error code. */
 private fun webViewErrorReason(errorCode: Int): String = when (errorCode) {
@@ -1021,6 +1044,9 @@ class BrowserTab(
         // The native home page is rendered by the app itself; the web
         // engines must never try to load its internal URL.
         if (target == HOME_URL) return
+        // Same for the page-source page's internal URL (v0.84.0):
+        // it names an app-rendered page, never an engine load.
+        if (target == SOURCE_URL) return
         when (engine) {
             Engine.WEBVIEW -> webView?.loadUrl(target)
             Engine.GECKO -> geckoSession?.loadUri(target)
@@ -1268,6 +1294,39 @@ class BrowserTab(
             }
         } catch (t: Throwable) {
             onResult(emptyList())
+        }
+    }
+
+    /**
+     * Fetch the current page's source (WebView only, v0.84.0): the
+     * DOM's outerHTML, read through the same evaluateJavascript
+     * channel as the sniffer and the reader text. The script's
+     * return value arrives JSON-encoded (a JS string comes back as
+     * a quoted JSON string), so it is decoded with the platform
+     * JSON parser — the exact pattern [parseSniffResult] and the
+     * reader-text readback already use; no hand-rolled unescaping.
+     * Any failure — no WebView (Gecko tab or engine not created
+     * yet), a script error, an undecodable or blank result (a page
+     * that has not produced a document yet) — reports null, and
+     * the source page shows its plain-language empty state.
+     */
+    fun fetchPageSource(onResult: (String?) -> Unit) {
+        val view = webView
+        if (engine != Engine.WEBVIEW || view == null) {
+            onResult(null)
+            return
+        }
+        try {
+            view.evaluateJavascript(PAGE_SOURCE_JS) { raw ->
+                val decoded = try {
+                    org.json.JSONTokener(raw).nextValue() as? String
+                } catch (t: Throwable) {
+                    null
+                }
+                onResult(decoded?.takeIf { it.isNotBlank() })
+            }
+        } catch (t: Throwable) {
+            onResult(null)
         }
     }
 
@@ -3698,6 +3757,13 @@ fun dispatchSpecialLink(context: Context, url: String): String? {
     }
     return null
 }
+
+/**
+ * Page source readback (WebView only, v0.84.0): the whole current
+ * DOM as one HTML string. evaluateJavascript JSON-encodes the
+ * result; [BrowserTab.fetchPageSource] decodes it.
+ */
+private const val PAGE_SOURCE_JS = "document.documentElement.outerHTML"
 
 /**
  * Page resource sniffer (WebView only): collects direct links to
