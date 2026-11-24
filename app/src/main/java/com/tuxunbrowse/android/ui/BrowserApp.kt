@@ -2868,8 +2868,38 @@ fun BrowserApp(
                 store.saveReadingList(readingList)
             },
             onClearRead = {
+                // Delete-all-read (v0.62.0): the screen's confirm
+                // dialog has already stated this same count; remove,
+                // persist once, and report how many went.
+                val removedCount = readingList.count { it.read }
                 readingList.removeAll { it.read }
                 store.saveReadingList(readingList)
+                android.widget.Toast.makeText(
+                    context, "已删除 $removedCount 条已读条目",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            },
+            onMarkAllRead = {
+                // Mark-all-read (v0.62.0): field-level copy(read =
+                // true) per unread entry — the same update shape the
+                // open paths use (v0.55.0 audit), so title/url/time
+                // are carried over untouched — then one save and a
+                // Toast with the real number marked.
+                var markedCount = 0
+                for (i in readingList.indices) {
+                    if (!readingList[i].read) {
+                        readingList[i] =
+                            readingList[i].copy(read = true)
+                        markedCount++
+                    }
+                }
+                if (markedCount > 0) {
+                    store.saveReadingList(readingList)
+                    android.widget.Toast.makeText(
+                        context, "已把 $markedCount 条标为已读",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
             },
             onOpenInNewTab = { item ->
                 // Background open (v0.54.0): the entry counts as
@@ -7389,7 +7419,8 @@ private fun ReadingListScreen(
     onDelete: (ReadingItem) -> Unit,
     onClearRead: () -> Unit,
     onOpenInNewTab: (ReadingItem) -> Unit = {},
-    onCopyUrl: (ReadingItem) -> Unit = {}
+    onCopyUrl: (ReadingItem) -> Unit = {},
+    onMarkAllRead: () -> Unit = {}
 ) {
     val timeFormat = remember {
         java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
@@ -7399,6 +7430,10 @@ private fun ReadingListScreen(
     // as a tap, so the mark-read step can never be bypassed by
     // going through the menu.
     var menuItem by remember { mutableStateOf<ReadingItem?>(null) }
+    // "Delete all read" asks first (v0.62.0): the dialog states the
+    // real read count, computed from the same items list the page
+    // renders, so the number can never drift from what is on screen.
+    var confirmDeleteRead by remember { mutableStateOf(false) }
     // System back returns to the browser (v0.37.0).
     BackHandler { onBack() }
     Scaffold(
@@ -7432,14 +7467,38 @@ private fun ReadingListScreen(
                     )
                 }
             } else {
-                if (items.any { it.read }) {
-                    item {
+                // Section head (v0.62.0): live counts straight from
+                // the rendered list, plus the two batch actions.
+                // Each action disables itself when there is nothing
+                // it could act on, instead of silently doing nothing.
+                item {
+                    val unreadCount = items.count { !it.read }
+                    val readCount = items.size - unreadCount
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                    ) {
+                        Text(
+                            "共 ${items.size} 条 · 未读 $unreadCount 条",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.End
                         ) {
-                            TextButton(onClick = onClearRead) {
-                                Text("清除已读")
+                            TextButton(
+                                onClick = onMarkAllRead,
+                                enabled = unreadCount > 0
+                            ) {
+                                Text("全部标为已读")
+                            }
+                            TextButton(
+                                onClick = { confirmDeleteRead = true },
+                                enabled = readCount > 0
+                            ) {
+                                Text("删除全部已读")
                             }
                         }
                     }
@@ -7500,6 +7559,37 @@ private fun ReadingListScreen(
                 }
             }
         }
+    }
+    // "Delete all read" confirmation (v0.62.0): the count in the
+    // text is read from the live list at render time, and the copy
+    // states plainly that unread entries are not touched.
+    if (confirmDeleteRead) {
+        val readCount = items.count { it.read }
+        AlertDialog(
+            onDismissRequest = { confirmDeleteRead = false },
+            title = { Text("删除全部已读？") },
+            text = {
+                Text(
+                    "会把 $readCount 条已读条目从阅读列表里删掉，" +
+                        "未读的不会删。删掉后不能恢复。"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmDeleteRead = false
+                        onClearRead()
+                    }
+                ) {
+                    Text("删除")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDeleteRead = false }) {
+                    Text("取消")
+                }
+            }
+        )
     }
     // Long-press menu (v0.54.0): same AlertDialog + LazyColumn +
     // ListItem shape as the history page's menu (v0.53.0). Delete
