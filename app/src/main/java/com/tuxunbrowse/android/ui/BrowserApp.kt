@@ -1877,7 +1877,7 @@ fun BrowserApp(
             // regression fix — every other home-tab action answers
             // with the same kind of toast).
             android.widget.Toast.makeText(
-                context, "先打开一个网页再收藏",
+                context, "先打开一个网页再加入书签",
                 android.widget.Toast.LENGTH_SHORT
             ).show()
             return
@@ -6744,7 +6744,7 @@ private fun BrowserScreen(
                 Button(onClick = {
                     showGeckoSourceNote = false
                     onOpenInOtherEngine()
-                }) { Text("用 WebView 打开本页") }
+                }) { Text("用系统 WebView 打开本页") }
             },
             dismissButton = {
                 TextButton(onClick = { showGeckoSourceNote = false }) {
@@ -6785,7 +6785,7 @@ private fun BrowserScreen(
                 Button(onClick = {
                     showGeckoArchiveNote = false
                     onOpenInOtherEngine()
-                }) { Text("用 WebView 打开本页") }
+                }) { Text("用系统 WebView 打开本页") }
             },
             dismissButton = {
                 TextButton(onClick = { showGeckoArchiveNote = false }) {
@@ -6963,7 +6963,7 @@ private fun BrowserScreen(
                 Column {
                     Text(
                         "当前全部标签里的网页会逐个存成书签，放进下面这个文件夹。" +
-                            "已经收藏过的、无痕标签和首页等内部页会跳过。"
+                            "已经加入书签的、无痕标签和首页等内部页会跳过。"
                     )
                     OutlinedTextField(
                         value = saveAllTabsFolderName,
@@ -7102,7 +7102,7 @@ private fun BrowserScreen(
                         Icon(
                             if (isBookmarked) Icons.Filled.Star else Icons.Filled.StarBorder,
                             contentDescription =
-                                if (isBookmarked) "已收藏，点按取消收藏" else "收藏"
+                                if (isBookmarked) "已加入书签，点按取消书签" else "加入书签"
                         )
                     }
                     IconButton(onClick = { showMenu = true }) {
@@ -7414,7 +7414,7 @@ private fun BrowserScreen(
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("用 WebView 新建") },
+                                    text = { Text("用系统 WebView 新建") },
                                     leadingIcon = {
                                         Icon(Icons.Filled.Language, contentDescription = null)
                                     },
@@ -8955,7 +8955,7 @@ private fun BrowserScreen(
                                     android.widget.Toast.makeText(
                                         context,
                                         "无痕标签不会保存书签，" +
-                                            "请在普通标签里收藏",
+                                            "请在普通标签里加入书签",
                                         android.widget.Toast.LENGTH_SHORT
                                     ).show()
                                 } else {
@@ -12537,7 +12537,7 @@ private fun DownloadsScreen(
                                 style = MaterialTheme.typography.titleMedium
                             )
                             Text(
-                                "火狐标签下载的文件和 WebView 保存的网页存档" +
+                                "火狐标签下载的文件和系统 WebView 保存的网页存档" +
                                     "由浏览器直接保存，不走系统下载管理，" +
                                     "所以单独列在这里。",
                                 style = MaterialTheme.typography.bodySmall,
@@ -12606,7 +12606,7 @@ private fun DownloadsScreen(
                 Text(
                     text = "说明：同一个文件重复下载时，原来的文件不会被覆盖——" +
                         "系统可能给新文件自动改名保存，也可能提示「同名文件已经存在」。" +
-                        "火狐标签下载的文件和 WebView 保存的网页存档会列在上面的「应用内保存」一节里；" +
+                        "火狐标签下载的文件和系统 WebView 保存的网页存档会列在上面的「应用内保存」一节里；" +
                         "无痕标签里的下载和存档只保存文件、不留记录，所以不会出现在这里。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -13803,7 +13803,7 @@ private fun SettingsScreen(
                 Text(
                     "网站靠「用户代理」判断你用的是什么浏览器、什么设备，再决定给你手机版还是电脑版页面。" +
                         "在这里可以换一个身份，全局生效。两个内核都支持：系统 WebView 直接换，" +
-                        "火狐走 GeckoView 官方的 UA 覆盖通路。已经打开的页面要刷新或新开标签才换过来；" +
+                        "火狐内核走官方的 UA 覆盖通路。已经打开的页面要刷新或新开标签才换过来；" +
                         "改回「跟随系统默认」就恢复这台设备本来的 UA。" +
                         "注意：这和菜单里按网站开的「桌面版网站」是两回事——那个是单个网站的开关，优先级更高，开了桌面版的网站不受这里影响。",
                     style = MaterialTheme.typography.bodyMedium

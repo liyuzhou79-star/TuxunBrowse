@@ -152,7 +152,7 @@ class SaveAllTabsTest {
         )
         assertEquals(
             "已存 1 个书签到「标签页 2026-11-24」，" +
-                "跳过 3 个（已收藏 1 个、无痕 1 个、内部页 1 个）",
+                "跳过 3 个（已加入书签 1 个、无痕 1 个、内部页 1 个）",
             saveAllTabsResultText(plan, "标签页 2026-11-24")
         )
     }

@@ -247,7 +247,7 @@ fun planSaveAllTabsAsBookmarks(
 fun saveAllTabsResultText(plan: SaveAllTabsPlan, folderName: String): String {
     val parts = mutableListOf<String>()
     if (plan.skippedBookmarked > 0) {
-        parts.add("已收藏 ${plan.skippedBookmarked} 个")
+        parts.add("已加入书签 ${plan.skippedBookmarked} 个")
     }
     if (plan.skippedIncognito > 0) {
         parts.add("无痕 ${plan.skippedIncognito} 个")
