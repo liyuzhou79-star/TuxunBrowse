@@ -4381,7 +4381,21 @@ fun BrowserApp(
                                     .fillMaxWidth()
                                     .padding(top = 8.dp)
                                     .focusRequester(promptFocusRequester),
-                                singleLine = true
+                                singleLine = true,
+                                // Enter confirms, like the auth
+                                // dialog's last field since the
+                                // v0.83.0 audit — this older dialog
+                                // (v0.12.0) never got that pass, so
+                                // its Enter key used to do nothing
+                                // (v0.104.0 input audit, third round).
+                                keyboardOptions = KeyboardOptions(
+                                    imeAction = ImeAction.Done
+                                ),
+                                keyboardActions = KeyboardActions(
+                                    onDone = {
+                                        answerJsPrompt(true, textInput)
+                                    }
+                                )
                             )
                         }
                     }
@@ -7818,6 +7832,40 @@ private fun BookmarksScreen(
         LaunchedEffect(editFolderIsNew) {
             if (editFolderIsNew) editNewFolderFocusRequester.requestFocus()
         }
+        // Enter chain (v0.104.0 input audit, third round): this
+        // dialog's three fields carried no IME actions at all, so
+        // Enter did nothing in any of them. Now it walks the same
+        // Next/Done chain the auth dialog got in v0.83.0 — title
+        // moves to the URL, the URL moves to the new-folder field
+        // when that is showing, and the last field's Done saves
+        // through this one shared confirm path (button and Enter
+        // behave identically, including the blocked-scheme refusal).
+        val editUrlFocusRequester = remember { FocusRequester() }
+        fun confirmEditBookmark() {
+            if (editUrl.isBlank()) return
+            if (hasBlockedPageScheme(editUrl)) {
+                // Non-web schemes are never saved as
+                // bookmarks (v0.31.0, same rule as openUrl).
+                android.widget.Toast.makeText(
+                    context,
+                    "这个链接打不开：只支持打开 http 或 https 开头的网址",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            } else {
+                val resolved = resolveInput(editUrl)
+                onEdit(
+                    editingBookmark,
+                    editTitle.ifBlank { resolved },
+                    resolved,
+                    if (editFolderIsNew) {
+                        editNewFolder.trim()
+                    } else {
+                        editFolder
+                    }
+                )
+                editing = null
+            }
+        }
         AlertDialog(
             onDismissRequest = { editing = null },
             title = { Text("编辑书签") },
@@ -7831,16 +7879,40 @@ private fun BookmarksScreen(
                                 .fillMaxWidth()
                                 .focusRequester(editFocusRequester),
                             label = { Text("名称") },
-                            singleLine = true
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                imeAction = ImeAction.Next
+                            ),
+                            keyboardActions = KeyboardActions(
+                                onNext = {
+                                    editUrlFocusRequester.requestFocus()
+                                }
+                            )
                         )
                     }
                     item {
                         OutlinedTextField(
                             value = editUrl,
                             onValueChange = { editUrl = it },
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .focusRequester(editUrlFocusRequester),
                             label = { Text("网址") },
-                            singleLine = true
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                imeAction = if (editFolderIsNew) {
+                                    ImeAction.Next
+                                } else {
+                                    ImeAction.Done
+                                }
+                            ),
+                            keyboardActions = KeyboardActions(
+                                onNext = {
+                                    editNewFolderFocusRequester
+                                        .requestFocus()
+                                },
+                                onDone = { confirmEditBookmark() }
+                            )
                         )
                     }
                     item {
@@ -7853,6 +7925,12 @@ private fun BookmarksScreen(
                                     .focusRequester(editNewFolderFocusRequester),
                                 label = { Text("新文件夹名称") },
                                 singleLine = true,
+                                keyboardOptions = KeyboardOptions(
+                                    imeAction = ImeAction.Done
+                                ),
+                                keyboardActions = KeyboardActions(
+                                    onDone = { confirmEditBookmark() }
+                                ),
                                 trailingIcon = {
                                     IconButton(onClick = {
                                         editFolderIsNew = false
@@ -7943,30 +8021,7 @@ private fun BookmarksScreen(
             },
             confirmButton = {
                 Button(
-                    onClick = {
-                        if (hasBlockedPageScheme(editUrl)) {
-                            // Non-web schemes are never saved as
-                            // bookmarks (v0.31.0, same rule as openUrl).
-                            android.widget.Toast.makeText(
-                                context,
-                                "这个链接打不开：只支持打开 http 或 https 开头的网址",
-                                android.widget.Toast.LENGTH_LONG
-                            ).show()
-                        } else {
-                            val resolved = resolveInput(editUrl)
-                            onEdit(
-                                editingBookmark,
-                                editTitle.ifBlank { resolved },
-                                resolved,
-                                if (editFolderIsNew) {
-                                    editNewFolder.trim()
-                                } else {
-                                    editFolder
-                                }
-                            )
-                            editing = null
-                        }
-                    },
+                    onClick = { confirmEditBookmark() },
                     enabled = editUrl.isNotBlank()
                 ) { Text("保存") }
             },
