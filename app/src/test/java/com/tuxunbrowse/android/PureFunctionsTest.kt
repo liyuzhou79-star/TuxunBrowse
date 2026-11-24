@@ -34,11 +34,15 @@ import com.tuxunbrowse.android.data.displayHostFor
 import com.tuxunbrowse.android.data.downgradeToHttp
 import com.tuxunbrowse.android.data.upgradeToHttps
 import com.tuxunbrowse.android.engine.AdBlocker
+import com.tuxunbrowse.android.engine.EngineSleepCandidate
+import com.tuxunbrowse.android.engine.selectSleepVictims
+import com.tuxunbrowse.android.engine.trimAliveLimit
 import com.tuxunbrowse.android.data.isReaderHost
 import com.tuxunbrowse.android.data.isUrlLikeInput
 import com.tuxunbrowse.android.data.matchSuggestions
 import com.tuxunbrowse.android.data.resolveInput
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -1358,5 +1362,109 @@ class AdBlockerListTest {
         )
         assertFalse(AdBlocker.isAdRequest("https://example.com/"))
         assertFalse(AdBlocker.isAdRequest("not a url"))
+    }
+}
+
+/**
+ * Memory-pressure sleep gate and victim choice (v0.78.0). The
+ * level constants are the platform's ComponentCallbacks2 values:
+ * RUNNING_MODERATE 10, RUNNING_LOW 15, UI_HIDDEN 20, BACKGROUND 40,
+ * MODERATE 60, RUNNING_CRITICAL 80 (COMPLETE is also 80).
+ */
+class TrimMemoryPressureTest {
+
+    private fun candidate(
+        id: Int,
+        lastUsedAt: Long,
+        downloadActive: Boolean = false
+    ) = EngineSleepCandidate(id, lastUsedAt, downloadActive)
+
+    @Test
+    fun criticalLevelSqueezesToOneAliveEngine() {
+        assertEquals(1, trimAliveLimit(80))
+        assertEquals(1, trimAliveLimit(100))
+    }
+
+    @Test
+    fun lowerLevelsNeverTrigger() {
+        assertNull(trimAliveLimit(10))
+        assertNull(trimAliveLimit(15))
+        assertNull(trimAliveLimit(20))
+        assertNull(trimAliveLimit(40))
+        assertNull(trimAliveLimit(60))
+        assertNull(trimAliveLimit(79))
+        assertNull(trimAliveLimit(0))
+    }
+
+    @Test
+    fun victimsAreLeastRecentlyUsedNonActiveFirst() {
+        val alive = listOf(
+            candidate(1, 100L),
+            candidate(2, 400L),
+            candidate(3, 200L),
+            candidate(4, 300L)
+        )
+        // Active is tab 2; limit 1 keeps it and sleeps the rest in
+        // LRU order (oldest stamp first).
+        assertEquals(
+            listOf(1, 3, 4),
+            selectSleepVictims(alive, activeTabId = 2, limit = 1)
+        )
+    }
+
+    @Test
+    fun activeTabIsNeverAVictim() {
+        val alive = listOf(
+            candidate(1, 100L),
+            candidate(2, 200L)
+        )
+        // The active tab has the OLDEST stamp and still survives.
+        assertEquals(
+            listOf(2),
+            selectSleepVictims(alive, activeTabId = 1, limit = 1)
+        )
+    }
+
+    @Test
+    fun downloadBusyTabsAreSkippedForThisPass() {
+        val alive = listOf(
+            candidate(1, 100L, downloadActive = true),
+            candidate(2, 200L),
+            candidate(3, 300L)
+        )
+        // Excess is 2 but only one eligible victim exists; the
+        // download-busy tab stays alive for this pass.
+        assertEquals(
+            listOf(2),
+            selectSleepVictims(alive, activeTabId = 3, limit = 1)
+        )
+    }
+
+    @Test
+    fun atOrUnderLimitSleepsNothing() {
+        val alive = listOf(candidate(1, 100L), candidate(2, 200L))
+        assertEquals(
+            emptyList<Int>(),
+            selectSleepVictims(alive, activeTabId = 1, limit = 6)
+        )
+        assertEquals(
+            emptyList<Int>(),
+            selectSleepVictims(alive, activeTabId = 1, limit = 2)
+        )
+        assertEquals(
+            emptyList<Int>(),
+            selectSleepVictims(emptyList(), activeTabId = -1, limit = 1)
+        )
+    }
+
+    @Test
+    fun ordinaryCapUsesTheSameChoice() {
+        // Seven alive engines, cap 6: exactly the single LRU
+        // non-active tab sleeps.
+        val alive = (1..7).map { candidate(it, it * 100L) }
+        assertEquals(
+            listOf(1),
+            selectSleepVictims(alive, activeTabId = 7, limit = 6)
+        )
     }
 }

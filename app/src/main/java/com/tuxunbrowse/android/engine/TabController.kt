@@ -432,6 +432,56 @@ private var nextTabId = 1
  */
 const val ALIVE_ENGINE_LIMIT = 6
 
+/**
+ * One tab as the engine-sleep selection sees it (v0.78.0): a plain
+ * snapshot so the victim choice is a pure function both sleep
+ * passes share — the ordinary cap pass ([ALIVE_ENGINE_LIMIT]) and
+ * the system memory-pressure pass (see [trimAliveLimit]).
+ */
+data class EngineSleepCandidate(
+    val id: Int,
+    val lastUsedAt: Long,
+    val downloadActive: Boolean
+)
+
+/**
+ * Pick which alive engines sleep so at most [limit] stay alive:
+ * never the active tab, never a tab whose Gecko download stream is
+ * still being copied (closing its session could cut the download
+ * off), least recently used first. Download-guarded tabs may keep
+ * the count over the limit for this pass; the next pass retries.
+ * Pure: no Android calls, unit-tested.
+ */
+fun selectSleepVictims(
+    alive: List<EngineSleepCandidate>,
+    activeTabId: Int,
+    limit: Int
+): List<Int> {
+    val excess = alive.size - limit
+    if (excess <= 0) return emptyList()
+    return alive
+        .filter { it.id != activeTabId && !it.downloadActive }
+        .sortedBy { it.lastUsedAt }
+        .take(excess)
+        .map { it.id }
+}
+
+/**
+ * Memory-pressure sleep trigger (v0.78.0): the alive-engine limit
+ * to enforce for a system trim-memory level, or null when the
+ * level must not trigger anything. Only the critical running level
+ * (TRIM_MEMORY_RUNNING_CRITICAL = 80, the system is about to start
+ * killing background processes) — and anything at or above it —
+ * squeezes the browser down to the active tab alone; moderate and
+ * lower levels (RUNNING_MODERATE 10, RUNNING_LOW 15, UI_HIDDEN 20,
+ * BACKGROUND 40, MODERATE 60) are ignored on purpose so a routine
+ * memory tidy-up never throws away the user's warm tabs.
+ */
+fun trimAliveLimit(level: Int): Int? =
+    if (level >= android.content.ComponentCallbacks2
+            .TRIM_MEMORY_RUNNING_CRITICAL
+    ) 1 else null
+
 private const val DESKTOP_USER_AGENT =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) " +
         "Chrome/120.0.0.0 Safari/537.36"
@@ -842,6 +892,19 @@ class BrowserTab(
     @Volatile
     var geckoDownloadActive: Boolean = false
 
+    /**
+     * Tracker id of this tab's in-flight Gecko download copy, or a
+     * negative value when none is running (v0.78.0 release audit).
+     * The sleep pass only needs the boolean above, but closing the
+     * tab must be able to cancel THIS tab's copy: until this version
+     * destroy() closed the session and left the copy running against
+     * a dead session's stream, to fail however it happened to fail.
+     * Set from saveGeckoDownload's return value in onExternalResponse,
+     * cleared by its completion callback.
+     */
+    @Volatile
+    var activeGeckoDownloadId: Long = -1L
+
     val isHome: Boolean
         get() = url == HOME_URL
 
@@ -1233,6 +1296,16 @@ class BrowserTab(
 
     fun destroy() {
         denyPendingClipboardRequests()
+        // An in-flight Gecko download copy belongs to this tab
+        // (v0.78.0): cancel it through the tracker instead of
+        // leaving it copying from a session that is about to close.
+        // The copy loop unwinds through its normal cleanup (partial
+        // artefact deleted, tracker entry ended, completion
+        // callback clears the busy flag) — nothing dangles.
+        val downloadId = activeGeckoDownloadId
+        if (downloadId >= 0L) {
+            GeckoDownloadTracker.requestCancel(downloadId)
+        }
         // Release the thumbnail with the tab; the reference is simply
         // dropped (not recycled — the grid may still hold a frame of
         // it) and the GC reclaims the pixels.
@@ -1248,10 +1321,30 @@ class BrowserTab(
         }
         popupChild = null
         webView?.let {
+            // Detach from the view hierarchy BEFORE destroy()
+            // (v0.78.0 release audit): closeTab destroys the engine
+            // while the closing tab's AndroidView is still composed
+            // for this frame, and destroying a WebView that is still
+            // attached is the documented leak/crash pattern — the
+            // platform contract is remove-then-destroy.
+            try {
+                (it.parent as? android.view.ViewGroup)?.removeView(it)
+            } catch (t: Throwable) {
+                // Not attached (or already detached); destroy anyway.
+            }
             it.stopLoading()
             it.destroy()
         }
         webView = null
+        // Same detach-first rule for the Gecko view: the session
+        // close below does not remove its view from the hierarchy.
+        geckoView?.let {
+            try {
+                (it.parent as? android.view.ViewGroup)?.removeView(it)
+            } catch (t: Throwable) {
+                // Not attached; nothing to detach.
+            }
+        }
         geckoSession?.close()
         geckoSession = null
         geckoView = null
@@ -2180,9 +2273,12 @@ class BrowserTab(
                 // cuts the download off. Cleared on every exit path
                 // of saveGeckoDownload via its completion callback.
                 geckoDownloadActive = true
-                saveGeckoDownload(
+                activeGeckoDownloadId = saveGeckoDownload(
                     appContext, response,
-                    onFinished = { geckoDownloadActive = false },
+                    onFinished = {
+                        geckoDownloadActive = false
+                        activeGeckoDownloadId = -1L
+                    },
                     onSaved = { fileName, contentUri, filePath, sizeBytes, mimeType, sourceUrl ->
                         // In-app record of the finished download
                         // (v0.57.0), so the downloads screen can list,
@@ -2767,7 +2863,7 @@ fun saveGeckoDownload(
         mimeType: String?,
         sourceUrl: String
     ) -> Unit)? = null
-) {
+): Long {
     val uri = response.uri
     val headers = response.headers
     fun header(name: String): String? = headers.entries
@@ -2780,7 +2876,7 @@ fun saveGeckoDownload(
     if (body == null) {
         Toast.makeText(context, "这个文件没有可下载的内容", Toast.LENGTH_LONG).show()
         onFinished()
-        return
+        return -1L
     }
     // Register with the live progress tracker before the copy starts
     // (v0.69.0), so the downloads screen can show this download —
@@ -2947,6 +3043,7 @@ fun saveGeckoDownload(
         GeckoDownloadTracker.end(downloadId)
         onFinished()
     }
+    return downloadId
 }
 
 /**

@@ -166,6 +166,10 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
@@ -256,7 +260,10 @@ import com.tuxunbrowse.android.engine.TabLoadError
 import com.tuxunbrowse.android.engine.GeckoJsPromptKind
 import com.tuxunbrowse.android.engine.GeckoSelectionMenu
 import com.tuxunbrowse.android.engine.HttpAuthRequestInfo
+import com.tuxunbrowse.android.engine.EngineSleepCandidate
 import com.tuxunbrowse.android.engine.TabContent
+import com.tuxunbrowse.android.engine.selectSleepVictims
+import com.tuxunbrowse.android.engine.trimAliveLimit
 import com.tuxunbrowse.android.engine.savePageScreenshot
 import com.tuxunbrowse.android.engine.sharePageScreenshot
 import com.tuxunbrowse.android.engine.resolveDownloadFileName
@@ -867,18 +874,56 @@ fun BrowserApp(
      * silent in the UI on purpose — no badge on the tab cards; a
      * slept tab simply reloads its page when switched back to.
      */
-    fun enforceEngineSleepLimit() {
+    fun enforceEngineSleepLimit(limit: Int = ALIVE_ENGINE_LIMIT) {
         val alive = tabs.filter { it.engineCreated }
-        if (alive.size <= ALIVE_ENGINE_LIMIT) return
-        val excess = alive.size - ALIVE_ENGINE_LIMIT
-        val candidates = alive
-            .filter { it.id != activeTabId && !it.geckoDownloadActive }
-            .sortedBy { it.lastUsedAt }
-        var slept = 0
-        for (candidate in candidates) {
-            if (slept >= excess) break
-            candidate.sleepEngine()
-            slept++
+        if (alive.size <= limit) return
+        // Victim choice is the shared pure function (v0.78.0): the
+        // ordinary cap pass and the memory-pressure pass below pick
+        // exactly the same way, only the limit differs.
+        val victimIds = selectSleepVictims(
+            alive.map {
+                EngineSleepCandidate(it.id, it.lastUsedAt, it.geckoDownloadActive)
+            },
+            activeTabId,
+            limit
+        )
+        if (victimIds.isEmpty()) return
+        val victims = alive.filter { it.id in victimIds }
+        for (victim in victims) {
+            victim.sleepEngine()
+        }
+    }
+
+    // Memory-pressure sleep (v0.78.0): when the system reports a
+    // critical trim-memory level, squeeze the alive engines down to
+    // the active tab alone through the very same sleep pass as the
+    // ordinary cap — same victim rule (active tab and
+    // download-busy tabs are never slept), same sleepEngine()
+    // teardown, same lazy re-creation when the user switches back
+    // (the slept tab reloads its page through the existing obtain
+    // path). Lower levels do nothing at all: trimAliveLimit is the
+    // pure, unit-tested gate. Incognito tabs are treated exactly
+    // like normal ones — sleeping writes nothing anywhere, and this
+    // pass persists nothing either.
+    fun enforceTrimMemoryPressure(level: Int) {
+        val limit = trimAliveLimit(level) ?: return
+        enforceEngineSleepLimit(limit)
+    }
+
+    // MainActivity forwards onTrimMemory to this bridge. The
+    // handler is re-read through rememberUpdatedState so the
+    // registered lambda always sees the current tab list, and the
+    // registration is cleared when this composition leaves, so
+    // nothing keeps a dead UI alive.
+    val latestTrimHandler = rememberUpdatedState<(Int) -> Unit> {
+        level -> enforceTrimMemoryPressure(level)
+    }
+    DisposableEffect(Unit) {
+        com.tuxunbrowse.android.MainActivity.trimMemoryListener = { level ->
+            latestTrimHandler.value(level)
+        }
+        onDispose {
+            com.tuxunbrowse.android.MainActivity.trimMemoryListener = null
         }
     }
 
@@ -1258,6 +1303,64 @@ fun BrowserApp(
         return tab
     }
 
+    // Filled in further down (next to the file-picker and
+    // system-permission launchers it cleans up): answers a pending
+    // file-picker request with "cancelled" and a pending
+    // system-permission request with "nothing granted". Declared
+    // here because the tab-removal paths below call it, and local
+    // functions must be declared before their callers.
+    var pendingEngineAnswersCleanup: () -> Unit = {}
+
+    /**
+     * Release the transient app-level UI state that belongs to a
+     * tab which is about to go away (v0.78.0 release audit). Until
+     * this version only the clipboard-read requests were answered
+     * per tab on close; the JS / auth / SSL dialogs, the shared
+     * file-picker answer and the system-permission answer are
+     * app-global singletons with no tab id, and nothing answered
+     * them when their tab closed — the dialog stayed on screen over
+     * the next tab and its answer went into a destroyed engine
+     * (harmless only thanks to the engine-side try/catch wrappers),
+     * and a Gecko fullscreen tab closed mid-stream could leave
+     * [geckoFullscreen] set, hiding the chrome and holding the
+     * screen on for a tab that no longer existed. These prompts can
+     * only ever belong to the ACTIVE tab (it is the only composed,
+     * page-interacting one), so the non-force path answers them
+     * only when the tab going away is the active one — closing a
+     * background tab never touches the active tab's pending dialog.
+     * Every answer uses the same "cancel" value as the v0.34.0
+     * composition-disposal safety net. [force] is for close-all,
+     * where every tab goes away at once.
+     */
+    fun releaseTransientUiForRemovedTab(tabId: Int, force: Boolean = false) {
+        if (!force && tabId != activeTabId) return
+        try {
+            jsPromptRequest?.respond?.invoke(false, null)
+        } catch (t: Throwable) {
+            // Engine already gone; nothing left to answer.
+        }
+        jsPromptRequest = null
+        try {
+            authPromptRequest?.respond?.invoke(null, null)
+        } catch (t: Throwable) {
+            // Engine already gone; nothing left to answer.
+        }
+        authPromptRequest = null
+        try {
+            sslPromptRequest?.respond?.invoke(false)
+        } catch (t: Throwable) {
+            // Engine already gone; nothing left to answer.
+        }
+        sslPromptRequest = null
+        pendingEngineAnswersCleanup()
+        if (force || geckoSelectionMenu?.tabId == tabId) {
+            geckoSelectionMenu = null
+        }
+        pageContextMenu = null
+        fullscreenView = null
+        geckoFullscreen = false
+    }
+
     fun recreateTab(
         tab: BrowserTab,
         newEngine: Engine,
@@ -1270,6 +1373,11 @@ fun BrowserApp(
         // The old tab's pending clipboard-read request is answered
         // deny before its engine goes away (v0.45.0).
         denyClipboardPermissionsForTab(tab.id)
+        // Same for its pending dialogs / picker / permission
+        // answers and fullscreen state (v0.78.0): recreation is a
+        // removal of the old tab object, so it goes through the
+        // same transient-UI release as closing.
+        releaseTransientUiForRemovedTab(tab.id)
         val replacement = makeTab(newEngine, tab.incognito, tab.url, desktopMode)
         tabs[idx] = replacement
         tab.destroy()
@@ -1513,6 +1621,9 @@ fun BrowserApp(
         // A clipboard-read request from this tab dies with it:
         // answer deny first so the page never hangs (v0.45.0).
         denyClipboardPermissionsForTab(tab.id)
+        // Its pending dialogs / picker / permission answers and its
+        // fullscreen state die with it too (v0.78.0, see helper).
+        releaseTransientUiForRemovedTab(tab.id)
         pushClosedTab(tab)
         tab.destroy()
         tabs.remove(tab)
@@ -1546,6 +1657,9 @@ fun BrowserApp(
         // Pending clipboard-read requests are answered deny before
         // every engine goes away (v0.45.0).
         tabs.toList().forEach { denyClipboardPermissionsForTab(it.id) }
+        // Every tab goes away, so the transient-UI release runs
+        // unconditionally (v0.78.0) — same answers as closeTab.
+        releaseTransientUiForRemovedTab(activeTabId, force = true)
         val hadIncognito = tabs.any { it.incognito }
         // Every normal tab goes onto the recently-closed stack
         // (incognito tabs are skipped inside pushClosedTab).
@@ -1576,6 +1690,14 @@ fun BrowserApp(
     fun closeOtherTabsKeeping(keep: BrowserTab) {
         val others = tabs.filter { it.id != keep.id }
         if (others.isEmpty()) return
+        // If the active tab is among the ones going away, its
+        // transient UI state goes with it (v0.78.0); when the
+        // active tab is the one kept, nothing is touched. (The
+        // clipboard answers of the closed tabs are drained by
+        // BrowserTab.destroy itself, as before.)
+        if (others.any { it.id == activeTabId }) {
+            releaseTransientUiForRemovedTab(activeTabId, force = true)
+        }
         val closedIncognito = others.any { it.incognito }
         others.forEach { pushClosedTab(it) }
         others.forEach { it.destroy() }
@@ -2388,6 +2510,29 @@ fun BrowserApp(
                 }
             }
         }
+    }
+
+    // Tab-removal cleanup for the two pending answers that live in
+    // this section (v0.78.0): the shared file-picker answer and the
+    // system-permission answer. releaseTransientUiForRemovedTab
+    // (declared with the tab-removal paths above) calls this; each
+    // answer uses its "cancel" value, exactly like the disposal
+    // safety net below, and the engine-side wrappers guard against
+    // a double answer.
+    pendingEngineAnswersCleanup = {
+        try {
+            pendingFileAnswer?.invoke(emptyList())
+        } catch (t: Throwable) {
+            // Engine already gone; nothing left to answer.
+        }
+        pendingFileAnswer = null
+        try {
+            pendingSysPermAnswer?.invoke(emptySet())
+        } catch (t: Throwable) {
+            // Engine already gone; nothing left to answer.
+        }
+        pendingSysPermAnswer = null
+        pendingSysPerms = emptyList()
     }
 
     // Recreation safety net for pending page callbacks (v0.34.0
@@ -7356,7 +7501,16 @@ private fun BrowserScreen(
                                 "标签页"
                             },
                             style = MaterialTheme.typography.titleLarge,
-                            modifier = Modifier.weight(1f)
+                            // Polite live region (v0.78.0
+                            // accessibility pass): TalkBack speaks
+                            // the new count as selections change
+                            // instead of the user having to navigate
+                            // back to the header to hear it.
+                            modifier = Modifier
+                                .weight(1f)
+                                .semantics {
+                                    liveRegion = LiveRegionMode.Polite
+                                }
                         )
                         if (tabMultiSelect) {
                             TextButton(onClick = { exitTabMultiSelect() }) {
@@ -7501,6 +7655,22 @@ private fun BrowserScreen(
                                         checked = tab.id in selectedTabIds,
                                         onCheckedChange = {
                                             toggleTabSelected(tab)
+                                        },
+                                        // Name the toggle for TalkBack
+                                        // (v0.78.0 accessibility pass):
+                                        // a bare Checkbox announces
+                                        // only checked / not checked,
+                                        // never WHICH tab it selects.
+                                        modifier = Modifier.semantics {
+                                            contentDescription =
+                                                "选择标签：" +
+                                                if (tab.isHome) {
+                                                    "首页"
+                                                } else {
+                                                    tab.title.ifBlank {
+                                                        tab.url
+                                                    }
+                                                }
                                         }
                                     )
                                 } else {
@@ -11390,6 +11560,11 @@ private fun SettingsScreen(
                             .fillMaxWidth()
                             .padding(top = 8.dp),
                         singleLine = true,
+                        // A label, not just a placeholder (v0.78.0
+                        // accessibility pass): TalkBack announces
+                        // the label as the field's name, while a
+                        // placeholder alone is not a reliable name.
+                        label = { Text("搜索设置") },
                         placeholder = {
                             Text("搜索设置（比如：深色、历史、下载）")
                         },

@@ -18,6 +18,24 @@ import com.tuxunbrowse.android.ui.TuxunBrowseTheme
 
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        /**
+         * Memory-pressure bridge (v0.78.0): BrowserApp registers
+         * its pressure-sleep handler here while it is composed and
+         * clears it again on dispose, so the reference never
+         * outlives the UI. onTrimMemory itself stays a thin shell —
+         * all policy (which levels trigger, how far to squeeze)
+         * lives in the pure functions next to the engine-sleep pass.
+         */
+        @Volatile
+        var trimMemoryListener: ((Int) -> Unit)? = null
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        trimMemoryListener?.invoke(level)
+    }
+
     /** A web link handed to us by another app (we are a browser). */
     private var externalUrl by mutableStateOf<String?>(null)
 
