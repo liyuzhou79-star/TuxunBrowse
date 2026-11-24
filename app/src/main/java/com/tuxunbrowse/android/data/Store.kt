@@ -158,6 +158,118 @@ fun clearBookmarksFolder(
 }
 
 /**
+ * One open tab as the "save all tabs as bookmarks" planner sees it
+ * (v0.87.0): plain values, so the classification below is
+ * unit-testable without a live BrowserTab.
+ */
+data class TabBookmarkCandidate(
+    val title: String,
+    val url: String,
+    val incognito: Boolean
+)
+
+/**
+ * The plan for "save all tabs as bookmarks" (v0.87.0): the
+ * bookmarks to append (already carrying the target folder), plus
+ * the three skip counts the result toast reports honestly —
+ * already-bookmarked, incognito and internal/non-web pages.
+ */
+data class SaveAllTabsPlan(
+    val toAdd: List<Bookmark>,
+    val skippedBookmarked: Int,
+    val skippedIncognito: Int,
+    val skippedInternal: Int
+) {
+    val skippedTotal: Int
+        get() = skippedBookmarked + skippedIncognito + skippedInternal
+}
+
+/**
+ * Default folder name for "save all tabs as bookmarks": 「标签页」
+ * plus the ISO date (yyyy-MM-dd), so repeated saves on different
+ * days land in different folders by default and same-day saves
+ * merge into one.
+ */
+fun defaultSaveAllTabsFolderName(date: java.time.LocalDate): String =
+    "标签页 $date"
+
+/**
+ * Classify every open tab for a save-all into [folderName]
+ * (v0.87.0). The order of the checks IS the counting rule:
+ * an incognito tab counts as incognito even when it shows the
+ * home page (incognito is the reason nothing of it may persist);
+ * a normal tab counts as internal when its URL is not http(s)
+ * (the home page and any other app-internal address); a web tab
+ * counts as already-bookmarked when its URL is in
+ * [existingBookmarks] OR was already planned earlier in this same
+ * run (two tabs on the same page save one bookmark). The folder
+ * name is stored trimmed, exactly like every other folder write.
+ */
+fun planSaveAllTabsAsBookmarks(
+    tabs: List<TabBookmarkCandidate>,
+    existingBookmarks: List<Bookmark>,
+    folderName: String
+): SaveAllTabsPlan {
+    val folder = normalizeBookmarkFolderName(folderName)
+    val seen = existingBookmarks.map { it.url }.toMutableSet()
+    val toAdd = mutableListOf<Bookmark>()
+    var skippedBookmarked = 0
+    var skippedIncognito = 0
+    var skippedInternal = 0
+    for (tab in tabs) {
+        when {
+            tab.incognito -> skippedIncognito++
+            !tab.url.startsWith("http://") &&
+                !tab.url.startsWith("https://") -> skippedInternal++
+            tab.url in seen -> skippedBookmarked++
+            else -> {
+                seen.add(tab.url)
+                toAdd.add(
+                    Bookmark(
+                        tab.title.ifBlank { tab.url },
+                        tab.url,
+                        folder = folder
+                    )
+                )
+            }
+        }
+    }
+    return SaveAllTabsPlan(
+        toAdd, skippedBookmarked, skippedIncognito, skippedInternal
+    )
+}
+
+/**
+ * The result toast for a save-all (v0.87.0), worded so a save
+ * that stored nothing still says why — never a silent no-op.
+ * The skip breakdown names only the categories that occurred.
+ */
+fun saveAllTabsResultText(plan: SaveAllTabsPlan, folderName: String): String {
+    val parts = mutableListOf<String>()
+    if (plan.skippedBookmarked > 0) {
+        parts.add("已收藏 ${plan.skippedBookmarked} 个")
+    }
+    if (plan.skippedIncognito > 0) {
+        parts.add("无痕 ${plan.skippedIncognito} 个")
+    }
+    if (plan.skippedInternal > 0) {
+        parts.add("内部页 ${plan.skippedInternal} 个")
+    }
+    val breakdown = parts.joinToString("、")
+    return when {
+        plan.toAdd.isNotEmpty() -> buildString {
+            append("已存 ${plan.toAdd.size} 个书签到「$folderName」")
+            if (parts.isNotEmpty()) {
+                append("，跳过 ${plan.skippedTotal} 个（$breakdown）")
+            }
+        }
+        parts.isNotEmpty() ->
+            "没有新书签存入：跳过 ${plan.skippedTotal} 个（$breakdown）"
+        else -> "没有可存的标签页"
+    }
+}
+
+/**
  * Bookmarks-page display sort (v0.63.0). Display-only: the stored
  * list order is never rewritten by sorting — this only decides the
  * order rows are rendered in. There is deliberately no "by time

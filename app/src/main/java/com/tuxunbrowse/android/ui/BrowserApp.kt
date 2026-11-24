@@ -258,6 +258,11 @@ import com.tuxunbrowse.android.data.filterSettingsIndex
 import com.tuxunbrowse.android.data.historyRestoreIndex
 import com.tuxunbrowse.android.data.recentBlockedSeries
 import com.tuxunbrowse.android.data.shouldPreheatGecko
+import com.tuxunbrowse.android.data.TabBookmarkCandidate
+import com.tuxunbrowse.android.data.SaveAllTabsPlan
+import com.tuxunbrowse.android.data.defaultSaveAllTabsFolderName
+import com.tuxunbrowse.android.data.planSaveAllTabsAsBookmarks
+import com.tuxunbrowse.android.data.saveAllTabsResultText
 import com.tuxunbrowse.android.data.allBookmarkFolders
 import com.tuxunbrowse.android.data.bookmarksInFolder
 import com.tuxunbrowse.android.data.clearBookmarksFolder
@@ -821,6 +826,24 @@ fun BrowserApp(
         systemFallback: () -> Unit
     ) {
         if (url.isBlank()) return
+        // Download links pass the same gate as every other inbound
+        // URL (v0.87.0 inbound audit, second round): the WebView
+        // download listener can hand over blob:/data: URLs, which
+        // are not downloadable files at all — before this check
+        // they were shared to TuxunDown as dead text or reached
+        // DownloadManager, which refuses non-http(s) URIs with an
+        // exception and a misleading "failed, retry" toast. Refuse
+        // here, once, with the gate's plain-language message. The
+        // other callers (direct-download intercept, sniffer) only
+        // ever produce http(s), so nothing legitimate changes.
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            android.widget.Toast.makeText(
+                context,
+                "这个下载链接打不开：只支持 http 或 https 开头的网址",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            return
+        }
         // Incognito honesty (v0.27.0): a system download is recorded
         // by the system's DownloadManager and stays visible in the
         // system download list (and this app's Downloads page) after
@@ -862,7 +885,13 @@ fun BrowserApp(
         fromIncognito: Boolean = false,
         systemFallback: () -> Unit
     ) {
-        val clean = urls.filter { it.isNotBlank() }
+        // Same inbound gate as downloadWithMode (v0.87.0): only
+        // http(s) entries take part. The sniffer already filters
+        // at its script, so this is defence in depth — a filtered
+        // entry is dropped from the batch, never shared onward.
+        val clean = urls.filter {
+            it.startsWith("http://") || it.startsWith("https://")
+        }
         if (clean.isEmpty()) return
         val joined = clean.joinToString("\n")
         // Same incognito honesty as downloadWithMode: one reminder
@@ -1887,6 +1916,39 @@ fun BrowserApp(
         }
         if (added > 0) store.saveBookmarks(bookmarks)
         return added to skippedIncognito
+    }
+
+    /**
+     * Save ALL open tabs as bookmarks into one folder (v0.87.0,
+     * the tab sheet's "把全部标签存为书签"). The classification is
+     * the pure [planSaveAllTabsAsBookmarks] — incognito tabs,
+     * internal pages and already-bookmarked URLs are skipped and
+     * counted; everything else is appended through the existing
+     * bookmark storage, and the folder name joins the stored
+     * folder list through the existing folder write path (an
+     * existing folder of the same name is merged into, never
+     * duplicated — the plan's bookmarks simply carry its name).
+     * The folder is registered even when nothing was added, so an
+     * explicitly confirmed name is never silently dropped.
+     */
+    fun saveAllTabsToFolder(folderName: String): SaveAllTabsPlan {
+        val plan = planSaveAllTabsAsBookmarks(
+            tabs.map {
+                TabBookmarkCandidate(it.title, it.url, it.incognito)
+            },
+            bookmarks,
+            folderName
+        )
+        if (plan.toAdd.isNotEmpty()) {
+            bookmarks.addAll(0, plan.toAdd)
+            store.saveBookmarks(bookmarks)
+        }
+        val folder = normalizeBookmarkFolderName(folderName)
+        if (folder.isNotEmpty() && folder !in bookmarkFolders) {
+            bookmarkFolders.add(folder)
+            store.saveBookmarkFolders(bookmarkFolders)
+        }
+        return plan
     }
 
     // Session restore: reopen the tabs that were open when the app was
@@ -3409,6 +3471,8 @@ fun BrowserApp(
                 onCloseOtherTabsFor = { closeOtherTabsKeeping(it) },
                 onToggleBookmarkFor = { toggleBookmarkForTab(it) },
                 onBookmarkTabs = { bookmarkTabs(it) },
+                onSaveAllTabsToFolder = { saveAllTabsToFolder(it) },
+                bookmarkFolderNames = allBookmarkFolders(bookmarks, bookmarkFolders),
                 recentClosed = recentClosedTabs,
                 onReopenClosed = { reopenClosedTab(it) },
                 onNewTab = { newTab(store.mainEngine, false) },
@@ -6365,6 +6429,10 @@ private fun BrowserScreen(
     onCloseOtherTabsFor: (BrowserTab) -> Unit = {},
     onToggleBookmarkFor: (BrowserTab) -> Unit = {},
     onBookmarkTabs: (List<BrowserTab>) -> Pair<Int, Int> = { 0 to 0 },
+    onSaveAllTabsToFolder: (String) -> SaveAllTabsPlan = {
+        SaveAllTabsPlan(emptyList(), 0, 0, 0)
+    },
+    bookmarkFolderNames: List<String> = emptyList(),
     recentClosed: List<ClosedTabInfo>,
     onReopenClosed: (ClosedTabInfo) -> Unit,
     onNewTab: () -> Unit,
@@ -6863,6 +6931,81 @@ private fun BrowserScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showCloseAllConfirm = false }) { Text("取消") }
+            }
+        )
+    }
+
+    // Save all tabs as bookmarks (v0.87.0): the folder name is
+    // asked with the official dialog, pre-filled with today's
+    // dated default; an existing folder of the same name is
+    // merged into, and the dialog says so before confirming.
+    var showSaveAllTabsDialog by remember { mutableStateOf(false) }
+    var saveAllTabsFolderName by remember { mutableStateOf("") }
+    if (showSaveAllTabsDialog) {
+        val saveAllFocusRequester = remember { FocusRequester() }
+        LaunchedEffect(Unit) { saveAllFocusRequester.requestFocus() }
+        val trimmedName = saveAllTabsFolderName.trim()
+        fun confirmSaveAllTabs() {
+            if (trimmedName.isBlank()) return
+            showSaveAllTabsDialog = false
+            showTabs = false
+            val plan = onSaveAllTabsToFolder(trimmedName)
+            android.widget.Toast.makeText(
+                context,
+                saveAllTabsResultText(plan, trimmedName),
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
+        AlertDialog(
+            onDismissRequest = { showSaveAllTabsDialog = false },
+            title = { Text("把全部标签存为书签") },
+            text = {
+                Column {
+                    Text(
+                        "当前全部标签里的网页会逐个存成书签，放进下面这个文件夹。" +
+                            "已经收藏过的、无痕标签和首页等内部页会跳过。"
+                    )
+                    OutlinedTextField(
+                        value = saveAllTabsFolderName,
+                        onValueChange = { saveAllTabsFolderName = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 12.dp)
+                            .focusRequester(saveAllFocusRequester),
+                        label = { Text("文件夹名称") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            imeAction = ImeAction.Done
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onDone = { confirmSaveAllTabs() }
+                        )
+                    )
+                    if (trimmedName.isNotEmpty()) {
+                        Text(
+                            if (trimmedName in bookmarkFolderNames) {
+                                "已经有同名文件夹了，新书签会并入那个文件夹，" +
+                                    "不会新建重名文件夹。"
+                            } else {
+                                "会新建这个文件夹。"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { confirmSaveAllTabs() },
+                    enabled = trimmedName.isNotEmpty()
+                ) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSaveAllTabsDialog = false }) {
+                    Text("取消")
+                }
             }
         )
     }
@@ -8830,6 +8973,22 @@ private fun BrowserScreen(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text("新建标签页")
+                        }
+                    }
+                }
+                if (!tabMultiSelect) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        OutlinedButton(
+                            onClick = {
+                                saveAllTabsFolderName =
+                                    defaultSaveAllTabsFolderName(
+                                        java.time.LocalDate.now()
+                                    )
+                                showSaveAllTabsDialog = true
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("把全部标签存为书签")
                         }
                     }
                 }
