@@ -62,7 +62,9 @@ import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Language
@@ -84,6 +86,7 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material.icons.filled.Visibility
@@ -260,6 +263,8 @@ import com.tuxunbrowse.android.engine.GeckoDownloadTracker
 import com.tuxunbrowse.android.engine.GeckoHolder
 import com.tuxunbrowse.android.engine.MAX_FULL_PAGE_HEIGHT_PX
 import com.tuxunbrowse.android.engine.NavHistoryEntry
+import com.tuxunbrowse.android.engine.ReaderSpeechController
+import com.tuxunbrowse.android.engine.SpeechState
 import com.tuxunbrowse.android.engine.SniffKind
 import com.tuxunbrowse.android.engine.SniffedResource
 import com.tuxunbrowse.android.engine.TabLoadError
@@ -6195,6 +6200,32 @@ private fun BrowserScreen(
     LaunchedEffect(activeTab?.id) {
         focusManager.clearFocus()
     }
+    // Reader speech (v0.82.0): one controller per tab, created with
+    // the screen but with its TTS engine created lazily on first
+    // play. Lifecycle is a hard contract — speech must never
+    // outlive the reader page it belongs to:
+    // - switching tabs replaces the controller (remember key) and
+    //   the old one's DisposableEffect releases its engine;
+    // - leaving reader mode (exit, navigation, reload — every one
+    //   of them clears readerActive) stops and resets it;
+    // - closing the tab or leaving this screen disposes it.
+    val speechController = remember(activeTab?.id) {
+        ReaderSpeechController(context.applicationContext)
+    }
+    DisposableEffect(speechController) {
+        speechController.onUnavailable = {
+            android.widget.Toast.makeText(
+                context, "这台设备没有可用的朗读功能",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+        }
+        onDispose { speechController.release() }
+    }
+    LaunchedEffect(activeTab?.id, activeTab?.readerActive) {
+        if (activeTab?.readerActive != true) {
+            speechController.stopAndReset()
+        }
+    }
     // Focus gain swaps the friendly host-only display back to the
     // full URL and selects it whole; focus loss restores the
     // display text. Done in an effect so it lands after the tap's
@@ -7287,6 +7318,89 @@ private fun BrowserScreen(
                 }
             }
             }
+            // Reader speech controls (v0.82.0): a single row shown
+            // only while the active tab is in reader mode (which is
+            // WebView-only, so this never appears for a Gecko tab).
+            // Play starts or continues, pause stops the engine and
+            // keeps the chunk position (TTS has no true pause —
+            // continuing restarts the current chunk), stop clears
+            // the position. All controls are official IconButtons
+            // with plain-language content descriptions.
+            AnimatedVisibility(
+                visible = activeTab?.readerActive == true && !chromeHidden,
+                enter = fadeIn(tween(220, easing = FastOutSlowInEasing)) +
+                    expandVertically(tween(220, easing = FastOutSlowInEasing)),
+                exit = fadeOut(tween(180, easing = FastOutSlowInEasing)) +
+                    shrinkVertically(tween(180, easing = FastOutSlowInEasing))
+            ) {
+                val speechTab = activeTab
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (speechController.state == SpeechState.SPEAKING) {
+                        IconButton(onClick = { speechController.pause() }) {
+                            Icon(
+                                Icons.Filled.Pause,
+                                contentDescription = "暂停朗读"
+                            )
+                        }
+                    } else {
+                        IconButton(onClick = {
+                            val text = speechTab?.readerText.orEmpty()
+                            if (text.isBlank()) {
+                                android.widget.Toast.makeText(
+                                    context, "正文还在准备中，请稍等一下再点朗读",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            } else {
+                                speechController.playOrResume(text)
+                            }
+                        }) {
+                            Icon(
+                                Icons.Filled.PlayArrow,
+                                contentDescription = if (
+                                    speechController.state == SpeechState.PAUSED
+                                ) {
+                                    "继续朗读"
+                                } else {
+                                    "朗读正文"
+                                }
+                            )
+                        }
+                    }
+                    IconButton(
+                        onClick = { speechController.stopAndReset() },
+                        enabled = speechController.state != SpeechState.IDLE
+                    ) {
+                        Icon(
+                            Icons.Filled.Stop,
+                            contentDescription = "停止朗读"
+                        )
+                    }
+                    Text(
+                        when (speechController.state) {
+                            SpeechState.SPEAKING ->
+                                "正在朗读 第 ${speechController.chunkIndex + 1} / " +
+                                    "${speechController.chunkCount} 段"
+                            SpeechState.PAUSED ->
+                                "已暂停 第 ${speechController.chunkIndex + 1} / " +
+                                    "${speechController.chunkCount} 段"
+                            SpeechState.IDLE -> "朗读正文"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .weight(1f)
+                            .semantics {
+                                liveRegion = LiveRegionMode.Polite
+                            }
+                    )
+                }
+            }
             // Tab content crossfades on every switch: changing tabs,
             // creating or closing one, home <-> web page, and the
             // error page appearing or clearing. Fade only (no slide):
@@ -7846,7 +7960,20 @@ private fun BrowserScreen(
                             it.id in selectedTabIds
                         }
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            // Multi-select action row animation
+                            // (v0.82.0 visual pass): the lazy-grid
+                            // item fade in/out on the shared
+                            // 220/180ms spec instead of popping in.
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .animateItem(
+                                    fadeInSpec = tween(
+                                        220, easing = FastOutSlowInEasing
+                                    ),
+                                    fadeOutSpec = tween(
+                                        180, easing = FastOutSlowInEasing
+                                    )
+                                ),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Button(
@@ -10210,7 +10337,18 @@ private fun SniffScreen(
                     }
                 }
                 else -> {
-                    if (selectMode) {
+                    // Multi-select bar animation (v0.82.0 visual
+                    // pass): both header bars now arrive and leave
+                    // with the shared 220/180ms fade + expand/shrink
+                    // instead of swapping instantly.
+                    AnimatedVisibility(
+                        visible = selectMode,
+                        enter = fadeIn(tween(220, easing = FastOutSlowInEasing)) +
+                            expandVertically(tween(220, easing = FastOutSlowInEasing)),
+                        exit = fadeOut(tween(180, easing = FastOutSlowInEasing)) +
+                            shrinkVertically(tween(180, easing = FastOutSlowInEasing))
+                    ) {
+                    Column {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -10275,7 +10413,15 @@ private fun SniffScreen(
                                 modifier = Modifier.padding(start = 8.dp)
                             )
                         }
-                    } else {
+                    }
+                    }
+                    AnimatedVisibility(
+                        visible = !selectMode,
+                        enter = fadeIn(tween(220, easing = FastOutSlowInEasing)) +
+                            expandVertically(tween(220, easing = FastOutSlowInEasing)),
+                        exit = fadeOut(tween(180, easing = FastOutSlowInEasing)) +
+                            shrinkVertically(tween(180, easing = FastOutSlowInEasing))
+                    ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()

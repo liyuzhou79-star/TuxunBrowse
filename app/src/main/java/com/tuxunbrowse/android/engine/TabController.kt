@@ -737,6 +737,16 @@ class BrowserTab(
     var canGoForward by mutableStateOf(false)
     var readerActive by mutableStateOf(false)
 
+    /**
+     * Plain text of the CURRENT reader-mode extraction (v0.82.0),
+     * read back from the already-extracted document right after
+     * [enterReaderMode] injects it — this is the reader speech
+     * source, so what is read aloud is exactly what the reader
+     * page shows, never a second extraction. Empty until the
+     * read-back lands; cleared wherever reader mode ends.
+     */
+    var readerText by mutableStateOf("")
+
     /** Find-in-page match counter text ("2 / 9"); WebView only. */
     var findInfo by mutableStateOf("")
 
@@ -832,13 +842,38 @@ class BrowserTab(
         readerSuppressedUrl = null
         val view = webView ?: return
         setAlgorithmicDarkening(false)
+        readerText = ""
         view.evaluateJavascript(
             buildReaderJs(
                 readerFontSizeProvider(),
                 readerPaletteFor(readerBackgroundProvider(), appDarkProvider())
-            ),
-            null
-        )
+            )
+        ) {
+            // Read the extracted document's text back for reader
+            // speech (v0.82.0). Chained inside the extraction's own
+            // callback so it can only run after the extraction has
+            // been applied; the result is a JSON string literal,
+            // decoded with the platform JSON parser. Any failure
+            // leaves readerText empty and speech simply unavailable
+            // for this page — reader mode itself is unaffected.
+            if (!readerActive) return@evaluateJavascript
+            try {
+                view.evaluateJavascript(READER_TEXT_JS) { raw ->
+                    if (!readerActive) return@evaluateJavascript
+                    try {
+                        val decoded = org.json.JSONTokener(raw)
+                            .nextValue() as? String
+                        if (!decoded.isNullOrBlank()) {
+                            readerText = decoded
+                        }
+                    } catch (t: Throwable) {
+                        // Keep the empty text; see above.
+                    }
+                }
+            } catch (t: Throwable) {
+                // Same best-effort contract as above.
+            }
+        }
         readerActive = true
     }
 
@@ -869,6 +904,7 @@ class BrowserTab(
         // the per-site auto-reader does not immediately re-enter.
         readerSuppressedUrl = url
         readerActive = false
+        readerText = ""
         // Restore the web-dark setting before the reload repaints the
         // original page (enterReaderMode turned darkening off).
         setAlgorithmicDarkening(webDarkProvider())
@@ -1514,6 +1550,7 @@ class BrowserTab(
         canGoBack = false
         canGoForward = false
         readerActive = false
+        readerText = ""
         findInfo = ""
         loadError = null
         blockedCount = 0
@@ -1977,6 +2014,7 @@ class BrowserTab(
                     setAlgorithmicDarkening(webDarkProvider())
                 }
                 readerActive = false
+                readerText = ""
                 url = u
                 title = wv.title ?: ""
                 canGoBack = wv.canGoBack()
@@ -3778,6 +3816,19 @@ private fun buildReaderJs(font: ReaderFontSize, palette: ReaderPalette): String 
   document.head.appendChild(st);
   window.scrollTo(0, 0);
   return 'ok';
+})()
+"""
+
+/**
+ * Reader speech read-back (v0.82.0): the plain text of the
+ * already-extracted reader document (title heading plus body, in
+ * reading order). Runs ONLY on the document [buildReaderJs]
+ * produced — it is a read of the existing extraction result, not
+ * a second extraction.
+ */
+private const val READER_TEXT_JS = """
+(function() {
+  return (document.body && document.body.innerText) || '';
 })()
 """
 
