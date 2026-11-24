@@ -3570,14 +3570,19 @@ fun BrowserApp(
                 onPrintPage = {
                     val tab = activeTab() ?: return@BrowserScreen
                     when {
+                        // Home first (v0.126.0): a Gecko home tab used
+                        // to be told to switch engines and print, but
+                        // the home page cannot print in either engine —
+                        // the reader/share handlers check isHome first
+                        // for the same reason.
+                        tab.isHome -> android.widget.Toast.makeText(
+                            context, "先打开一个网页再打印",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
                         tab.engine == Engine.GECKO -> android.widget.Toast.makeText(
                             context,
                             "火狐标签暂时不能打印，可以先切换到系统 WebView 再打印或存为 PDF",
                             android.widget.Toast.LENGTH_LONG
-                        ).show()
-                        tab.isHome -> android.widget.Toast.makeText(
-                            context, "先打开一个网页再打印",
-                            android.widget.Toast.LENGTH_SHORT
                         ).show()
                         !tab.printPage(context) -> android.widget.Toast.makeText(
                             context, "打印没能打开，请重试",
