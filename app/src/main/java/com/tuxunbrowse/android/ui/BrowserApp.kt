@@ -289,6 +289,7 @@ import com.tuxunbrowse.android.engine.GuardScript
 import com.tuxunbrowse.android.engine.SniffKind
 import com.tuxunbrowse.android.engine.SniffedResource
 import com.tuxunbrowse.android.engine.TabLoadError
+import com.tuxunbrowse.android.engine.ThumbnailCache
 import com.tuxunbrowse.android.engine.EngineFallbackAction
 import com.tuxunbrowse.android.engine.engineFallbackActions
 import com.tuxunbrowse.android.engine.engineFallbackReason
@@ -1058,6 +1059,13 @@ fun BrowserApp(
     fun enforceTrimMemoryPressure(level: Int) {
         val limit = trimAliveLimit(level) ?: return
         enforceEngineSleepLimit(limit)
+        // Same pressure pass, second squeeze (v0.127.0): the tab
+        // thumbnails are up to ~11 MB of pure decoration and were
+        // previously left alone by this pass. They are dropped
+        // unconditionally at these levels — even when few engines
+        // are alive — and recapture themselves on the next page
+        // finish or switch-away.
+        ThumbnailCache.clearAll()
     }
 
     // MainActivity forwards onTrimMemory to this bridge. The

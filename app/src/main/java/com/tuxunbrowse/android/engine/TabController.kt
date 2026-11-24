@@ -713,6 +713,29 @@ object ThumbnailCache {
     fun onTabDestroyed(tab: BrowserTab) {
         holders.remove(tab)
     }
+
+    /**
+     * Drop EVERY thumbnail at once (v0.127.0 perf/memory audit):
+     * the system memory-pressure pass used to squeeze only the
+     * engines, leaving up to [MAX_THUMBNAILS] preview bitmaps —
+     * roughly 11 MB of pixels — untouched at exactly the moment
+     * the system is asking for memory back. A thumbnail is pure
+     * decoration: the tab grid falls back to its placeholder, and
+     * the preview is recaptured on the next page finish or
+     * switch-away, so dropping all of them (the active tab's too)
+     * costs the user nothing but a briefly plainer tab grid.
+     * References only, never recycle — a card may still be
+     * drawing one in the current frame, same rule as the LRU
+     * eviction in [onThumbnailSet].
+     */
+    @Synchronized
+    fun clearAll() {
+        val all = holders.toList()
+        holders.clear()
+        for (tab in all) {
+            tab.thumbnail = null
+        }
+    }
 }
 
 /** One browser tab. Holds its own WebView or GeckoSession so tabs keep state. */
