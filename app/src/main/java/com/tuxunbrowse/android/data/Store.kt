@@ -2145,10 +2145,14 @@ fun resolveInput(
     // Only http(s) URLs pass through as-is (v0.31.0): the old about:
     // and file: pass-throughs are gone — file: pages are refused like
     // every other non-web scheme (see isAllowedPageUrl), and about:
-    // pages were never a feature of this browser.
-    if (text.startsWith("http://") || text.startsWith("https://")) return text
+    // pages were never a feature of this browser. The scheme check is
+    // case-insensitive (v0.114.0): "HTTP://EXAMPLE.COM" is an http
+    // URL, and the old case-sensitive check mangled it into
+    // "https://HTTP://…" instead of passing it through.
+    val lower = text.lowercase()
+    if (lower.startsWith("http://") || lower.startsWith("https://")) return text
     val looksLikeHost = !text.contains(" ") &&
-        (text.contains(".") || text.startsWith("localhost"))
+        (text.contains(".") || lower.startsWith("localhost"))
     return if (looksLikeHost) {
         "https://$text"
     } else {
@@ -2164,9 +2168,12 @@ fun resolveInput(
 fun isUrlLikeInput(input: String): Boolean {
     val text = input.trim()
     if (text.isEmpty()) return false
-    if (text.startsWith("http://") || text.startsWith("https://")) return true
+    // Mirror resolveInput exactly, including its case-insensitive
+    // scheme and localhost checks (v0.114.0).
+    val lower = text.lowercase()
+    if (lower.startsWith("http://") || lower.startsWith("https://")) return true
     return !text.contains(" ") &&
-        (text.contains(".") || text.startsWith("localhost"))
+        (text.contains(".") || lower.startsWith("localhost"))
 }
 
 /**
