@@ -1133,6 +1133,10 @@ fun BrowserApp(
         if (jsPromptRequest != null || authPromptRequest != null ||
             sslPromptRequest != null
         ) return
+        // The two page menus hold the stage too (v0.122.0): a queued
+        // clipboard prompt must not pop up over a long-press or
+        // selection menu the user is still deciding on.
+        if (pageContextMenu != null || geckoSelectionMenu != null) return
         while (geckoClipboardQueue.isNotEmpty()) {
             val next = geckoClipboardQueue.removeAt(0)
             if (tabs.any { it.id == next.tabId } &&
@@ -1180,12 +1184,14 @@ fun BrowserApp(
             respond = respond
         )
         if (geckoClipboardPermission == null && jsPromptRequest == null &&
-            authPromptRequest == null && sslPromptRequest == null
+            authPromptRequest == null && sslPromptRequest == null &&
+            pageContextMenu == null && geckoSelectionMenu == null
         ) {
             geckoClipboardPermission = state
         } else {
             // Either another clipboard prompt is already showing, or
-            // a JS / auth / SSL dialog owns the stage (v0.102.0):
+            // a JS / auth / SSL dialog owns the stage (v0.102.0), or
+            // a long-press / selection menu does (v0.122.0):
             // queue — promotion re-checks the stage is free, the tab
             // is still there and still active before showing.
             geckoClipboardQueue.add(state)
@@ -2571,7 +2577,8 @@ fun BrowserApp(
     // no page waits forever and no answer callback leaks.
     geckoJsPromptHandler = { kind, message, defaultValue, respond ->
         if (jsPromptRequest != null || authPromptRequest != null ||
-            sslPromptRequest != null || geckoClipboardPermission != null
+            sslPromptRequest != null || geckoClipboardPermission != null ||
+            pageContextMenu != null || geckoSelectionMenu != null
         ) {
             respond(false, null)
         } else {
@@ -2586,7 +2593,8 @@ fun BrowserApp(
     // types live only in the dialog state and this callback.
     httpAuthHandler = { info, respond ->
         if (authPromptRequest != null || jsPromptRequest != null ||
-            sslPromptRequest != null || geckoClipboardPermission != null
+            sslPromptRequest != null || geckoClipboardPermission != null ||
+            pageContextMenu != null || geckoSelectionMenu != null
         ) {
             respond(null, null)
         } else {
@@ -2599,7 +2607,8 @@ fun BrowserApp(
     // of stacking another dialog.
     sslErrorHandler = { failedUrl, description, respond ->
         if (sslPromptRequest != null || authPromptRequest != null ||
-            jsPromptRequest != null || geckoClipboardPermission != null
+            jsPromptRequest != null || geckoClipboardPermission != null ||
+            pageContextMenu != null || geckoSelectionMenu != null
         ) {
             respond(false)
         } else {
@@ -2849,9 +2858,13 @@ fun BrowserApp(
     // the queue; when the last of those dialogs clears, promote it
     // (promotion itself re-checks the stage is free and the tab is
     // still the active one, denying cleanly otherwise).
-    LaunchedEffect(jsPromptRequest, authPromptRequest, sslPromptRequest) {
+    LaunchedEffect(
+        jsPromptRequest, authPromptRequest, sslPromptRequest,
+        pageContextMenu, geckoSelectionMenu
+    ) {
         if (jsPromptRequest == null && authPromptRequest == null &&
-            sslPromptRequest == null
+            sslPromptRequest == null && pageContextMenu == null &&
+            geckoSelectionMenu == null
         ) {
             promoteNextClipboardPermission()
         }
