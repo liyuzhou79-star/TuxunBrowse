@@ -291,6 +291,68 @@ import org.mozilla.geckoview.GeckoSession
 private enum class Screen { PICKER, BROWSER, BOOKMARKS, HISTORY, SETTINGS, DOWNLOADS, CLEAR_DATA, SNIFF }
 
 /**
+ * One recently closed tab, kept in memory only (never on disk) so it
+ * can be reopened from the tab sheet. Incognito tabs are NEVER put
+ * on this stack — incognito leaves no trace, by definition.
+ */
+private data class ClosedTabInfo(
+    val title: String,
+    val engine: Engine,
+    val url: String,
+    val desktopMode: Boolean
+)
+
+/** How many recently closed tabs the session stack remembers. */
+private const val MAX_RECENT_CLOSED = 10
+
+/** A JavaScript dialog (alert/confirm/prompt) waiting for the user. */
+private data class JsPromptState(
+    val kind: GeckoJsPromptKind,
+    val message: String,
+    val defaultValue: String,
+    val respond: (Boolean, String?) -> Unit
+)
+
+/**
+ * An HTTP Basic-auth challenge waiting for the user. The credentials
+ * typed into the dialog exist only in the dialog's own state and in
+ * this answer callback — they are never stored or logged.
+ */
+private data class AuthPromptState(
+    val info: HttpAuthRequestInfo,
+    val respond: (String?, String?) -> Unit
+)
+
+/**
+ * Read an imported file's full text, stopping at
+ * [MAX_IMPORT_FILE_CHARS]. Import files are untrusted input: reading
+ * one unbounded with readText() lets an oversized file exhaust
+ * memory before any parser gets a chance to reject it. Throws on
+ * oversize or I/O failure — callers catch and report in plain
+ * language without touching existing data.
+ */
+private fun readImportFileText(
+    context: android.content.Context,
+    uri: android.net.Uri
+): String {
+    val reader = context.contentResolver.openInputStream(uri)?.bufferedReader()
+        ?: throw java.io.IOException("cannot open import file")
+    val sb = StringBuilder()
+    reader.use { r ->
+        val buf = CharArray(8192)
+        while (true) {
+            val n = r.read(buf)
+            if (n < 0) break
+            if (sb.length + n > MAX_IMPORT_FILE_CHARS) {
+                throw java.io.IOException("import file too large")
+            }
+            sb.append(buf, 0, n)
+        }
+    }
+    return sb.toString()
+}
+
+/**
  * Copy plain text to the system clipboard. Returns false when the
  * clipboard service is unavailable or refuses — callers must not
  * claim "copied" in that case.

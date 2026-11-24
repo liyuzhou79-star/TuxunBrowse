@@ -33,6 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import androidx.webkit.ScriptHandler
 import com.tuxunbrowse.android.data.Engine
 import com.tuxunbrowse.android.data.GeckoDownloadRecord
 import com.tuxunbrowse.android.data.HOME_URL
@@ -376,6 +377,69 @@ const val WEB_ARCHIVE_MIME_TYPE = "multipart/related"
  * filesystem-rejected) name; the date suffix and extension are
  * added on top of this cap, not counted inside it.
  */
+
+/** Resource groups the page sniffer reports, in display order. */
+enum class SniffKind { FILE, IMAGE, MEDIA }
+
+/** One downloadable resource link found on the current page. */
+data class SniffedResource(
+    val url: String,
+    val name: String,
+    val host: String,
+    val kind: SniffKind
+)
+
+/** Parse the sniffer script's JSON answer into typed resources. */
+private fun parseSniffResult(raw: String?): List<SniffedResource> {
+    if (raw.isNullOrBlank() || raw == "null") return emptyList()
+    return try {
+        // evaluateJavascript hands back the page's return value JSON
+        // encoded, so a JS string arrives as a quoted JSON string.
+        val text = org.json.JSONTokener(raw).nextValue() as? String
+            ?: return emptyList()
+        val arr = org.json.JSONArray(text)
+        val out = mutableListOf<SniffedResource>()
+        for (i in 0 until arr.length()) {
+            val obj = arr.optJSONObject(i) ?: continue
+            val u = obj.optString("url")
+            if (u.isBlank()) continue
+            val kind = when (obj.optString("kind")) {
+                "image" -> SniffKind.IMAGE
+                "media" -> SniffKind.MEDIA
+                else -> SniffKind.FILE
+            }
+            val name = obj.optString("name").ifBlank {
+                u.substringBefore("?").substringBefore("#")
+                    .substringAfterLast("/").ifBlank { u }
+            }
+            out.add(SniffedResource(u, name, hostOf(u) ?: "", kind))
+        }
+        out
+    } catch (t: Throwable) {
+        emptyList()
+    }
+}
+
+/** Plain-language reason for a WebView main-frame error code. */
+private fun webViewErrorReason(errorCode: Int): String = when (errorCode) {
+    WebViewClient.ERROR_HOST_LOOKUP ->
+        "找不到这个网站，可能是网址写错了，或者现在的网络连不上它"
+    WebViewClient.ERROR_CONNECT ->
+        "连不上这个网站，请检查网络后再试"
+    WebViewClient.ERROR_TIMEOUT ->
+        "这个网站半天没回应，连接超时了"
+    WebViewClient.ERROR_REDIRECT_LOOP ->
+        "这个网站一直在来回跳转，没法打开"
+    WebViewClient.ERROR_FAILED_SSL_HANDSHAKE ->
+        "和这个网站的安全连接没建起来，没法打开"
+    WebViewClient.ERROR_BAD_URL ->
+        "这个网址写得不对，打不开"
+    WebViewClient.ERROR_UNSUPPORTED_SCHEME ->
+        "这种链接本应用打不开"
+    WebViewClient.ERROR_TOO_MANY_REQUESTS ->
+        "这个网站说请求太多了，请过一会儿再试"
+    else -> "网页没能打开，请检查网络后重试"
+}
 
 /**
  * Plain-language reason for a Gecko load error. WebRequestError's
@@ -875,7 +939,7 @@ class BrowserTab(
      * unsupported WebView, or no WebView yet). Removed again in
      * [destroy] / [sleepEngine] alongside the WebView it belongs to.
      */
-    private var guardScriptHandler: WebViewCompat.ScriptHandler? = null
+    private var guardScriptHandler: ScriptHandler? = null
 
     /**
      * Lazy engine creation (v0.23.0): a tab starts out as data only

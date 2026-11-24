@@ -141,6 +141,20 @@ data class TabBookmarkCandidate(
 )
 
 
+data class HistoryItem(val title: String, val url: String, val time: Long)
+
+/**
+ * Time ranges offered when clearing history (v0.79.0). A range is
+ * a window ending NOW: clearing removes every entry whose
+ * timestamp falls inside the window and keeps everything older.
+ * [windowMillis] is null for ALL, which has no lower bound.
+ */
+enum class HistoryClearRange(val label: String, val windowMillis: Long?) {
+    LAST_HOUR("最近一小时", 3_600_000L),
+    LAST_24_HOURS("最近 24 小时", 86_400_000L),
+    ALL("全部时间", null)
+}
+
 /**
  * The cutoff timestamp for a ranged history clear (v0.79.0): an
  * entry is removed iff its time is >= the returned cutoff, so an
