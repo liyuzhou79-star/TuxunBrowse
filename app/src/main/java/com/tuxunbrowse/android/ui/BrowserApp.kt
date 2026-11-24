@@ -9107,8 +9107,6 @@ private fun BookmarksScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
-@Composable
 /**
  * Range picker + confirmation for clearing history (v0.79.0):
  * one official AlertDialog shared by the history page and the
@@ -9158,6 +9156,8 @@ private fun HistoryRangeClearDialog(
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@Composable
 private fun HistoryScreen(
     history: List<HistoryItem>,
     onBack: () -> Unit,
