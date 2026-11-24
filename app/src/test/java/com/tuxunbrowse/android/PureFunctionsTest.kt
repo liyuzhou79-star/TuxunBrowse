@@ -1367,9 +1367,10 @@ class AdBlockerListTest {
 
 /**
  * Memory-pressure sleep gate and victim choice (v0.78.0). The
- * level constants are the platform's ComponentCallbacks2 values:
- * RUNNING_MODERATE 10, RUNNING_LOW 15, UI_HIDDEN 20, BACKGROUND 40,
- * MODERATE 60, RUNNING_CRITICAL 80 (COMPLETE is also 80).
+ * level constants are the platform's ComponentCallbacks2 values —
+ * two separate scales, not one: while running, RUNNING_MODERATE 5 /
+ * RUNNING_LOW 10 / RUNNING_CRITICAL 15; once cached, UI_HIDDEN 20 /
+ * BACKGROUND 40 / MODERATE 60 / COMPLETE 80.
  */
 class TrimMemoryPressureTest {
 
@@ -1381,14 +1382,16 @@ class TrimMemoryPressureTest {
 
     @Test
     fun criticalLevelSqueezesToOneAliveEngine() {
+        // TRIM_MEMORY_RUNNING_CRITICAL and TRIM_MEMORY_COMPLETE.
+        assertEquals(1, trimAliveLimit(15))
         assertEquals(1, trimAliveLimit(80))
         assertEquals(1, trimAliveLimit(100))
     }
 
     @Test
     fun lowerLevelsNeverTrigger() {
+        assertNull(trimAliveLimit(5))
         assertNull(trimAliveLimit(10))
-        assertNull(trimAliveLimit(15))
         assertNull(trimAliveLimit(20))
         assertNull(trimAliveLimit(40))
         assertNull(trimAliveLimit(60))

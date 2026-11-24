@@ -469,17 +469,22 @@ fun selectSleepVictims(
 /**
  * Memory-pressure sleep trigger (v0.78.0): the alive-engine limit
  * to enforce for a system trim-memory level, or null when the
- * level must not trigger anything. Only the critical running level
- * (TRIM_MEMORY_RUNNING_CRITICAL = 80, the system is about to start
- * killing background processes) — and anything at or above it —
- * squeezes the browser down to the active tab alone; moderate and
- * lower levels (RUNNING_MODERATE 10, RUNNING_LOW 15, UI_HIDDEN 20,
- * BACKGROUND 40, MODERATE 60) are ignored on purpose so a routine
+ * level must not trigger anything. The trim levels are NOT one
+ * severity scale: while the app is running they are
+ * RUNNING_MODERATE 5 / RUNNING_LOW 10 / RUNNING_CRITICAL 15, and
+ * once the process is cached they are UI_HIDDEN 20 / BACKGROUND
+ * 40 / MODERATE 60 / COMPLETE 80. Only the two top-of-scale
+ * levels — TRIM_MEMORY_RUNNING_CRITICAL (15, still running but
+ * the system is about to kill background processes) and
+ * TRIM_MEMORY_COMPLETE (80, cached process about to be released)
+ * — squeeze the browser down to the active tab alone; every
+ * moderate or lower level is ignored on purpose so a routine
  * memory tidy-up never throws away the user's warm tabs.
  */
 fun trimAliveLimit(level: Int): Int? =
-    if (level >= android.content.ComponentCallbacks2
-            .TRIM_MEMORY_RUNNING_CRITICAL
+    if (level == android.content.ComponentCallbacks2
+            .TRIM_MEMORY_RUNNING_CRITICAL ||
+        level >= android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE
     ) 1 else null
 
 private const val DESKTOP_USER_AGENT =
