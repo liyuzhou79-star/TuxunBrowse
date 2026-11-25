@@ -1305,6 +1305,21 @@ class Store(private val context: Context) {
                 .apply()
         }
 
+    /**
+     * Fingerprint mode's proxy (v0.197.0), one JSON pref in the
+     * same fp_* family, out of backups for the same reason: a
+     * proxy address is this device's network setup, not user
+     * data a backup should carry to another machine.
+     */
+    var fpProxy: com.tuxunbrowse.android.engine.FpProxyConfig
+        get() = com.tuxunbrowse.android.engine.FpProxyConfig
+            .fromJson(safeString(KEY_FP_PROXY, null))
+        set(value) {
+            prefs.edit()
+                .putString(KEY_FP_PROXY, value.toJson())
+                .apply()
+        }
+
     /** Save [entry] unless an identical combination is saved. */
     fun addCustomFingerprint(
         entry: com.tuxunbrowse.android.engine.CustomFingerprint
@@ -1735,6 +1750,7 @@ class Store(private val context: Context) {
         private const val KEY_FP_LANGUAGE = "fp_language"
         private const val KEY_FP_CUSTOM = "fp_custom"
         private const val KEY_FP_PROTECT = "fp_protect"
+        private const val KEY_FP_PROXY = "fp_proxy"
         private const val KEY_COMPAT_SITES = "compat_sites"
         private const val KEY_DESKTOP_SITES = "desktop_sites"
         private const val KEY_BOOKMARKS = "bookmarks"

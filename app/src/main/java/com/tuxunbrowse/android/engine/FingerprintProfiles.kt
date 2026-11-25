@@ -835,6 +835,88 @@ object FingerprintProfiles {
     }
 
     /**
+     * Serialise saved combinations for export (v0.197.0): a
+     * small wrapped document so the file names its own kind
+     * and version instead of being a bare array a future format
+     * change could silently misread.
+     */
+    fun customProfilesToJson(
+        entries: List<CustomFingerprint>
+    ): String {
+        val arr = org.json.JSONArray()
+        for (item in entries) {
+            arr.put(
+                org.json.JSONObject()
+                    .put("r", item.regionId)
+                    .put("d", item.deviceId)
+                    .put("t", item.timezoneId)
+                    .put("l", item.language)
+                    .put("label", item.label)
+            )
+        }
+        return org.json.JSONObject()
+            .put("app", "TuxunBrowse")
+            .put("kind", "fingerprint-profiles")
+            .put("version", 1)
+            .put("profiles", arr)
+            .toString()
+    }
+
+    /**
+     * Parse an exported combinations file (v0.197.0). Accepts
+     * the wrapped document and, leniently, a bare array in the
+     * same entry shape. Entries naming an unknown region are
+     * dropped (a combination from a build with other regions
+     * must not resolve into a cross-region mix); the remaining
+     * ids are NOT validated further — applying an entry goes
+     * through the same bounded resolve as everything else, so
+     * a stale device or language degrades to the region
+     * default. Duplicates (same four ids) collapse.
+     */
+    fun parseCustomProfiles(
+        raw: String?
+    ): List<CustomFingerprint> {
+        if (raw.isNullOrBlank()) return emptyList()
+        val arr = try {
+            val trimmed = raw.trim()
+            if (trimmed.startsWith("[")) {
+                org.json.JSONArray(trimmed)
+            } else {
+                org.json.JSONObject(trimmed)
+                    .optJSONArray("profiles")
+                    ?: return emptyList()
+            }
+        } catch (t: Throwable) {
+            return emptyList()
+        }
+        val knownRegions = all.map { it.regionId }.toSet()
+        val out = mutableListOf<CustomFingerprint>()
+        for (i in 0 until arr.length()) {
+            val obj = arr.optJSONObject(i) ?: continue
+            val regionId = obj.optString("r")
+            if (regionId !in knownRegions) continue
+            val entry = CustomFingerprint(
+                regionId = regionId,
+                deviceId = obj.optString("d"),
+                timezoneId = obj.optString("t"),
+                language = obj.optString("l"),
+                label = obj.optString("label")
+            )
+            if (out.any {
+                    it.regionId == entry.regionId &&
+                        it.deviceId == entry.deviceId &&
+                        it.timezoneId == entry.timezoneId &&
+                        it.language == entry.language
+                }
+            ) {
+                continue
+            }
+            out += entry
+        }
+        return out
+    }
+
+    /**
      * Resolve stored ids to the live combination. Every component
      * falls back INSIDE its own region's set — an unknown device
      * or a language from another region resolves to the region's

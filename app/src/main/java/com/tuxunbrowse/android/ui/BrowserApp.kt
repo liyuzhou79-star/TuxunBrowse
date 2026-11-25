@@ -2128,6 +2128,11 @@ fun BrowserApp(
         if (fpTabs.isEmpty()) newFpTab()
         fingerprintMode = true
         screen = Screen.BROWSER
+        // The mode's proxy window opens with the mode (v0.197.0):
+        // the override is app-wide, so it is applied exactly
+        // here and cleared in exitFingerprintMode, nowhere else.
+        com.tuxunbrowse.android.engine.FpProxyControl
+            .apply(store.fpProxy)
     }
 
     /**
@@ -2141,11 +2146,15 @@ fun BrowserApp(
         newFpTab()
         fingerprintMode = true
         screen = Screen.BROWSER
+        com.tuxunbrowse.android.engine.FpProxyControl
+            .apply(store.fpProxy)
     }
 
     /** Leave fingerprint mode; its tabs stay as they are. */
     fun exitFingerprintMode() {
         fingerprintMode = false
+        // The proxy window closes with the mode (v0.197.0).
+        com.tuxunbrowse.android.engine.FpProxyControl.clear()
     }
 
     /**
@@ -4187,6 +4196,21 @@ fun BrowserApp(
                     protection = fingerprintProtection,
                     onProtectionChange = {
                         applyFingerprintProtection(it)
+                    },
+                    proxyConfig = store.fpProxy,
+                    onProxyChange = { config ->
+                        store.fpProxy = config
+                        // The mode is open when this fires, so the
+                        // new routing takes effect at once: a
+                        // usable enabled config applies, anything
+                        // else clears (v0.197.0).
+                        if (config.isUsable) {
+                            com.tuxunbrowse.android.engine
+                                .FpProxyControl.apply(config)
+                        } else {
+                            com.tuxunbrowse.android.engine
+                                .FpProxyControl.clear()
+                        }
                     }
                 )
             } else {
@@ -13449,7 +13473,11 @@ private fun FingerprintShell(
     onOpenSettings: () -> Unit = {},
     onCloseAllTabs: () -> Unit = {},
     protection: FingerprintProtection = FingerprintProtection(),
-    onProtectionChange: (FingerprintProtection) -> Unit = {}
+    onProtectionChange: (FingerprintProtection) -> Unit = {},
+    proxyConfig: com.tuxunbrowse.android.engine.FpProxyConfig =
+        com.tuxunbrowse.android.engine.FpProxyConfig(),
+    onProxyChange: (com.tuxunbrowse.android.engine.FpProxyConfig) -> Unit =
+        {}
 ) {
     val context = LocalContext.current
     val profile = resolved.profile
@@ -13461,6 +13489,81 @@ private fun FingerprintShell(
     var customs by remember {
         mutableStateOf(customProfiles)
     }
+    // Export / import for the saved combinations (v0.197.0):
+    // the file is the wrapped JSON FingerprintProfiles builds;
+    // importing merges through the same dedupe the save button
+    // uses and reports the count honestly, including zero.
+    val exportCustomsLauncher =
+        rememberLauncherForActivityResult(
+            androidx.activity.result.contract
+                .ActivityResultContracts.CreateDocument(
+                    "application/json"
+                )
+        ) { uri ->
+            if (uri == null) return@rememberLauncherForActivityResult
+            try {
+                context.contentResolver.openOutputStream(uri)
+                    ?.use { out ->
+                        out.write(
+                            com.tuxunbrowse.android.engine
+                                .FingerprintProfiles
+                                .customProfilesToJson(customs)
+                                .toByteArray(Charsets.UTF_8)
+                        )
+                    }
+                android.widget.Toast.makeText(
+                    context, "已导出 ${customs.size} 条档案",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            } catch (t: Throwable) {
+                android.widget.Toast.makeText(
+                    context, "导出失败，文件没有写成",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    val importCustomsLauncher =
+        rememberLauncherForActivityResult(
+            androidx.activity.result.contract
+                .ActivityResultContracts.OpenDocument()
+        ) { uri ->
+            if (uri == null) return@rememberLauncherForActivityResult
+            try {
+                val text = context.contentResolver
+                    .openInputStream(uri)?.bufferedReader()
+                    ?.readText()
+                val parsed = com.tuxunbrowse.android.engine
+                    .FingerprintProfiles.parseCustomProfiles(text)
+                var added = 0
+                for (entry in parsed) {
+                    if (customs.none {
+                            it.regionId == entry.regionId &&
+                                it.deviceId == entry.deviceId &&
+                                it.timezoneId == entry.timezoneId &&
+                                it.language == entry.language
+                        }
+                    ) {
+                        customs = customs + entry
+                        onSaveCustomProfile(entry)
+                        added++
+                    }
+                }
+                android.widget.Toast.makeText(
+                    context,
+                    if (added > 0) {
+                        "已导入 $added 条档案"
+                    } else {
+                        "没有导入新的档案（文件里没有新组合）"
+                    },
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            } catch (t: Throwable) {
+                android.widget.Toast.makeText(
+                    context, "导入失败，这个文件读不了",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
+        }
     var showTabs by remember { mutableStateOf(false) }
     var showPicker by remember { mutableStateOf(false) }
     var showFpMenu by remember { mutableStateOf(false) }
@@ -13904,6 +14007,8 @@ private fun FingerprintShell(
                         },
                         protection = protection,
                         onProtectionChange = onProtectionChange,
+                        proxyConfig = proxyConfig,
+                        onProxyChange = onProxyChange,
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
@@ -14799,6 +14904,34 @@ private fun FingerprintShell(
                         Text("保存当前组合")
                     }
                 }
+                item {
+                    Row(
+                        horizontalArrangement =
+                            Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                exportCustomsLauncher.launch(
+                                    "tuxunbrowse-fingerprint-profiles.json"
+                                )
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("导出我的档案")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                importCustomsLauncher.launch(
+                                    arrayOf("application/json")
+                                )
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("导入档案")
+                        }
+                    }
+                }
                 items(customs) { entry ->
                     ElevatedCard(
                         onClick = {
@@ -15192,12 +15325,17 @@ private fun FingerprintHome(
         {},
     protection: FingerprintProtection = FingerprintProtection(),
     onProtectionChange: (FingerprintProtection) -> Unit = {},
+    proxyConfig: com.tuxunbrowse.android.engine.FpProxyConfig =
+        com.tuxunbrowse.android.engine.FpProxyConfig(),
+    onProxyChange: (com.tuxunbrowse.android.engine.FpProxyConfig) -> Unit =
+        {},
     modifier: Modifier = Modifier
 ) {
     val profile = resolved.profile
     val zone = resolved.timezone
     val fpHomeContext = LocalContext.current
     var query by remember { mutableStateOf("") }
+    var showProxyDialog by remember { mutableStateOf(false) }
     // Built-in fingerprint self-check (v0.184.0): a local-only
     // probe run. A throwaway WebView loads about:blank, the
     // CURRENT profile's payload is evaluated into it, and a
@@ -15548,6 +15686,53 @@ private fun FingerprintHome(
                 }
             }
         }
+        // Proxy card (v0.197.0): the mode's one proxy, applied
+        // for exactly the window the mode is open. The wording
+        // carries the platform truth — the WebView override is
+        // app-wide and Gecko never reads it — because a user
+        // pairing an IP with a fingerprint deserves to know
+        // precisely which tabs the pairing covers.
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    "代理",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text("当前：${proxyConfig.summary}")
+                Text(
+                    "打开指纹模式期间生效，退出模式自动断开。" +
+                        "这期间普通模式的系统 WebView 标签也会走这个代理，" +
+                        "火狐标签不受影响。系统接口不支持带账号密码的代理。" +
+                        "设好后用上面的出口 IP 自查确认出口对不对。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { showProxyDialog = true }
+                    ) {
+                        Text("设置代理")
+                    }
+                    if (proxyConfig.host.isNotBlank()) {
+                        OutlinedButton(
+                            onClick = {
+                                onProxyChange(
+                                    com.tuxunbrowse.android.engine
+                                        .FpProxyConfig()
+                                )
+                            }
+                        ) {
+                            Text("清除")
+                        }
+                    }
+                }
+            }
+        }
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(
                 modifier = Modifier.padding(16.dp),
@@ -15686,6 +15871,132 @@ private fun FingerprintHome(
                 storageSentence +
                 "网站能从请求里看出你在用本浏览器（应用标识头关不掉）。",
             style = MaterialTheme.typography.bodyMedium
+        )
+    }
+    if (showProxyDialog) {
+        var scheme by remember(showProxyDialog) {
+            mutableStateOf(proxyConfig.scheme)
+        }
+        var host by remember(showProxyDialog) {
+            mutableStateOf(proxyConfig.host)
+        }
+        var portText by remember(showProxyDialog) {
+            mutableStateOf(
+                if (proxyConfig.port in 1..65535) {
+                    proxyConfig.port.toString()
+                } else {
+                    ""
+                }
+            )
+        }
+        var enabled by remember(showProxyDialog) {
+            mutableStateOf(proxyConfig.enabled)
+        }
+        val port = portText.toIntOrNull()
+        val valid = host.isNotBlank() && port != null &&
+            port in 1..65535
+        AlertDialog(
+            onDismissRequest = { showProxyDialog = false },
+            title = { Text("设置代理") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        horizontalArrangement =
+                            Arrangement.spacedBy(8.dp)
+                    ) {
+                        for (candidate in com.tuxunbrowse
+                            .android.engine.FpProxyConfig.SCHEMES
+                        ) {
+                            FilterChip(
+                                selected = scheme == candidate,
+                                onClick = { scheme = candidate },
+                                label = {
+                                    Text(
+                                        when (candidate) {
+                                            "http" -> "HTTP"
+                                            "https" -> "HTTPS"
+                                            else -> "SOCKS5"
+                                        }
+                                    )
+                                }
+                            )
+                        }
+                    }
+                    OutlinedTextField(
+                        value = host,
+                        onValueChange = { host = it.trim() },
+                        label = { Text("主机地址") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = portText,
+                        onValueChange = { input ->
+                            portText =
+                                input.filter { it.isDigit() }
+                                    .take(5)
+                        },
+                        label = { Text("端口") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Number
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(
+                        verticalAlignment =
+                            Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            "启用",
+                            modifier = Modifier.weight(1f)
+                        )
+                        Switch(
+                            checked = enabled,
+                            onCheckedChange = { enabled = it }
+                        )
+                    }
+                    Text(
+                        "系统接口不支持带账号密码的代理；" +
+                            "需要鉴权的代理请用无鉴权的入口或系统 VPN。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme
+                            .onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = valid,
+                    onClick = {
+                        showProxyDialog = false
+                        onProxyChange(
+                            com.tuxunbrowse.android.engine
+                                .FpProxyConfig(
+                                    enabled = enabled,
+                                    scheme = scheme,
+                                    host = host,
+                                    port = port ?: 0
+                                )
+                        )
+                    }
+                ) {
+                    Text("保存")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showProxyDialog = false }
+                ) {
+                    Text("取消")
+                }
+            }
         )
     }
 }
