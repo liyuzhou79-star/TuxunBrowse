@@ -620,6 +620,149 @@ object FingerprintProfiles {
         all.firstOrNull { it.regionId == id } ?: all.first()
 
     /**
+     * The correlation-rule layer (v0.183.0): fingerprint-suite-
+     * style cross-field rules, encoded as a pure checker. Each
+     * rule names a contradiction a cross-examining detector
+     * could spot by comparing two surfaces of the same story
+     * (WebGL renderer against WebGPU identity, UA against the
+     * model, the font shelf against the vendor, caps against
+     * each other). Returns the broken rules' descriptions —
+     * empty means consistent. The consistency tests run this
+     * over the whole library (must stay empty) and over
+     * hand-broken copies (must be caught), so a future device
+     * added with a mismatched GPU or shelf fails CI instead
+     * of shipping. Two standing invariants are encoded as
+     * rules too: the plugins/pdfViewerEnabled pair must agree
+     * (both "no inline viewer" — the state the mode honestly
+     * presents, since a PDF navigation here downloads), and
+     * screen.orientation is deliberately NOT ruled — it
+     * follows the host's real posture, which is the correct
+     * answer for a portrait phone profile on a portrait phone.
+     */
+    fun violations(
+        profile: FingerprintProfile,
+        device: FpDevice
+    ): List<String> {
+        val out = mutableListOf<String>()
+        // GPU family: WebGL renderer <-> WebGPU identity.
+        val isAdreno = device.webGlRenderer.contains("Adreno")
+        val isMali = device.webGlRenderer.contains("Mali")
+        if (!isAdreno && !isMali) {
+            out += "WebGL renderer names an unknown GPU family"
+        }
+        if (isAdreno && (device.webGpuVendor != "qualcomm" ||
+                !device.webGpuArchitecture.startsWith("adreno"))
+        ) {
+            out += "Adreno renderer but WebGPU identity is not " +
+                "qualcomm/adreno"
+        }
+        if (isMali && (device.webGpuVendor != "arm" ||
+                device.webGpuArchitecture != "valhall")
+        ) {
+            out += "Mali renderer but WebGPU identity is not " +
+                "arm/valhall"
+        }
+        // UA <-> model.
+        if (!device.userAgent.contains(device.uaModel)) {
+            out += "UA does not carry the device model token"
+        }
+        if (!device.userAgent.contains("Android") ||
+            !device.userAgent.contains("Chrome/")
+        ) {
+            out += "UA is not an Android Chrome UA"
+        }
+        // Font shelf <-> vendor (by model-id prefix, the same
+        // read the script payload documents).
+        val isSamsung = device.id.startsWith("SM-")
+        val isPixel = device.id.startsWith("Pixel")
+        if (isSamsung && "SamsungOne" !in device.fonts) {
+            out += "Galaxy device without SamsungOne on its shelf"
+        }
+        if (isPixel && "Google Sans" !in device.fonts) {
+            out += "Pixel device without Google Sans on its shelf"
+        }
+        if (!isSamsung && "SamsungOne" in device.fonts) {
+            out += "Non-Galaxy device claiming SamsungOne"
+        }
+        if (!isPixel && "Google Sans" in device.fonts) {
+            out += "Non-Pixel device claiming Google Sans"
+        }
+        // Screen geometry sanity.
+        if (device.screenWidth >= device.screenHeight) {
+            out += "Screen geometry is not portrait"
+        }
+        if (device.devicePixelRatio < 2.0 ||
+            device.devicePixelRatio > 4.0
+        ) {
+            out += "DPR outside the plausible phone band"
+        }
+        // WebGL caps coherence.
+        if (device.webGl.maxCubeMapTextureSize >
+            device.webGl.maxTextureSize
+        ) {
+            out += "Cube-map cap exceeds the 2D texture cap"
+        }
+        if (device.webGl.maxCombinedTextureImageUnits <
+            device.webGl.maxTextureImageUnits
+        ) {
+            out += "Combined texture units below the fragment pool"
+        }
+        if (device.webGl.maxViewportDim <
+            maxOf(device.screenWidth, device.screenHeight)
+        ) {
+            out += "Max viewport below the screen's long side"
+        }
+        // Compute/memory plausibility.
+        if (device.hardwareConcurrency !in 4..12) {
+            out += "Core count outside the plausible phone band"
+        }
+        if (device.deviceMemory !in 2..16) {
+            out += "Device memory outside the plausible band"
+        }
+        // Region-side agreements.
+        if (profile.language !in profile.languageOptions) {
+            out += "Region default language not in its own options"
+        }
+        if (profile.voices.isEmpty() ||
+            !profile.voices.first().lang.startsWith(
+                profile.language.substringBefore('-')
+            )
+        ) {
+            out += "Voices do not lead with the region's language"
+        }
+        if (profile.timezones.isEmpty() || profile.devices.isEmpty()) {
+            out += "Region with an empty zone or device library"
+        }
+        return out
+    }
+
+    /** The same rules over a fully resolved combination. */
+    fun violations(resolved: ResolvedFingerprint): List<String> {
+        val out = violations(
+            resolved.profile, resolved.device
+        ).toMutableList()
+        if (resolved.profile.timezones.none {
+                it.id == resolved.timezone.id
+            }
+        ) {
+            out += "Resolved zone is not in the region's set"
+        }
+        if (resolved.profile.devices.none {
+                it.id == resolved.device.id
+            }
+        ) {
+            out += "Resolved device is not in the region's library"
+        }
+        if (resolved.language !in resolved.profile.languageOptions) {
+            out += "Resolved language is not in the region's options"
+        }
+        if (resolved.languages.firstOrNull() != resolved.language) {
+            out += "Language chain does not lead with the language"
+        }
+        return out
+    }
+
+    /**
      * navigator.languages for a primary [language]: the primary,
      * then the fallbacks a real device in that language community
      * carries — the base language and English behind non-English

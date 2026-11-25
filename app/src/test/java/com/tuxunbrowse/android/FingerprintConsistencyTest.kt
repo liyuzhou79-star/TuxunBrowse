@@ -237,6 +237,85 @@ class FingerprintConsistencyTest {
     }
 
     @Test
+    fun ruleLayerFindsTheWholeLibraryConsistent() {
+        // v0.183.0: the encoded correlation rules must hold
+        // over every region x device the library ships, and
+        // over every resolved combination the bounded resolver
+        // can produce (all languages x zones sampled via the
+        // default device of each region plus each device at
+        // the region default).
+        for (profile in FingerprintProfiles.all) {
+            for (device in profile.devices) {
+                assertEquals(
+                    "${profile.regionId}/${device.id}",
+                    emptyList<String>(),
+                    FingerprintProfiles.violations(profile, device)
+                )
+            }
+            for (language in profile.languageOptions) {
+                val resolved = FingerprintProfiles.resolve(
+                    profile.regionId, null, language = language
+                )
+                assertEquals(
+                    "${profile.regionId}/$language",
+                    emptyList<String>(),
+                    FingerprintProfiles.violations(resolved)
+                )
+            }
+        }
+    }
+
+    @Test
+    fun ruleLayerCatchesHandBrokenCombinations() {
+        // The negative half: each hand-broken copy must be
+        // caught by the rule that names its contradiction.
+        val us = FingerprintProfiles.region("US")
+        val pixel = us.devices.first { it.id.startsWith("Pixel") }
+        val galaxy = us.devices.first { it.id.startsWith("SM-") }
+        // Mali renderer wearing a Qualcomm WebGPU identity.
+        assertTrue(
+            FingerprintProfiles.violations(
+                us, pixel.copy(webGpuVendor = "qualcomm")
+            ).any { it.contains("WebGPU") }
+        )
+        // Galaxy with its own shelf entry stripped.
+        assertTrue(
+            FingerprintProfiles.violations(
+                us, galaxy.copy(fonts = galaxy.fonts - "SamsungOne")
+            ).any { it.contains("SamsungOne") }
+        )
+        // Pixel claiming the other vendor's shelf entry.
+        assertTrue(
+            FingerprintProfiles.violations(
+                us, pixel.copy(fonts = pixel.fonts + "SamsungOne")
+            ).any { it.contains("SamsungOne") }
+        )
+        // UA that names a different model than the device.
+        assertTrue(
+            FingerprintProfiles.violations(
+                us,
+                galaxy.copy(
+                    userAgent = galaxy.userAgent.replace(
+                        galaxy.uaModel, "SM-XXXXX"
+                    )
+                )
+            ).any { it.contains("UA") }
+        )
+        // Caps that contradict each other.
+        assertTrue(
+            FingerprintProfiles.violations(
+                us,
+                galaxy.copy(
+                    webGl = galaxy.webGl.copy(
+                        maxCubeMapTextureSize =
+                            galaxy.webGl.maxTextureSize + 1
+                    )
+                )
+            ).any { it.contains("Cube-map") }
+        )
+    }
+
+    @Test
     fun timezoneNamesCoverTheDaylightStory() {
         for (profile in FingerprintProfiles.all) {
             for (zone in profile.timezones) {
