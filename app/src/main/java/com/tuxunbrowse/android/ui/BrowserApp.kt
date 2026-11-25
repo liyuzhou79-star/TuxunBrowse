@@ -5590,7 +5590,22 @@ private fun HomeContent(
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
             title = { Text("删除这个书签？") },
-            text = { Text("会把「${toDelete.title}」从书签里删掉，首页的快捷入口也会一起消失。") },
+            text = {
+                // Scrollable body (v0.169.0 alignment pass, same
+                // v0.115.0/v0.137.0 treatment): the body embeds the
+                // bookmark's own title, an unbounded web-page value —
+                // a very long title at the largest font scale in a
+                // short landscape window could push the buttons off
+                // the bottom. verticalScroll changes nothing when
+                // the content fits.
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text("会把「${toDelete.title}」从书签里删掉，首页的快捷入口也会一起消失。")
+                }
+            },
             confirmButton = {
                 Button(onClick = {
                     onDeleteBookmark(toDelete)
@@ -8511,6 +8526,17 @@ private fun BrowserScreen(
                         if (tabs.size > 1) {
                             DropdownMenuItem(
                                 text = { Text("关闭其他标签") },
+                                // Leading icon (v0.169.0 alignment
+                                // pass): every other item in this
+                                // menu — and every item in the main
+                                // and new-tab menus — carries one;
+                                // this item was the lone exception.
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Filled.Close,
+                                        contentDescription = null
+                                    )
+                                },
                                 onClick = {
                                     tabMenuOpen = false
                                     showTabs = false
@@ -9458,10 +9484,19 @@ private fun BookmarksScreen(
             onDismissRequest = { pendingDeleteBookmark = null },
             title = { Text("删除这个书签？") },
             text = {
-                Text(
-                    "会把「${pendingBmDelete.title}」从书签里删掉，" +
-                        "首页的快捷入口也会一起消失。"
-                )
+                // Scrollable body (v0.169.0, same treatment as the
+                // home-page twin of this dialog): the embedded
+                // bookmark title is unbounded.
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        "会把「${pendingBmDelete.title}」从书签里删掉，" +
+                            "首页的快捷入口也会一起消失。"
+                    )
+                }
             },
             confirmButton = {
                 Button(onClick = {
@@ -11167,7 +11202,16 @@ private fun DownloadsScreen(
             onDismissRequest = { pendingDeleteEntry = null },
             title = { Text("删除这条下载记录？") },
             text = {
-                Text("「${toDeleteEntry.title}」的记录会被删掉，已经下载好的文件也会一起从下载文件夹里删掉，没法恢复。")
+                // Scrollable body (v0.169.0, same v0.115.0/v0.137.0
+                // treatment): the embedded entry title is an
+                // unbounded file name from the network.
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text("「${toDeleteEntry.title}」的记录会被删掉，已经下载好的文件也会一起从下载文件夹里删掉，没法恢复。")
+                }
             },
             confirmButton = {
                 Button(onClick = {
@@ -11539,11 +11583,20 @@ private fun DownloadsScreen(
             onDismissRequest = { pendingGeckoDelete = null },
             title = { Text("删除这条记录？") },
             text = {
-                Text(
-                    "「${toDeleteGecko.fileName}」的记录会被删掉，" +
-                        "下载文件夹里的文件也会一起删掉，没法恢复。" +
-                        "如果文件删不掉，记录会保留下来并告诉你。"
-                )
+                // Scrollable body (v0.169.0, same treatment as the
+                // system-download twin above): the embedded file
+                // name is unbounded.
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        "「${toDeleteGecko.fileName}」的记录会被删掉，" +
+                            "下载文件夹里的文件也会一起删掉，没法恢复。" +
+                            "如果文件删不掉，记录会保留下来并告诉你。"
+                    )
+                }
             },
             confirmButton = {
                 Button(onClick = {
@@ -12696,7 +12749,12 @@ private fun FingerprintShell(
     if (showTabs) {
         ModalBottomSheet(onDismissRequest = { showTabs = false }) {
             LazyColumn(
-                modifier = Modifier.fillMaxWidth(),
+                // Height cap (v0.169.0 alignment pass): the normal
+                // mode sheets cap their content at 600–640dp; this
+                // fingerprint-mode sheet was the lone uncapped one.
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 640.dp),
                 contentPadding = PaddingValues(bottom = 24.dp)
             ) {
                 item {
@@ -12746,7 +12804,13 @@ private fun FingerprintShell(
     if (showPicker) {
         ModalBottomSheet(onDismissRequest = { showPicker = false }) {
             LazyColumn(
-                modifier = Modifier.fillMaxWidth(),
+                // Height cap (v0.169.0, same alignment as the
+                // fingerprint tab sheet above): the picker is the
+                // longest sheet in the app (region/device/timezone/
+                // language sections) and was uncapped.
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 640.dp),
                 contentPadding = PaddingValues(
                     start = 16.dp, end = 16.dp, bottom = 24.dp
                 ),
