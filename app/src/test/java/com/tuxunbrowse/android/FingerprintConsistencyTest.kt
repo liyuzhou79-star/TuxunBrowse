@@ -28,7 +28,10 @@ class FingerprintConsistencyTest {
                     device.userAgent.contains(device.uaModel)
                 )
                 assertTrue(
-                    device.userAgent.contains("Chrome/131.0.6778.104")
+                    device.userAgent.contains(
+                        "Chrome/" +
+                            FingerprintProfiles.CHROME_FULL_VERSION
+                    )
                 )
                 assertTrue(device.userAgent.contains("Android 14"))
             }

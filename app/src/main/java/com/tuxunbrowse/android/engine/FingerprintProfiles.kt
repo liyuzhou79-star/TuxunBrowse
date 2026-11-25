@@ -212,9 +212,25 @@ data class CustomFingerprint(
 
 object FingerprintProfiles {
 
+    /**
+     * The Chrome version every profile claims (v0.175.0).
+     * Follows the current stable channel for Android; the full
+     * build number is a real published stable build (Chrome
+     * Releases blog: Chrome for Android 142.0.7444.158), never
+     * an invented one. This one constant feeds the UA string,
+     * the UA-CH brands and the full version list, so the three
+     * answers can never drift apart; bump it here when the
+     * stable channel moves on. (The claim is a version NUMBER —
+     * the engine underneath stays the host's system WebView,
+     * whose feature set a deep probe can still cross-check
+     * against the claim; recorded in the checkpoint.)
+     */
+    const val CHROME_MAJOR: String = "142"
+    const val CHROME_FULL_VERSION: String = "142.0.7444.158"
+
     private const val CHROME_TAIL =
         ") AppleWebKit/537.36 (KHTML, like Gecko) " +
-            "Chrome/131.0.6778.104 Mobile Safari/537.36"
+            "Chrome/$CHROME_FULL_VERSION Mobile Safari/537.36"
 
     private fun ua(model: String): String =
         "Mozilla/5.0 (Linux; Android 14; $model" + CHROME_TAIL

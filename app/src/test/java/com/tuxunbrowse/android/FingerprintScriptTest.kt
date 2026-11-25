@@ -189,6 +189,25 @@ class FingerprintScriptTest {
     }
 
     @Test
+    fun payloadUaVersionFollowsTheSharedConstant() {
+        // v0.175.0: UA string, UA-CH brands and the full
+        // version list all read the ONE version constant, at
+        // the current stable channel — a stale build number
+        // (6778) anywhere in the payload fails here.
+        val payload = FingerprintScript.payload(
+            FingerprintProfiles.resolve("US", null)
+        )
+        assertTrue(
+            payload.contains(
+                FingerprintProfiles.CHROME_FULL_VERSION
+            )
+        )
+        assertTrue(payload.contains("Chrome/142"))
+        assertFalse(payload.contains("6778"))
+        assertFalse(payload.contains("'131'"))
+    }
+
+    @Test
     fun payloadCarriesTheFontShelf() {
         // v0.174.0: document.fonts.check answers known system
         // families from the picked device's stock shelf — the
