@@ -4133,6 +4133,22 @@ fun dispatchSpecialLink(context: Context, url: String): String? {
  * Relative URLs are resolved against the page's base URI and the
  * result is de-duplicated before it leaves the page. The list is
  * capped so a pathological page cannot flood the UI.
+ *
+ * Collection order matters because of the cap (v0.140.0 audit):
+ * files and media are collected first, images last, so on an
+ * image-heavy page the cap can only ever trim images — before this
+ * pass the anchors → images → media order let 300 images starve
+ * every media entry out of the list. The anchor pass accepts the
+ * union of the file and media extension sets: before this pass it
+ * gated on the file set alone, so a direct link to a .webm/.m4a/
+ * .wav/.ogg/.flac file (media-set only) was never listed even
+ * though tapping the same link downloads it ([DOWNLOAD_EXTENSIONS]
+ * is the same union). Images report the URL the page actually
+ * loaded (currentSrc, which resolves srcset and lazy swaps) plus
+ * the common lazy-load data attributes, and an image the page
+ * rendered at exactly 1×1 (tracking pixel / spacer) is skipped.
+ * Media elements likewise prefer currentSrc so a source assigned
+ * from script is still found.
  */
 private val SNIFF_JS = """
 (function() {
@@ -4168,23 +4184,25 @@ private val SNIFF_JS = """
   document.querySelectorAll('a[href]').forEach(function(a) {
     var href = a.getAttribute('href') || '';
     var ext = extOf(href);
-    if (fileExts.indexOf(ext) >= 0) {
-      push(href, mediaExts.indexOf(ext) >= 0 ? 'media' : 'file');
-    }
-  });
-  document.querySelectorAll('img[src]').forEach(function(img) {
-    push(img.getAttribute('src'), 'image');
+    if (mediaExts.indexOf(ext) >= 0) push(href, 'media');
+    else if (fileExts.indexOf(ext) >= 0) push(href, 'file');
   });
   document.querySelectorAll(
-    'video[src], audio[src], video source[src], audio source[src]'
+    'video, audio, video source[src], audio source[src]'
   ).forEach(function(el) {
-    push(el.getAttribute('src'), 'media');
+    push(el.currentSrc || el.getAttribute('src'), 'media');
   });
   document.querySelectorAll('link[href]').forEach(function(l) {
     var href = l.getAttribute('href') || '';
     var ext = extOf(href);
     if (mediaExts.indexOf(ext) >= 0) push(href, 'media');
     else if (fileExts.indexOf(ext) >= 0) push(href, 'file');
+  });
+  document.querySelectorAll('img').forEach(function(img) {
+    if (img.naturalWidth === 1 && img.naturalHeight === 1) return;
+    push(img.currentSrc || img.getAttribute('src'), 'image');
+    push(img.getAttribute('data-src'), 'image');
+    push(img.getAttribute('data-original'), 'image');
   });
   return JSON.stringify(out.slice(0, 300));
 })()

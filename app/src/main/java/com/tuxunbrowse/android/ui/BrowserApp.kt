@@ -9961,7 +9961,8 @@ private fun HistoryScreen(
 /**
  * Page resource sniffer (WebView tabs only; Gecko tabs never reach
  * this screen — the menu entry explains why). Runs the collection
- * script once when the screen appears, then lists what was found
+ * script once when the screen appears and again from the top-bar
+ * refresh action (v0.140.0), then lists what was found
  * grouped by kind, each row downloadable through the existing
  * system-download path. Multi-select (v0.80.0) lets the user pick
  * a subset and start them all through the same batch dispatch the
@@ -10011,15 +10012,35 @@ private fun SniffScreen(
         selectMode = false
         selectedUrls = emptySet()
     }
-    LaunchedEffect(tab?.id) {
+    // Collection runs (v0.140.0): the screen collects once when it
+    // appears and again whenever the user taps the refresh action —
+    // a page that was still loading (or lazy-loads its resources)
+    // otherwise leaves the user with a partial list and no way to
+    // ask again short of leaving and re-entering. Each run takes a
+    // generation number and only the newest run may land its
+    // result, so a slow answer from an earlier run can never
+    // overwrite a fresher one.
+    var collectSeq by remember(tab?.id) { mutableStateOf(0) }
+    fun runCollect() {
         val target = tab
         if (target == null) {
             loading = false
-        } else {
-            target.collectPageResources { found ->
+            return
+        }
+        val seq = ++collectSeq
+        loading = true
+        target.collectPageResources { found ->
+            if (seq == collectSeq) {
                 resources = found
                 loading = false
             }
+        }
+    }
+    LaunchedEffect(tab?.id) {
+        if (tab == null) {
+            loading = false
+        } else {
+            runCollect()
         }
     }
     // Selection hygiene (v0.93.0 audit): a selection restored from
@@ -10072,6 +10093,21 @@ private fun SniffScreen(
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "返回"
+                        )
+                    }
+                },
+                actions = {
+                    // Re-collect (v0.140.0): the page may have
+                    // loaded more resources since the screen opened
+                    // (or was still loading when it did). Disabled
+                    // while a collection is in flight.
+                    IconButton(
+                        onClick = { runCollect() },
+                        enabled = !loading && tab != null
+                    ) {
+                        Icon(
+                            Icons.Filled.Refresh,
+                            contentDescription = "重新收集"
                         )
                     }
                 }
@@ -10232,12 +10268,17 @@ private fun SniffScreen(
                                 items(inGroup, key = { it.url }) { res ->
                                     ListItem(
                                         headlineContent = {
-                                            Text(res.name, maxLines = 2)
+                                            Text(
+                                                res.name,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
                                         },
                                         supportingContent = {
                                             Text(
                                                 res.host.ifBlank { res.url },
-                                                maxLines = 1
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
                                             )
                                         },
                                         leadingContent = {
