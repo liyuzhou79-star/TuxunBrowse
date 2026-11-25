@@ -7587,9 +7587,74 @@ private fun BrowserScreen(
                                 contentDescription = "新建标签页"
                             )
                         }
-                            DropdownMenu(
-                                                            expanded = showNewTabMenu,
-                                                            onDismissRequest = { showNewTabMenu = false }
+                        DropdownMenu(
+                            expanded = showNewTabMenu,
+                            onDismissRequest = { showNewTabMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("新建标签页") },
+                                leadingIcon = {
+                                    Icon(Icons.Filled.Add, contentDescription = null)
+                                },
+                                onClick = { showNewTabMenu = false; onNewTab() }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("用火狐新建") },
+                                leadingIcon = {
+                                    Icon(Icons.Filled.Language, contentDescription = null)
+                                },
+                                trailingIcon = if (mainEngine == Engine.GECKO) {
+                                    {
+                                        Text(
+                                            "默认",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                } else {
+                                    null
+                                },
+                                onClick = {
+                                    showNewTabMenu = false
+                                    onNewTabWithEngine(Engine.GECKO)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("用系统 WebView 新建") },
+                                leadingIcon = {
+                                    Icon(Icons.Filled.Language, contentDescription = null)
+                                },
+                                trailingIcon = if (mainEngine == Engine.WEBVIEW) {
+                                    {
+                                        Text(
+                                            "默认",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                } else {
+                                    null
+                                },
+                                onClick = {
+                                    showNewTabMenu = false
+                                    onNewTabWithEngine(Engine.WEBVIEW)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("新建无痕标签页") },
+                                leadingIcon = {
+                                    Icon(Icons.Filled.VisibilityOff, contentDescription = null)
+                                },
+                                onClick = {
+                                    showNewTabMenu = false
+                                    // NOT a shortcut around the
+                                    // picker: the incognito
+                                    // engine is still chosen in
+                                    // the usual dialog (v0.2.0).
+                                    showIncognitoPicker = true
+                                }
+                            )
+                        }
                     }
                     IconButton(
                         onClick = { showIncognitoPicker = true }
