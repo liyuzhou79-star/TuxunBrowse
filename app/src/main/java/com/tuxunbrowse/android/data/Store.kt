@@ -129,18 +129,6 @@ fun clearBookmarksFolder(
     if (it.folder.trim() == name) it.copy(folder = "") else it
 }
 
-/**
- * One open tab as the "save all tabs as bookmarks" planner sees it
- * (v0.87.0): plain values, so the classification below is
- * unit-testable without a live BrowserTab.
- */
-data class TabBookmarkCandidate(
-    val title: String,
-    val url: String,
-    val incognito: Boolean
-)
-
-
 data class HistoryItem(val title: String, val url: String, val time: Long)
 
 /**

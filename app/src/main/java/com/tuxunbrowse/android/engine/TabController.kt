@@ -376,43 +376,6 @@ fun engineFallbackReason(engine: Engine): String = when (engine) {
             "网页暂时打不开。可以先用火狐打开这个网站，或者等一下再重试。"
 }
 
-/**
- * Tallest full-page screenshot, in pixels. A page taller than this
- * is captured only up to the cap and the UI says so honestly.
- */
-
-/**
- * How much of a page's source the source page renders (v0.84.0).
- * The full text is kept whole in memory and is what "复制全文"
- * copies; only the DISPLAY is cut to this many leading characters,
- * with a notice stating the total — a multi-megabyte document
- * rendered as one selectable text node would jank the page.
- */
-const val SOURCE_DISPLAY_LIMIT = 200_000
-
-/** The leading part of [source] the source page displays. */
-fun truncateSourceForDisplay(
-    source: String,
-    limit: Int = SOURCE_DISPLAY_LIMIT
-): String =
-    if (source.length <= limit) source else source.substring(0, limit)
-
-/** True when [source] is longer than what the source page displays. */
-fun isSourceTruncated(
-    source: String,
-    limit: Int = SOURCE_DISPLAY_LIMIT
-): Boolean = source.length > limit
-
-/** MIME type of a WebView web archive (.mhtml) file (v0.85.0). */
-const val WEB_ARCHIVE_MIME_TYPE = "multipart/related"
-
-/**
- * Cap on the title part of a web-archive file name (v0.85.0), so a
- * page with a paragraph for a title cannot produce an unwieldy (or
- * filesystem-rejected) name; the date suffix and extension are
- * added on top of this cap, not counted inside it.
- */
-
 /** Resource groups the page sniffer reports, in display order. */
 enum class SniffKind { FILE, IMAGE, MEDIA }
 
