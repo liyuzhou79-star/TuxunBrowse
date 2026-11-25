@@ -15133,6 +15133,35 @@ private fun fpSelfCheckProbe(expJson: String): String = """
     row('语言列表', langs === EXP.languages ? 'ok' : 'bad',
       langs);
   } catch (e) { row('语言列表', 'bad', '读取失败'); }
+  // The request-header language (v0.201.0): Accept-Language is
+  // the one language surface a local probe CANNOT read — a page
+  // only ever sees navigator.*, never its own request headers.
+  // The row exists so the gap is stated where a user checks,
+  // not hidden: it is permanently 'na' (无法检测), never a
+  // dressed-up pass, and the detail says what a site actually
+  // receives. This is the known structural item the mode's
+  // home page also discloses.
+  row('请求头语言', 'na',
+    '本地测不了请求头：网站收到的 Accept-Language 仍是' +
+    '系统语言，可能与上面的页面语言不一致（已知结构性项）');
+  try {
+    // Network story (v0.201.0): the payload pins a healthy 4g
+    // link on the real NetworkInformation prototype; compare
+    // all four fields the profile claims.
+    var conn = navigator.connection;
+    if (conn) {
+      var connOk = conn.effectiveType === '4g' &&
+        conn.rtt === EXP.connRtt &&
+        conn.downlink === EXP.connDownlink &&
+        conn.saveData === false;
+      row('网络信息', connOk ? 'ok' : 'bad',
+        'effectiveType=' + conn.effectiveType +
+        '，rtt=' + conn.rtt + '，downlink=' + conn.downlink +
+        '，saveData=' + conn.saveData);
+    } else {
+      row('网络信息', 'na', '无 navigator.connection');
+    }
+  } catch (e) { row('网络信息', 'bad', '读取失败'); }
   try {
     var tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     row('时区', tz === EXP.tz ? 'ok' : 'bad', String(tz));
@@ -15233,12 +15262,115 @@ private fun fpSelfCheckProbe(expJson: String): String = """
   } catch (e) { row('WebRTC 在场', 'bad', '读取失败'); }
   var gpuSettled = false;
   var uaSettled = false;
+  var mediaSettled = false;
+  var voicesSettled = false;
   function maybeReport() {
-    if (gpuSettled && uaSettled) {
+    if (gpuSettled && uaSettled && mediaSettled &&
+        voicesSettled) {
       FpSelfCheck.report(JSON.stringify(rows));
     }
   }
   function finish() { gpuSettled = true; maybeReport(); }
+  try {
+    // Media devices (v0.201.0): the payload answers
+    // enumerateDevices with one mic, one camera, one speaker
+    // and empty labels — the shape real Chrome shows without a
+    // permission grant, with no host device name inside. Any
+    // label text here means the host list leaked through.
+    if (navigator.mediaDevices &&
+        navigator.mediaDevices.enumerateDevices) {
+      var mediaDone = false;
+      setTimeout(function () {
+        if (mediaDone) return;
+        mediaDone = true;
+        row('设备列表', 'na', '查询超时');
+        mediaSettled = true; maybeReport();
+      }, 3000);
+      navigator.mediaDevices.enumerateDevices()
+        .then(function (devs) {
+          if (mediaDone) return;
+          mediaDone = true;
+          try {
+            var kinds = devs.map(function (d) {
+              return d.kind;
+            }).sort().join(',');
+            var labelsClean = devs.every(function (d) {
+              return !d.label;
+            });
+            var mediaOk = devs.length === 3 && labelsClean &&
+              kinds === 'audioinput,audiooutput,videoinput';
+            row('设备列表', mediaOk ? 'ok' : 'bad',
+              devs.length + ' 个设备，标签' +
+              (labelsClean ? '全空' : '有文字（疑似真机泄漏）') +
+              '：' + kinds);
+          } catch (e) { row('设备列表', 'bad', '读取失败'); }
+          mediaSettled = true; maybeReport();
+        }).catch(function () {
+          if (mediaDone) return;
+          mediaDone = true;
+          row('设备列表', 'na', '查询被拒绝');
+          mediaSettled = true; maybeReport();
+        });
+    } else {
+      row('设备列表', 'na', '无 mediaDevices');
+      mediaSettled = true;
+    }
+  } catch (e) {
+    row('设备列表', 'bad', '读取失败');
+    mediaSettled = true;
+  }
+  try {
+    // Speech voices (v0.201.0): the list must be the PROFILE
+    // region's TTS set, in count and in languages — a host
+    // engine's voices (or an empty list where the payload
+    // claims several) both read as 'bad'. getVoices can lag
+    // behind voiceschanged, so an empty first read waits for
+    // the event before judging.
+    if (window.speechSynthesis) {
+      var voicesDone = false;
+      function judgeVoices() {
+        if (voicesDone) return;
+        var vs = [];
+        try { vs = speechSynthesis.getVoices() || []; }
+        catch (e) { vs = []; }
+        if (vs.length === 0) return false;
+        voicesDone = true;
+        try {
+          var vlangs = vs.map(function (v) {
+            return v.lang;
+          }).sort().join(',');
+          var vOk = vs.length === EXP.voiceCount &&
+            vlangs === EXP.voiceLangs;
+          row('语音列表', vOk ? 'ok' : 'bad',
+            vs.length + ' 个语音：' + vlangs);
+        } catch (e) { row('语音列表', 'bad', '读取失败'); }
+        voicesSettled = true; maybeReport();
+        return true;
+      }
+      if (!judgeVoices()) {
+        try {
+          speechSynthesis.addEventListener(
+            'voiceschanged', judgeVoices);
+        } catch (e) {}
+        setTimeout(function () {
+          if (voicesDone) return;
+          if (!judgeVoices()) {
+            voicesDone = true;
+            row('语音列表', 'bad',
+              '语音列表为空，与档案声称的 ' + EXP.voiceCount +
+              ' 个对不上');
+            voicesSettled = true; maybeReport();
+          }
+        }, 3000);
+      }
+    } else {
+      row('语音列表', 'na', '无 speechSynthesis');
+      voicesSettled = true;
+    }
+  } catch (e) {
+    row('语音列表', 'bad', '读取失败');
+    voicesSettled = true;
+  }
   try {
     if (navigator.userAgentData &&
         navigator.userAgentData
@@ -15396,9 +15528,12 @@ private fun FingerprintHome(
     // what the profile claims — language, time zone, UA model,
     // WebGL vendor/renderer, WebGPU vendor, the font shelf,
     // canvas read stability, the plugins/pdfViewerEnabled
-    // agreement and RTCPeerConnection's presence. Nothing
-    // leaves the device: the page is blank, the results land
-    // in this state and nowhere else.
+    // agreement and RTCPeerConnection's presence. v0.201.0
+    // added the network story, the media-device list, the
+    // speech-voice list, and an honestly-unmeasurable row for
+    // the Accept-Language request header. Nothing leaves the
+    // device: the page is blank, the results land in this
+    // state and nowhere else.
     var selfCheckRows by remember {
         mutableStateOf<List<Triple<String, String, String>>?>(null)
     }
@@ -15459,6 +15594,12 @@ private fun FingerprintHome(
             .put("scrH", device.screenHeight)
             .put("webglOff", !protection.webglDisguise)
             .put("fontOff", !protection.fontSet)
+            .put("connRtt", profile.connectionRtt)
+            .put("connDownlink", profile.connectionDownlink)
+            .put("voiceCount", profile.voices.size)
+            .put("voiceLangs",
+                profile.voices.map { it.lang }.sorted()
+                    .joinToString(","))
             .toString()
         val probe = fpSelfCheckProbe(exp)
         val wv = WebView(fpHomeContext)
