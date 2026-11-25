@@ -76,12 +76,16 @@ object FpStorage {
     /**
      * Bind a freshly constructed [view] to the mode's profile.
      * Returns true when the binding took. Must be called before
-     * any other method on the view.
+     * any other method on the view. (The compat API binds by
+     * profile NAME; the Profile object from [profileOrNull] is
+     * what cookie and storage calls go through.)
      */
     fun bind(view: WebView): Boolean {
-        val profile = profileOrNull() ?: return false
+        if (!isSupported()) return false
         return try {
-            WebViewCompat.setProfile(view, profile)
+            // Ensure the profile exists before binding to it.
+            profileOrNull() ?: return false
+            WebViewCompat.setProfile(view, PROFILE_NAME)
             true
         } catch (t: Throwable) {
             false
