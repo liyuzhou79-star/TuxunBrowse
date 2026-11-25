@@ -362,7 +362,7 @@ class FingerprintConsistencyTest {
     @Test
     fun protectionSwitchesGateTheirOwnPayloadSections() {
         val resolved = FingerprintProfiles.resolve(
-            "jp", "Asia/Tokyo", "pixel8", "ja-JP", "147.0.0.0"
+            "jp", "Asia/Tokyo", "pixel8", "ja-JP"
         )
         val allOn = FingerprintScript.payload(resolved)
         assertTrue(allOn.contains("var FP_OPT_CANVAS = true;"))
