@@ -3860,14 +3860,15 @@ fun isSpecialLinkUrl(url: String): Boolean = specialLinkScheme(url) != null
 /**
  * Normalize a web page's file-picker accept hint into a MIME type the
  * system document picker can actually launch with. Pages may declare
- * accept as a real MIME type ("image/png", "image/*"), as a bare
- * extension (".pdf"), or as a comma list; the engines hand those raw
- * strings through (WebView FileChooserParams.acceptTypes, Gecko
- * FilePrompt.mimeTypes). An extension or a list is NOT a valid intent
- * type — the picker either finds nothing to show or fails to launch,
- * and the request would be answered as a silent cancel. Anything that
- * is not a single "type/subtype" shape therefore falls back to the
- * pick-anything type; a valid single MIME type passes through trimmed.
+ * accept as a real MIME type (say an image type with a subtype or a
+ * wildcard subtype), as a bare extension (".pdf"), or as a comma
+ * list; the engines hand those raw strings through (WebView
+ * FileChooserParams.acceptTypes, Gecko FilePrompt.mimeTypes). An
+ * extension or a list is NOT a valid intent type — the picker either
+ * finds nothing to show or fails to launch, and the request would be
+ * answered as a silent cancel. Anything that is not a single
+ * type-slash-subtype shape therefore falls back to the pick-anything
+ * type; a valid single MIME type passes through trimmed.
  */
 fun normalizePickerMime(raw: String?): String {
     val candidate = raw?.trim().orEmpty()
