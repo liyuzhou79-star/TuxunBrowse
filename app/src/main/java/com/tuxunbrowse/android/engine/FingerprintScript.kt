@@ -141,8 +141,8 @@ object FingerprintScript {
     def(nav, 'hardwareConcurrency', ${d.hardwareConcurrency});
     def(nav, 'deviceMemory', ${d.deviceMemory});
     var brands = [
-      { brand: 'Chromium', version: '${FingerprintProfiles.CHROME_MAJOR}' },
-      { brand: 'Google Chrome', version: '${FingerprintProfiles.CHROME_MAJOR}' },
+      { brand: 'Chromium', version: '${resolved.chromeMajor}' },
+      { brand: 'Google Chrome', version: '${resolved.chromeMajor}' },
       { brand: 'Not=A?Brand', version: '24' }
     ];
     var uaData = {
@@ -151,12 +151,12 @@ object FingerprintScript {
         var all = {
           architecture: 'arm', bitness: '64', brands: brands,
           fullVersionList: [
-            { brand: 'Chromium', version: '${FingerprintProfiles.CHROME_FULL_VERSION}' },
-            { brand: 'Google Chrome', version: '${FingerprintProfiles.CHROME_FULL_VERSION}' },
+            { brand: 'Chromium', version: '${resolved.chromeFullVersion}' },
+            { brand: 'Google Chrome', version: '${resolved.chromeFullVersion}' },
             { brand: 'Not=A?Brand', version: '24.0.0.0' }
           ],
           mobile: true, model: ${jsStr(d.uaModel)}, platform: 'Android',
-          platformVersion: '14.0.0', uaFullVersion: '${FingerprintProfiles.CHROME_FULL_VERSION}',
+          platformVersion: '14.0.0', uaFullVersion: '${resolved.chromeFullVersion}',
           formFactors: ['Mobile'], wow64: false
         };
         var out = { brands: brands, mobile: true, platform: 'Android' };

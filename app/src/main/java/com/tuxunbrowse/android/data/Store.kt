@@ -1068,7 +1068,7 @@ fun restoredActiveIndex(
 }
 
 /** Local persistence: engine choices, search engine, compat sites, bookmarks, history. */
-class Store(context: Context) {
+class Store(private val context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("tuxunbrowse", Context.MODE_PRIVATE)
 
@@ -1232,13 +1232,38 @@ class Store(context: Context) {
         get() = safeString(KEY_FP_LANGUAGE, null) ?: ""
         set(value) = prefs.edit().putString(KEY_FP_LANGUAGE, value).apply()
 
+    /**
+     * The host WebView's own Chrome version (v0.176.0), read
+     * once per process — the system WebView's version cannot
+     * change under a running app. Null when unreadable; the
+     * fingerprint claim then keeps the table's fallback.
+     */
+    private val hostChrome:
+        com.tuxunbrowse.android.engine.FingerprintProfiles.HostChrome?
+            by lazy {
+                com.tuxunbrowse.android.engine.FingerprintProfiles
+                    .parseHostChrome(
+                        try {
+                            android.webkit.WebSettings
+                                .getDefaultUserAgent(context)
+                        } catch (t: Throwable) {
+                            null
+                        }
+                    )
+            }
+
     /** The live fingerprint combination the mode runs with. */
     fun resolvedFingerprint():
         com.tuxunbrowse.android.engine.ResolvedFingerprint =
-        com.tuxunbrowse.android.engine.FingerprintProfiles.resolve(
-            fingerprintRegionId, fingerprintTimezoneId,
-            fingerprintDeviceId, fingerprintLanguage
-        )
+        com.tuxunbrowse.android.engine.FingerprintProfiles
+            .withHostChrome(
+                com.tuxunbrowse.android.engine.FingerprintProfiles
+                    .resolve(
+                        fingerprintRegionId, fingerprintTimezoneId,
+                        fingerprintDeviceId, fingerprintLanguage
+                    ),
+                hostChrome
+            )
 
     /**
      * The user's saved fingerprint combinations (v0.146.0,

@@ -3,6 +3,7 @@ package com.tuxunbrowse.android
 import com.tuxunbrowse.android.engine.FingerprintProfiles
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -161,6 +162,43 @@ class FingerprintConsistencyTest {
                 }
             }
         }
+    }
+
+    @Test
+    fun hostChromeVersionFollowsTheHostUa() {
+        // v0.176.0: the claimed Chrome version follows the
+        // host engine's real one — parsed out of the default
+        // UA, swapped into the profile UA as the ONLY change
+        // (device model stays the profile's), and carried by
+        // the UA-CH fields. Unreadable host UA -> no rewrite.
+        val host = FingerprintProfiles.parseHostChrome(
+            "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
+                "AppleWebKit/537.36 (KHTML, like Gecko) " +
+                "Chrome/140.0.7339.207 Mobile Safari/537.36"
+        )
+        assertEquals("140", host?.major)
+        assertEquals("140.0.7339.207", host?.fullVersion)
+        assertNull(FingerprintProfiles.parseHostChrome(null))
+        assertNull(
+            FingerprintProfiles.parseHostChrome("not a user agent")
+        )
+        val resolved = FingerprintProfiles.withHostChrome(
+            FingerprintProfiles.resolve("US", null), host
+        )
+        assertTrue(
+            resolved.device.userAgent
+                .contains("Chrome/140.0.7339.207")
+        )
+        assertTrue(resolved.device.userAgent.contains("SM-S921U"))
+        assertEquals("140", resolved.chromeMajor)
+        assertEquals("140.0.7339.207", resolved.chromeFullVersion)
+        val untouched = FingerprintProfiles.withHostChrome(
+            FingerprintProfiles.resolve("US", null), null
+        )
+        assertEquals(
+            FingerprintProfiles.CHROME_FULL_VERSION,
+            untouched.chromeFullVersion
+        )
     }
 
     @Test

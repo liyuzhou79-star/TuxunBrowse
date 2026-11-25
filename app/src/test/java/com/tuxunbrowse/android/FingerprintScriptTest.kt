@@ -205,6 +205,19 @@ class FingerprintScriptTest {
         assertTrue(payload.contains("Chrome/142"))
         assertFalse(payload.contains("6778"))
         assertFalse(payload.contains("'131'"))
+        // v0.176.0: the live path's host-followed combination
+        // carries the HOST engine's version through the same
+        // payload fields — UA string and UA-CH alike.
+        val hostPayload = FingerprintScript.payload(
+            FingerprintProfiles.withHostChrome(
+                FingerprintProfiles.resolve("US", null),
+                FingerprintProfiles.HostChrome(
+                    "140", "140.0.7339.207"
+                )
+            )
+        )
+        assertTrue(hostPayload.contains("Chrome/140.0.7339.207"))
+        assertTrue(hostPayload.contains("'140.0.7339.207'"))
     }
 
     @Test

@@ -13667,7 +13667,8 @@ private fun FingerprintHome(
         }
         Text(
             "指纹模式只用系统 WebView，标签页不记历史；" +
-                "Cookie 和网站数据与普通模式共用同一个存储，无法分开。",
+                "Cookie 和网站数据与普通模式共用同一个存储，无法分开；" +
+                "网站能从请求里看出你在用本浏览器（应用标识头关不掉）。",
             style = MaterialTheme.typography.bodyMedium
         )
     }

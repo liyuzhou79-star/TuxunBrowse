@@ -186,7 +186,19 @@ data class ResolvedFingerprint(
     val profile: FingerprintProfile,
     val timezone: FpTimezone,
     val device: FpDevice,
-    val language: String
+    val language: String,
+    /**
+     * The Chrome version this combination claims (v0.176.0).
+     * Defaults to the table constant; the live path rewrites
+     * it to the HOST WebView's real version via withHostChrome
+     * — a claimed version the engine's feature set contradicts
+     * is worse than either an old or a new number, so the
+     * claim follows the engine and only the device model is
+     * the profile's own.
+     */
+    val chromeMajor: String = FingerprintProfiles.CHROME_MAJOR,
+    val chromeFullVersion: String =
+        FingerprintProfiles.CHROME_FULL_VERSION
 ) {
     /** navigator.languages for [language]: primary + fallbacks. */
     val languages: List<String> =
@@ -213,20 +225,68 @@ data class CustomFingerprint(
 object FingerprintProfiles {
 
     /**
-     * The Chrome version every profile claims (v0.175.0).
-     * Follows the current stable channel for Android; the full
-     * build number is a real published stable build (Chrome
-     * Releases blog: Chrome for Android 142.0.7444.158), never
-     * an invented one. This one constant feeds the UA string,
-     * the UA-CH brands and the full version list, so the three
-     * answers can never drift apart; bump it here when the
-     * stable channel moves on. (The claim is a version NUMBER —
-     * the engine underneath stays the host's system WebView,
-     * whose feature set a deep probe can still cross-check
-     * against the claim; recorded in the checkpoint.)
+     * The FALLBACK Chrome version (v0.175.0, role changed in
+     * v0.176.0). The live claim follows the host WebView's real
+     * version (withHostChrome below) — a real-device report
+     * showed detectors infer the engine's true version from
+     * its feature set and grade any claimed number against it,
+     * so a pinned number, old OR new, eventually contradicts
+     * the engine. These constants (a real published stable
+     * build: Chrome for Android 142.0.7444.158) remain only as
+     * the fallback for when the host version cannot be read,
+     * and as the version the pure table resolve() produces.
      */
     const val CHROME_MAJOR: String = "142"
     const val CHROME_FULL_VERSION: String = "142.0.7444.158"
+
+    /** The host system WebView's Chrome version (v0.176.0). */
+    data class HostChrome(val major: String, val fullVersion: String)
+
+    private val CHROME_VERSION_REGEX =
+        Regex("""Chrome/(\d+)\.(\d+)\.(\d+)\.(\d+)""")
+
+    /**
+     * Parse the Chrome version out of a default user agent
+     * (WebSettings.getDefaultUserAgent). Null when the string
+     * carries no four-part Chrome token — the caller then
+     * keeps the table's fallback version.
+     */
+    fun parseHostChrome(defaultUserAgent: String?): HostChrome? {
+        if (defaultUserAgent.isNullOrBlank()) return null
+        val match = CHROME_VERSION_REGEX.find(defaultUserAgent)
+            ?: return null
+        return HostChrome(
+            major = match.groupValues[1],
+            fullVersion = match.value.removePrefix("Chrome/")
+        )
+    }
+
+    /**
+     * Rewrite [resolved] so its claimed Chrome version is the
+     * host engine's real one (v0.176.0): the UA string's
+     * version token is swapped (device model and everything
+     * else untouched) and the UA-CH version fields follow.
+     * A null [host] (version unreadable) returns the input.
+     */
+    fun withHostChrome(
+        resolved: ResolvedFingerprint,
+        host: HostChrome?
+    ): ResolvedFingerprint {
+        if (host == null) return resolved
+        val ua = resolved.device.userAgent.replace(
+            CHROME_VERSION_REGEX, "Chrome/" + host.fullVersion
+        )
+        if (ua == resolved.device.userAgent &&
+            resolved.chromeMajor == host.major
+        ) {
+            return resolved
+        }
+        return resolved.copy(
+            device = resolved.device.copy(userAgent = ua),
+            chromeMajor = host.major,
+            chromeFullVersion = host.fullVersion
+        )
+    }
 
     private const val CHROME_TAIL =
         ") AppleWebKit/537.36 (KHTML, like Gecko) " +
