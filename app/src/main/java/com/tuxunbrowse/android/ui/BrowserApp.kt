@@ -2220,6 +2220,43 @@ fun BrowserApp(
                 newTab(store.mainEngine, false)
             }
         }
+        // Fingerprint session restore (v0.161.0): the fp tab
+        // group used to live only in memory, so a process death
+        // (the system reclaiming the app while it sits in the
+        // background) silently evaporated every fingerprint tab
+        // while the normal session came back — the mode whose
+        // whole point is a stable identity lost its session to
+        // exactly the event the normal mode survives. Rebuild
+        // the group from its own archive, lazily like the normal
+        // restore (data only; the engine builds on first
+        // display). The mode itself is NOT re-entered: entering
+        // is a deliberate tap, and exitFingerprintMode already
+        // promises the group survives leaving — a cold start
+        // now keeps the same promise, no further.
+        if (fpTabs.isEmpty()) {
+            val (savedFp, savedFpActive) =
+                kotlinx.coroutines.withContext(
+                    kotlinx.coroutines.Dispatchers.Default
+                ) {
+                    store.loadFpTabs()
+                }
+            val usableFp = savedFp.filter {
+                it.url.startsWith("http") || it.url == HOME_URL
+            }
+            usableFp.forEach { st ->
+                fpTabs.add(
+                    makeTab(
+                        Engine.WEBVIEW, false, st.url,
+                        st.desktopMode, fingerprint = true
+                    )
+                )
+            }
+            if (fpTabs.isNotEmpty()) {
+                activeFpTabId = fpTabs[
+                    savedFpActive.coerceIn(0, fpTabs.lastIndex)
+                ].id
+            }
+        }
         startupDone = true
         // Auto cache management (v0.40.0), deliberately LAST in this
         // effect: startup is fully done, and the size walk runs on
@@ -2293,6 +2330,23 @@ fun BrowserApp(
                 normal.indexOfFirst { it.id == activeTabId }
         }.debounce(400L).collect { (list, idx) ->
             store.saveTabs(
+                list.map { SavedTab(it.first, it.second, it.third) },
+                idx.coerceAtLeast(0)
+            )
+        }
+    }
+
+    // The fingerprint group's archive follows the exact same
+    // discipline as the normal session's (v0.161.0): debounced,
+    // gated on startupDone so the writer can never beat the
+    // restore reader, same SavedTab mapping.
+    LaunchedEffect(startupDone) {
+        if (!startupDone) return@LaunchedEffect
+        snapshotFlow {
+            fpTabs.map { Triple(it.engine, it.url, it.desktopMode) } to
+                fpTabs.indexOfFirst { it.id == activeFpTabId }
+        }.debounce(400L).collect { (list, idx) ->
+            store.saveFpTabs(
                 list.map { SavedTab(it.first, it.second, it.third) },
                 idx.coerceAtLeast(0)
             )
@@ -3095,6 +3149,16 @@ fun BrowserApp(
                             },
                             normalTabs.indexOfFirst {
                                 it.id == activeTabId
+                            }.coerceAtLeast(0)
+                        )
+                        // The fingerprint archive settles on the
+                        // same pause (v0.161.0), same mapping.
+                        store.saveFpTabs(
+                            fpTabs.map {
+                                SavedTab(it.engine, it.url, it.desktopMode)
+                            },
+                            fpTabs.indexOfFirst {
+                                it.id == activeFpTabId
                             }.coerceAtLeast(0)
                         )
                     }

@@ -1629,6 +1629,23 @@ class Store(context: Context) {
     fun loadTabs(): Pair<List<SavedTab>, Int> =
         parseSavedTabsJson(safeString(KEY_TABS, null))
 
+    /**
+     * Fingerprint-mode session archive (v0.161.0): the fp tab
+     * group gets the same process-death treatment as the normal
+     * session — same JSON shape, separate key. Fingerprint tabs
+     * still never write browsing history; this archive only
+     * remembers which pages were open in the mode, exactly like
+     * the normal session archive does for normal tabs.
+     */
+    fun saveFpTabs(list: List<SavedTab>, activeIndex: Int) {
+        prefs.edit()
+            .putString(KEY_FP_TABS, savedTabsJson(list, activeIndex))
+            .apply()
+    }
+
+    fun loadFpTabs(): Pair<List<SavedTab>, Int> =
+        parseSavedTabsJson(safeString(KEY_FP_TABS, null))
+
     // List reads all go through parseJsonObjectList (v0.83.0):
     // per-element tolerance, so one corrupt row can no longer
     // empty a whole list the way the old getJSONObject-based
@@ -1667,6 +1684,7 @@ class Store(context: Context) {
         private const val KEY_READING_LIST = "reading_list"
         private const val KEY_GECKO_DOWNLOADS = "gecko_downloads"
         private const val KEY_TABS = "saved_tabs"
+        private const val KEY_FP_TABS = "saved_fp_tabs"
         private const val KEY_TEXT_ZOOM = "text_zoom"
         private const val KEY_READER_FONT_SIZE = "reader_font_size"
         private const val KEY_READER_BACKGROUND = "reader_background"
