@@ -1509,7 +1509,10 @@ fun BrowserApp(
                         referer = created?.url,
                         cookieHeader = if (fingerprint) {
                             com.tuxunbrowse.android.engine
-                                .FpStorage.cookieFor(dlUrl)
+                                .FpStorage.cookieFor(
+                                    dlUrl,
+                                    store.fingerprintStorageName()
+                                )
                         } else {
                             null
                         }
@@ -1534,7 +1537,10 @@ fun BrowserApp(
                         referer = created?.url,
                         cookieHeader = if (fingerprint) {
                             com.tuxunbrowse.android.engine
-                                .FpStorage.cookieFor(target)
+                                .FpStorage.cookieFor(
+                                    target,
+                                    store.fingerprintStorageName()
+                                )
                         } else {
                             null
                         }
@@ -1560,6 +1566,10 @@ fun BrowserApp(
             },
             fingerprintProfileProvider = {
                 if (fingerprint) store.resolvedFingerprint() else null
+            },
+            fpStorageNameProvider = {
+                if (fingerprint) store.fingerprintStorageName()
+                else null
             },
             fingerprintProtectionProvider = {
                 store.fingerprintProtection
@@ -2175,6 +2185,23 @@ fun BrowserApp(
         store.fingerprintTimezoneId = timezoneId
         store.fingerprintDeviceId = deviceId
         store.fingerprintLanguage = language
+        // The proxy is saved per combination (v0.198.0): with
+        // the selection now pointing at the new combination,
+        // store.fpProxy reads THAT combination's config, and
+        // while the mode is open the routing follows the
+        // persona — a usable config applies, anything else
+        // clears, so the previous combination's proxy never
+        // leaks into the new one's window.
+        if (fingerprintMode) {
+            val proxy = store.fpProxy
+            if (proxy.isUsable) {
+                com.tuxunbrowse.android.engine.FpProxyControl
+                    .apply(proxy)
+            } else {
+                com.tuxunbrowse.android.engine.FpProxyControl
+                    .clear()
+            }
+        }
         if (fpTabs.isEmpty()) return
         val urls = fpTabs.map { it.url }
         val activeIdx = fpTabs.indexOfFirst { it.id == activeFpTabId }
@@ -4718,12 +4745,13 @@ fun BrowserApp(
                         // is the part the page promises first.
                     }
                     android.webkit.WebStorage.getInstance().deleteAllData()
-                    // Fingerprint mode's own storage jar goes too
-                    // (v0.196.0): this flow promises "clear
-                    // everything", and since the mode stopped
-                    // sharing the default jar its data would
-                    // otherwise survive a clear that claims to
-                    // have removed it.
+                    // Fingerprint mode's own storage jars go
+                    // too (v0.196.0; one per combination since
+                    // v0.198.0, and clearData wipes them all):
+                    // this flow promises "clear everything", and
+                    // since the mode stopped sharing the default
+                    // jar its data would otherwise survive a
+                    // clear that claims to have removed it.
                     com.tuxunbrowse.android.engine.FpStorage.clearData()
                     // removeAllCookies is asynchronous: the page's
                     // "cleared" message must wait for the completion
@@ -15703,7 +15731,8 @@ private fun FingerprintHome(
                 )
                 Text("当前：${proxyConfig.summary}")
                 Text(
-                    "打开指纹模式期间生效，退出模式自动断开。" +
+                    "代理按当前的「地区＋机型」组合保存，切换组合会换用" +
+                        "那个组合保存的代理。打开指纹模式期间生效，退出模式自动断开。" +
                         "这期间普通模式的系统 WebView 标签也会走这个代理，" +
                         "火狐标签不受影响。系统接口不支持带账号密码的代理。" +
                         "设好后用上面的出口 IP 自查确认出口对不对。",
@@ -15853,15 +15882,15 @@ private fun FingerprintHome(
             Text("选择地区、机型与时区")
         }
         // The storage sentence follows the live capability
-        // (v0.196.0): isolated where the host WebView offers
-        // the multi-profile API, shared where it does not —
-        // the copy never claims the better world on a device
-        // that is not in it.
+        // (v0.196.0; per combination since v0.198.0): isolated
+        // where the host WebView offers the multi-profile API,
+        // shared where it does not — the copy never claims the
+        // better world on a device that is not in it.
         val storageSentence = if (com.tuxunbrowse.android.engine
                 .FpStorage.isSupported()
         ) {
-            "Cookie 和网站数据存在指纹模式自己的存储里，" +
-                "与普通模式分开；"
+            "Cookie 和网站数据按「地区＋机型」分开存：" +
+                "每个组合一份，与普通模式、与其他组合都不相通；"
         } else {
             "这台设备的系统 WebView 不支持分开存储，" +
                 "Cookie 和网站数据与普通模式共用一份；"
@@ -15962,6 +15991,13 @@ private fun FingerprintHome(
                             onCheckedChange = { enabled = it }
                         )
                     }
+                    Text(
+                        "这份代理只属于当前的「地区＋机型」组合；" +
+                            "切换组合后请在那个组合下另行设置。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme
+                            .onSurfaceVariant
+                    )
                     Text(
                         "系统接口不支持带账号密码的代理；" +
                             "需要鉴权的代理请用无鉴权的入口或系统 VPN。",

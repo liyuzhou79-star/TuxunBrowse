@@ -126,12 +126,13 @@ data class FpDevice(
  * font FILES themselves (the device carries the stock family
  * NAME set for the enumeration surface since v0.174.0, but glyphs
  * still render with the host's fonts; text measurement is
- * blurred by the canvas/rect noise). Storage is not the
- * profile's either, but the mode's: since v0.196.0 fingerprint
- * tabs bind to a dedicated WebView storage profile (FpStorage)
- * wherever the host WebView offers the multi-profile API, and
- * share the default storage where it does not — the mode's
- * home copy states which, per device.
+ * blurred by the canvas/rect noise). Storage is keyed by the
+ * combination, not carried on the profile: since v0.196.0
+ * fingerprint tabs bind to a dedicated WebView storage
+ * profile (FpStorage), one jar per region + device since
+ * v0.198.0, wherever the host WebView offers the
+ * multi-profile API, and share the default storage where it
+ * does not — the mode's home copy states which, per device.
  */
 data class FingerprintProfile(
     val regionId: String,

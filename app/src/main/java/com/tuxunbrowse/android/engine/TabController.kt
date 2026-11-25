@@ -946,6 +946,14 @@ class BrowserTab(
     // never creates Gecko tabs (checkpoint has the API findings).
     private val fingerprintProfileProvider:
         () -> ResolvedFingerprint? = { null },
+    // The WebView storage profile name this tab binds to
+    // (v0.198.0): the name for the live fingerprint
+    // combination, one jar per region + device. Null for
+    // non-fingerprint tabs. Read once at WebView creation —
+    // the binding is creation-time state, and a combination
+    // switch rebuilds the tabs, so a live tab never needs
+    // to re-read it.
+    private val fpStorageNameProvider: () -> String? = { null },
     // Per-surface protection switches (v0.190.0), read live
     // alongside the profile so a toggle applies at the next
     // page start (the mode rebuilds its tabs on a toggle, so
@@ -1208,6 +1216,13 @@ class BrowserTab(
      * read it to pick the right cookie jar.
      */
     private var fpStorageBound: Boolean = false
+
+    /**
+     * The storage profile name this tab bound to (v0.198.0):
+     * the jar of this tab's fingerprint combination, captured
+     * at creation alongside [fpStorageBound].
+     */
+    private var fpStorageName: String? = null
 
     /**
      * Lazy engine creation (v0.23.0): a tab starts out as data only
@@ -1830,14 +1845,18 @@ class BrowserTab(
     @Suppress("DEPRECATION")
     private fun createWebView(context: Context): WebView {
         val view = WebView(context)
-        // Fingerprint storage isolation (v0.196.0): the binding
-        // must be the view's first call after construction, so
-        // it happens here, before layout params or settings.
-        // Fingerprint tabs only; a failed or unsupported binding
-        // leaves the tab on the shared default storage, exactly
-        // the pre-isolation behaviour.
+        // Fingerprint storage isolation (v0.196.0, one jar per
+        // combination since v0.198.0): the binding must be the
+        // view's first call after construction, so it happens
+        // here, before layout params or settings. Fingerprint
+        // tabs only; a failed or unsupported binding leaves the
+        // tab on the shared default storage, exactly the
+        // pre-isolation behaviour.
         if (fingerprintProfileProvider() != null) {
-            fpStorageBound = FpStorage.bind(view)
+            fpStorageName = fpStorageNameProvider()
+            fpStorageBound = fpStorageName?.let { name ->
+                FpStorage.bind(view, name)
+            } ?: false
         }
         view.layoutParams = ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1932,8 +1951,9 @@ class BrowserTab(
             // the global manager only governs the default
             // profile and would say nothing about this jar.
             val cookieManager = if (fpStorageBound) {
-                FpStorage.profileOrNull()?.cookieManager
-                    ?: CookieManager.getInstance()
+                fpStorageName?.let { name ->
+                    FpStorage.profileOrNull(name)?.cookieManager
+                } ?: CookieManager.getInstance()
             } else {
                 CookieManager.getInstance()
             }
@@ -2368,10 +2388,14 @@ class BrowserTab(
                 // A popup child of a fingerprint tab loads the
                 // target briefly before forwarding it; bind it to
                 // the same storage profile (v0.196.0) so that
-                // brief load's cookies land in the mode's jar,
-                // not the shared one.
+                // brief load's cookies land in this combination's
+                // jar, not the shared one. The child is created
+                // while this tab's combination is the live one,
+                // so the provider still names the right jar.
                 if (fingerprintProfileProvider() != null) {
-                    FpStorage.bind(child)
+                    fpStorageNameProvider()?.let { name ->
+                        FpStorage.bind(child, name)
+                    }
                 }
                 var forwarded = false
                 fun forward(target: String?) {

@@ -6,11 +6,12 @@ import androidx.webkit.WebViewFeature
 import org.json.JSONObject
 
 /**
- * Fingerprint mode's proxy setting (v0.197.0): one proxy for
- * the mode, in the shape the anti-detect browsers treat as a
- * profile's basic equipment — Octo and GoLogin both bind a
- * proxy to the identity so the IP story and the browser story
- * come from the same place.
+ * Fingerprint mode's proxy setting (v0.197.0; one saved
+ * config per combination since v0.198.0, see FpProxyBook),
+ * in the shape the anti-detect browsers treat as a profile's
+ * basic equipment — Octo and GoLogin both bind a proxy to
+ * the identity so the IP story and the browser story come
+ * from the same place.
  *
  * What the platform actually offers, honestly bounded:
  * - The WebView proxy override (androidx.webkit
@@ -80,6 +81,52 @@ data class FpProxyConfig(
             } catch (t: Throwable) {
                 FpProxyConfig()
             }
+        }
+    }
+}
+
+/**
+ * The per-combination proxy book (v0.198.0): one
+ * [FpProxyConfig] per fingerprint combination, keyed by the
+ * same region+device combination key the storage profiles
+ * use (FpStorageNames.keyOf), serialised as one JSON object
+ * of key → config-JSON. Commercial anti-detect browsers bind
+ * a proxy to each profile; the WebView proxy override itself
+ * is still app-wide while the mode is open (see FpProxy's
+ * header), so what is per-combination here is the SAVED
+ * configuration — switching combinations applies that
+ * combination's saved proxy, exactly as it swaps its storage
+ * jar. Pure functions over strings so the book's contract
+ * (broken input degrades to an empty book, never a half-read
+ * one) is unit-testable.
+ */
+object FpProxyBook {
+
+    /** Serialise the book; unset combinations are absent. */
+    fun encode(book: Map<String, FpProxyConfig>): String {
+        val obj = JSONObject()
+        for ((key, config) in book) {
+            obj.put(key, config.toJson())
+        }
+        return obj.toString()
+    }
+
+    /** Parse a stored book; anything broken reads as empty. */
+    fun decode(raw: String?): Map<String, FpProxyConfig> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return try {
+            val obj = JSONObject(raw)
+            val out = LinkedHashMap<String, FpProxyConfig>()
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                out[key] = FpProxyConfig.fromJson(
+                    obj.optString(key, "")
+                )
+            }
+            out
+        } catch (t: Throwable) {
+            emptyMap()
         }
     }
 }

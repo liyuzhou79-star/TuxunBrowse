@@ -1306,17 +1306,112 @@ class Store(private val context: Context) {
         }
 
     /**
-     * Fingerprint mode's proxy (v0.197.0), one JSON pref in the
-     * same fp_* family, out of backups for the same reason: a
-     * proxy address is this device's network setup, not user
-     * data a backup should carry to another machine.
+     * The combination key (region + device) of the live
+     * fingerprint selection — the persona unit that storage
+     * profiles and the proxy book are both keyed by
+     * (v0.198.0).
+     */
+    fun fingerprintComboKey(): String {
+        val resolved = resolvedFingerprint()
+        return com.tuxunbrowse.android.engine.FpStorageNames
+            .keyOf(resolved.profile.regionId, resolved.device.id)
+    }
+
+    /**
+     * The WebView storage profile name for the live
+     * combination (v0.198.0). The first call after the
+     * per-combination upgrade also settles the legacy jar's
+     * owner: if the v0.196.0 single jar exists, the
+     * combination selected at that moment — the only identity
+     * the mode had ever presented — is recorded as its owner
+     * and keeps binding it, so its logins survive untouched.
+     * The decision is written once and never revisited; with
+     * no legacy jar the owner is recorded as none.
+     */
+    fun fingerprintStorageName(): String {
+        val resolved = resolvedFingerprint()
+        val regionId = resolved.profile.regionId
+        val deviceId = resolved.device.id
+        var owner = safeString(KEY_FP_STORAGE_OWNER, null)
+        if (owner == null) {
+            owner = if (
+                com.tuxunbrowse.android.engine.FpStorage
+                    .legacyProfileExists()
+            ) {
+                com.tuxunbrowse.android.engine.FpStorageNames
+                    .keyOf(regionId, deviceId)
+            } else {
+                ""
+            }
+            prefs.edit()
+                .putString(KEY_FP_STORAGE_OWNER, owner)
+                .apply()
+        }
+        return com.tuxunbrowse.android.engine.FpStorageNames
+            .nameFor(
+                regionId, deviceId,
+                owner.ifEmpty { null }
+            )
+    }
+
+    /**
+     * The proxy book: one saved config per fingerprint
+     * combination (v0.198.0). Reading it performs the one-time
+     * migration from the v0.197.0 single config: when the book
+     * has never been written and a single config exists, that
+     * config is seeded under the then-current combination —
+     * the only identity it had ever served. Same fp_* family
+     * and out-of-backups rationale as the single config had:
+     * a proxy address is this device's network setup, not
+     * user data a backup should carry to another machine.
+     */
+    private fun fpProxyBook():
+        MutableMap<String,
+            com.tuxunbrowse.android.engine.FpProxyConfig> {
+        val raw = safeString(KEY_FP_PROXIES, null)
+        if (raw != null) {
+            return com.tuxunbrowse.android.engine.FpProxyBook
+                .decode(raw).toMutableMap()
+        }
+        val book = mutableMapOf<String,
+            com.tuxunbrowse.android.engine.FpProxyConfig>()
+        val legacy = safeString(KEY_FP_PROXY, null)
+        if (!legacy.isNullOrBlank()) {
+            book[fingerprintComboKey()] =
+                com.tuxunbrowse.android.engine.FpProxyConfig
+                    .fromJson(legacy)
+            prefs.edit()
+                .putString(
+                    KEY_FP_PROXIES,
+                    com.tuxunbrowse.android.engine.FpProxyBook
+                        .encode(book)
+                )
+                .apply()
+        }
+        return book
+    }
+
+    /**
+     * The CURRENT combination's proxy (v0.197.0 as a single
+     * mode-wide config; per combination since v0.198.0).
+     * Callers keep reading and writing it exactly as before —
+     * entering the mode applies the current combination's
+     * config, the mode's proxy card edits it — and the book
+     * underneath keeps every other combination's config
+     * waiting for its turn.
      */
     var fpProxy: com.tuxunbrowse.android.engine.FpProxyConfig
-        get() = com.tuxunbrowse.android.engine.FpProxyConfig
-            .fromJson(safeString(KEY_FP_PROXY, null))
+        get() = fpProxyBook()[fingerprintComboKey()]
+            ?: com.tuxunbrowse.android.engine.FpProxyConfig()
         set(value) {
+            val book = fpProxyBook()
+            book[fingerprintComboKey()] = value
             prefs.edit()
-                .putString(KEY_FP_PROXY, value.toJson())
+                .putString(
+                    KEY_FP_PROXIES,
+                    com.tuxunbrowse.android.engine.FpProxyBook
+                        .encode(book)
+                )
                 .apply()
         }
 
@@ -1751,6 +1846,9 @@ class Store(private val context: Context) {
         private const val KEY_FP_CUSTOM = "fp_custom"
         private const val KEY_FP_PROTECT = "fp_protect"
         private const val KEY_FP_PROXY = "fp_proxy"
+        private const val KEY_FP_PROXIES = "fp_proxies"
+        private const val KEY_FP_STORAGE_OWNER =
+            "fp_storage_legacy_owner"
         private const val KEY_COMPAT_SITES = "compat_sites"
         private const val KEY_DESKTOP_SITES = "desktop_sites"
         private const val KEY_BOOKMARKS = "bookmarks"
