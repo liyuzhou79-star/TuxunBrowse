@@ -149,8 +149,10 @@ import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Switch
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.material3.Text
+import androidx.compose.material3.Surface
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -323,7 +325,9 @@ import com.tuxunbrowse.android.engine.isSourceTruncated
 import com.tuxunbrowse.android.engine.startSystemDownload
 import com.tuxunbrowse.android.engine.truncateSourceForDisplay
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.mozilla.geckoview.GeckoSession
 
 private enum class Screen { PICKER, BROWSER, BOOKMARKS, HISTORY, SETTINGS, DOWNLOADS, CLEAR_DATA, SNIFF }
@@ -3603,7 +3607,26 @@ fun BrowserApp(
 
         Screen.BROWSER -> {
             val current = activeTab()
-            if (fingerprintMode) {
+            // Fingerprint mode gets its own enter/exit motion
+            // (v0.147.0): the mode is a different place, and the
+            // switch should feel like travelling, not like a
+            // settings toggle. Fade-only, per the standing rule
+            // for transitions that carry a native web view (see
+            // the screenTransition comment above) — 220/180 ms,
+            // standard easing.
+            AnimatedContent(
+                targetState = fingerprintMode,
+                transitionSpec = {
+                    fadeIn(tween(220, easing = FastOutSlowInEasing))
+                        .togetherWith(
+                            fadeOut(
+                                tween(180, easing = FastOutSlowInEasing)
+                            )
+                        )
+                },
+                label = "fingerprintModeSwitch"
+            ) { inFingerprintMode ->
+            if (inFingerprintMode) {
                 FingerprintShell(
                     tabs = fpTabs,
                     activeTab = activeFpTab(),
@@ -3889,6 +3912,7 @@ fun BrowserApp(
                     )
                 }
             )
+            }
             }
         }
 
@@ -12148,6 +12172,11 @@ private fun FingerprintShell(
     }
     Scaffold(
         topBar = {
+            // The mode's visual identity (v0.147.0): the tertiary
+            // container tint is used NOWHERE in the normal shell,
+            // so the mode reads as a different place at a glance —
+            // same official components and theme roles, different
+            // role assignment.
             TopAppBar(
                 title = {
                     Row(
@@ -12163,7 +12192,15 @@ private fun FingerprintShell(
                 },
                 actions = {
                     TextButton(onClick = onExit) { Text("退出") }
-                }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor =
+                        MaterialTheme.colorScheme.tertiaryContainer,
+                    titleContentColor =
+                        MaterialTheme.colorScheme.onTertiaryContainer,
+                    actionIconContentColor =
+                        MaterialTheme.colorScheme.onTertiaryContainer
+                )
             )
         }
     ) { padding ->
@@ -12250,29 +12287,42 @@ private fun FingerprintShell(
                     Icon(Icons.Filled.Add, contentDescription = "新建标签页")
                 }
             }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
+            // The always-on profile strip (v0.147.0): region,
+            // city, device and language stay visible the whole
+            // time — in fingerprint work, forgetting which profile
+            // you are wearing is the expensive mistake. A plain
+            // secondary-container bar, not the normal shell's
+            // chip-on-background look.
+            Surface(
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor =
+                    MaterialTheme.colorScheme.onSecondaryContainer
             ) {
-                AssistChip(
-                    onClick = { showPicker = true },
-                    label = {
-                        Text(
-                            "${profile.regionLabel} · ${zone.city} · " +
-                                device.deviceModel,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    },
-                    leadingIcon = {
-                        Icon(
-                            Icons.Filled.Public,
-                            contentDescription = null
-                        )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Filled.Public,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        "${profile.regionLabel} · ${zone.city} · " +
+                            "${device.deviceModel} · ${resolved.language}",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 8.dp)
+                    )
+                    TextButton(onClick = { showPicker = true }) {
+                        Text("切换档案")
                     }
-                )
+                }
             }
             if (activeTab?.loading == true) {
                 LinearProgressIndicator(
@@ -12291,6 +12341,14 @@ private fun FingerprintShell(
                     onOpenPicker = { showPicker = true },
                     onSearch = { text ->
                         activeTab?.load(resolveInput(text, searchEngine))
+                    },
+                    onQuickRegion = { candidate ->
+                        onProfileChange(
+                            candidate.regionId,
+                            candidate.timezones.first().id,
+                            candidate.devices.first().id,
+                            candidate.language
+                        )
                     },
                     modifier = Modifier
                         .weight(1f)
@@ -12638,9 +12696,57 @@ private fun FingerprintShell(
 }
 
 /**
- * Fingerprint mode's home (v0.144.0): the active profile at a
- * glance plus a search box. No bookmarks, no history — the mode
- * keeps nothing of either.
+ * One exit-IP lookup answer (v0.147.0): what the network side of
+ * the story currently looks like, to set against the profile.
+ */
+private data class IpCheckResult(
+    val ip: String,
+    val countryCode: String,
+    val city: String,
+    val timezone: String
+)
+
+/**
+ * Ask ipapi.co where this device's traffic currently exits
+ * (v0.147.0). One plain HTTPS GET, no account, no key; null on
+ * any failure. This is the ONE network call fingerprint mode
+ * makes about itself, and it only runs when the user taps the
+ * self-check button on the mode's home — the home says so.
+ */
+private suspend fun fetchExitIp(): IpCheckResult? =
+    withContext(Dispatchers.IO) {
+        var conn: java.net.HttpURLConnection? = null
+        try {
+            conn = java.net.URL("https://ipapi.co/json/")
+                .openConnection() as java.net.HttpURLConnection
+            conn.connectTimeout = 8000
+            conn.readTimeout = 8000
+            conn.setRequestProperty("User-Agent", "TuxunBrowse")
+            if (conn.responseCode != 200) return@withContext null
+            val body = conn.inputStream.bufferedReader().readText()
+            val obj = org.json.JSONObject(body)
+            val country = obj.optString("country_code")
+            if (country.isBlank()) return@withContext null
+            IpCheckResult(
+                ip = obj.optString("ip"),
+                countryCode = country,
+                city = obj.optString("city"),
+                timezone = obj.optString("timezone")
+            )
+        } catch (t: Throwable) {
+            null
+        } finally {
+            conn?.disconnect()
+        }
+    }
+
+/**
+ * Fingerprint mode's home (v0.144.0, identity pass v0.147.0):
+ * deliberately NOT the normal home's layout — an identity header
+ * in the mode's own tint carrying the active profile, then the
+ * search box, then the exit-IP self-check, then one-tap region
+ * switching. No bookmarks, no history — the mode keeps nothing
+ * of either.
  */
 @Composable
 private fun FingerprintHome(
@@ -12648,17 +12754,63 @@ private fun FingerprintHome(
     searchEngine: SearchEngine,
     onOpenPicker: () -> Unit,
     onSearch: (String) -> Unit,
+    onQuickRegion: (com.tuxunbrowse.android.engine.FingerprintProfile) -> Unit =
+        {},
     modifier: Modifier = Modifier
 ) {
     val profile = resolved.profile
     val zone = resolved.timezone
     var query by remember { mutableStateOf("") }
+    var ipResult by remember { mutableStateOf<IpCheckResult?>(null) }
+    var ipFailed by remember { mutableStateOf(false) }
+    var ipLoading by remember { mutableStateOf(false) }
+    val ipScope = rememberCoroutineScope()
+    // A check belongs to the combination it was run under; a
+    // profile or zone change retires the old answer.
+    LaunchedEffect(profile.regionId, zone.id) {
+        ipResult = null
+        ipFailed = false
+    }
     Column(
         modifier = modifier
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor =
+                    MaterialTheme.colorScheme.tertiaryContainer,
+                contentColor =
+                    MaterialTheme.colorScheme.onTertiaryContainer
+            ),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Fingerprint,
+                        contentDescription = null
+                    )
+                    Text(
+                        "当前档案",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                }
+                Text("地区：${profile.regionLabel}")
+                Text("设备：${resolved.device.deviceModel}")
+                Text("语言：${resolved.language}")
+                Text("时区：${zone.label} · ${zone.city}")
+                Text("定位：${zone.latitude}，${zone.longitude}")
+                Text("日期格式：${profile.dateFormatSample}")
+            }
+        }
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
@@ -12676,15 +12828,80 @@ private fun FingerprintHome(
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
-                    "当前档案",
+                    "出口 IP 自查",
                     style = MaterialTheme.typography.titleMedium
                 )
-                Text("地区：${profile.regionLabel}")
-                Text("设备：${resolved.device.deviceModel}")
-                Text("语言：${resolved.language}")
-                Text("时区：${zone.label} · ${zone.city}")
-                Text("定位：${zone.latitude}，${zone.longitude}")
-                Text("日期格式：${profile.dateFormatSample}")
+                val result = ipResult
+                if (ipLoading) {
+                    Text("正在查当前出口 IP 的归属……")
+                } else if (result != null) {
+                    Text("出口 IP：${result.ip}")
+                    Text(
+                        "归属：${result.countryCode}" +
+                            if (result.city.isNotBlank()) {
+                                " · ${result.city}"
+                            } else {
+                                ""
+                            }
+                    )
+                    Text("IP 时区：${result.timezone}")
+                    val countryOk =
+                        result.countryCode == profile.regionId
+                    val zoneOk = result.timezone == zone.id
+                    Text(
+                        when {
+                            countryOk && zoneOk ->
+                                "和当前档案对得上：国家、时区都一致。"
+                            countryOk ->
+                                "国家对得上，但 IP 时区和档案时区不一致" +
+                                    "——网站交叉对账时会露，换个时区或换个节点。"
+                            else ->
+                                "归属和当前档案对不上：档案是" +
+                                    "${profile.regionLabel}，IP 在" +
+                                    "${result.countryCode}——先把网络切到档案地区再上网。"
+                        }
+                    )
+                } else if (ipFailed) {
+                    Text("没查到，检查网络后再试。")
+                } else {
+                    Text(
+                        "查一下当前网络的出口 IP 在哪，和档案对不对得上。" +
+                            "点按钮会向 ipapi.co 发送一次查询请求。"
+                    )
+                }
+                OutlinedButton(
+                    onClick = {
+                        ipLoading = true
+                        ipFailed = false
+                        ipScope.launch {
+                            val fetched = fetchExitIp()
+                            ipResult = fetched
+                            ipFailed = fetched == null
+                            ipLoading = false
+                        }
+                    },
+                    enabled = !ipLoading,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (ipResult != null) "重新自查" else "开始自查")
+                }
+            }
+        }
+        Text(
+            "快捷切换地区",
+            style = MaterialTheme.typography.titleMedium
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            for (candidate in FingerprintProfiles.all) {
+                FilterChip(
+                    selected = candidate.regionId == profile.regionId,
+                    onClick = { onQuickRegion(candidate) },
+                    label = { Text(candidate.regionLabel) },
+                    modifier = Modifier.weight(1f)
+                )
             }
         }
         Button(
