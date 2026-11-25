@@ -199,16 +199,27 @@ object AdBlocker {
      * matter how large the list grows — it never scans the list.
      * With [strict] the strict list is consulted as well.
      */
-    fun isAdRequest(url: String, strict: Boolean = false): Boolean {
-        // A fully-qualified host may carry a trailing root dot
-        // ("ads.example.com."): java.net.URI keeps it in the host,
-        // and without trimming it the suffix walk below would never
-        // reach a listed entry — a one-character evasion of the
-        // whole list (v0.130.0 audit). Trim it here, at the matching
-        // entry point, so every caller gets the same semantics.
-        val host = hostOf(url)?.trimEnd('.') ?: return false
-        if (host.isEmpty()) return false
-        var candidate = host
+    fun isAdRequest(url: String, strict: Boolean = false): Boolean =
+        isBlockedHost(hostOf(url), strict)
+
+    /**
+     * The matching core behind [isAdRequest], taking an already-
+     * extracted [host] (v0.171.0 load-speed audit). The WebView
+     * request hook fires for every subresource of every page, and
+     * the platform hands it the URL already parsed — re-stringifying
+     * that URL and re-parsing it with java.net.URI just to get the
+     * host back was pure per-request overhead. The hook now passes
+     * `request.url.host` straight here; the string entry point above
+     * keeps its exact semantics by funnelling through this same
+     * function, so both paths share one matching rule and one
+     * normalisation (lowercase + trailing-root-dot trim — the dot
+     * trim is the v0.130.0 evasion fix: "ads.example.com." must not
+     * slip past the list).
+     */
+    fun isBlockedHost(host: String?, strict: Boolean = false): Boolean {
+        val normalized = host?.lowercase()?.trimEnd('.') ?: return false
+        if (normalized.isEmpty()) return false
+        var candidate = normalized
         while (true) {
             if (candidate in blockedHosts) return true
             if (strict && candidate in strictHosts) return true

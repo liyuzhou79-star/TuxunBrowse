@@ -1998,9 +1998,18 @@ class BrowserTab(
                 wv: WebView,
                 request: android.webkit.WebResourceRequest
             ): android.webkit.WebResourceResponse? {
-                val target = request.url?.toString() ?: return null
-                return if (isAdBlockEnabled() &&
-                    AdBlocker.isAdRequest(target, trackingStrictProvider())
+                // Load-speed audit (v0.171.0): this hook fires for
+                // every subresource of every page, so the disabled
+                // case must cost nothing (not even stringifying the
+                // URL), and the enabled case takes the host straight
+                // from the platform-parsed Uri instead of re-parsing
+                // the whole URL string with java.net.URI. Matching
+                // itself is the same AdBlocker core the string entry
+                // point funnels through — same list, same rule.
+                if (!isAdBlockEnabled()) return null
+                val host = request.url?.host ?: return null
+                return if (
+                    AdBlocker.isBlockedHost(host, trackingStrictProvider())
                 ) {
                     // Count it on the main thread: this callback runs
                     // on a background thread, the counter is UI state.

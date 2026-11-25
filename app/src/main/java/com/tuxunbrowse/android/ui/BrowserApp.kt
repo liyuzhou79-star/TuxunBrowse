@@ -6321,6 +6321,39 @@ private fun EngineUnavailableContent(
     }
 }
 
+/**
+ * The shell's page-load progress bar (extracted in v0.171.0,
+ * load-speed audit). The engines report progress per percent
+ * during a load; while this value was read inline in the shell's
+ * content scope, every callback recomposed that whole scope —
+ * address bar, suggestion card and the tab-content wiring
+ * included. Read inside this leaf composable instead, a progress
+ * tick recomposes only the bar itself. Presentation is unchanged:
+ * the bar fades/slides in and out and its value animates smoothly
+ * instead of jumping in steps.
+ */
+@Composable
+private fun TabLoadProgressBar(tab: BrowserTab?) {
+    val rawProgress = tab?.progress ?: 100
+    val animatedProgress by animateFloatAsState(
+        targetValue = rawProgress / 100f,
+        animationSpec = tween(200, easing = FastOutSlowInEasing),
+        label = "loadProgress"
+    )
+    AnimatedVisibility(
+        visible = tab != null && rawProgress in 1..99,
+        enter = fadeIn(tween(200, easing = FastOutSlowInEasing)) +
+            expandVertically(tween(200, easing = FastOutSlowInEasing)),
+        exit = fadeOut(tween(200, easing = FastOutSlowInEasing)) +
+            shrinkVertically(tween(200, easing = FastOutSlowInEasing))
+    ) {
+        LinearProgressIndicator(
+            progress = { animatedProgress },
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun BrowserScreen(
@@ -7383,26 +7416,14 @@ private fun BrowserScreen(
                 .padding(padding)
         ) {
             if (!chromeHidden) {
-            // Loading progress: the bar fades/slides in and out and
-            // its value animates smoothly instead of jumping in steps.
-            val rawProgress = activeTab?.progress ?: 100
-            val animatedProgress by animateFloatAsState(
-                targetValue = rawProgress / 100f,
-                animationSpec = tween(200, easing = FastOutSlowInEasing),
-                label = "loadProgress"
-            )
-            AnimatedVisibility(
-                visible = activeTab != null && rawProgress in 1..99,
-                enter = fadeIn(tween(200, easing = FastOutSlowInEasing)) +
-                    expandVertically(tween(200, easing = FastOutSlowInEasing)),
-                exit = fadeOut(tween(200, easing = FastOutSlowInEasing)) +
-                    shrinkVertically(tween(200, easing = FastOutSlowInEasing))
-            ) {
-                LinearProgressIndicator(
-                    progress = { animatedProgress },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
+            // Loading progress bar (v0.171.0): the read of the tab's
+            // progress state lives inside TabLoadProgressBar's own
+            // composition scope, so the per-percent progress
+            // callbacks during a load recompose only that leaf —
+            // not this whole shell content scope (address bar,
+            // suggestion card, tab content) as they used to when
+            // the value was read inline here.
+            TabLoadProgressBar(tab = activeTab)
             val clip = clipUrl
             AnimatedVisibility(
                 visible = clip != null && !clipDismissed && clip != activeTab?.url &&
@@ -7754,12 +7775,23 @@ private fun BrowserScreen(
             // indicator folds away by itself when the load ends.
             // Both engines go through the same onReloadPage path.
             val refreshTab = activeTab
+            // The refreshing flag as a derived state (v0.171.0):
+            // reading progress directly here would subscribe this
+            // whole shell scope to every per-percent progress
+            // callback; the derived boolean only changes when the
+            // load actually starts or ends, which is all the box
+            // ever acts on.
+            val refreshActive by remember(refreshTab?.id) {
+                derivedStateOf {
+                    refreshTab?.let { it.progress < 100 } ?: false
+                }
+            }
             if (refreshTab != null && !refreshTab.isHome &&
                 refreshTab.loadError == null &&
                 !refreshTab.engineUnavailable && !chromeHidden
             ) {
                 PullToRefreshBox(
-                    isRefreshing = refreshTab.progress < 100,
+                    isRefreshing = refreshActive,
                     onRefresh = onReloadPage,
                     modifier = Modifier.fillMaxSize()
                 ) {

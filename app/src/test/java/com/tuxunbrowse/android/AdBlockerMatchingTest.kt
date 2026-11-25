@@ -113,4 +113,69 @@ class AdBlockerMatchingTest {
         assertFalse(AdBlocker.isAdRequest("https://www.baidu.com/", strict = true))
         assertFalse(AdBlocker.isAdRequest("https://github.com/", strict = true))
     }
+
+    // ---- isBlockedHost: the host-direct entry the WebView request
+    // hook uses (v0.171.0). It must agree with isAdRequest on every
+    // shape the platform's Uri parser can hand it, because the two
+    // entry points now share one matching core.
+
+    @Test
+    fun hostEntryMatchesListedApexAndSubdomains() {
+        assertTrue(AdBlocker.isBlockedHost("doubleclick.net"))
+        assertTrue(AdBlocker.isBlockedHost("ads.doubleclick.net"))
+        assertTrue(AdBlocker.isBlockedHost("a.b.doubleclick.net"))
+        assertFalse(AdBlocker.isBlockedHost("notdoubleclick.net"))
+        assertFalse(AdBlocker.isBlockedHost("doubleclick.net.evil.com"))
+        assertFalse(AdBlocker.isBlockedHost("example.com"))
+    }
+
+    @Test
+    fun hostEntryNormalisesCaseAndTrailingDot() {
+        // Uri.getHost() does not promise lowercase, and a fully-
+        // qualified host may keep its root dot: both must land on
+        // the same verdict as the string entry point.
+        assertTrue(AdBlocker.isBlockedHost("ADS.DoubleClick.NET"))
+        assertTrue(AdBlocker.isBlockedHost("ads.doubleclick.net."))
+        assertTrue(AdBlocker.isBlockedHost("DoubleClick.Net."))
+    }
+
+    @Test
+    fun hostEntryRejectsNullAndEmpty() {
+        assertFalse(AdBlocker.isBlockedHost(null))
+        assertFalse(AdBlocker.isBlockedHost(""))
+        assertFalse(AdBlocker.isBlockedHost("."))
+    }
+
+    @Test
+    fun hostEntryHonoursStrictBoundary() {
+        assertFalse(AdBlocker.isBlockedHost("cdn.coinhive.com"))
+        assertTrue(AdBlocker.isBlockedHost("cdn.coinhive.com", strict = true))
+        assertTrue(AdBlocker.isBlockedHost("static.hotjar.com", strict = true))
+        assertFalse(AdBlocker.isBlockedHost("hotjar.com", strict = true))
+    }
+
+    @Test
+    fun hostEntryAgreesWithUrlEntry() {
+        // One matching core, two doors: for each pair the verdict
+        // must be identical, or the WebView hook and the Gecko
+        // navigation check would drift apart.
+        val cases = listOf(
+            "doubleclick.net" to "https://doubleclick.net/",
+            "ads.doubleclick.net" to "https://ads.doubleclick.net/x.js",
+            "google-analytics.com" to "https://www.google-analytics.com/g.js",
+            "example.com" to "https://example.com/",
+            "sub.51.la" to "https://sub.51.la/stat.js"
+        )
+        for ((host, url) in cases) {
+            assertTrue(
+                "host/URL verdict drift for $host",
+                AdBlocker.isBlockedHost(host) == AdBlocker.isAdRequest(url)
+            )
+            assertTrue(
+                "strict host/URL verdict drift for $host",
+                AdBlocker.isBlockedHost(host, strict = true) ==
+                    AdBlocker.isAdRequest(url, strict = true)
+            )
+        }
+    }
 }
