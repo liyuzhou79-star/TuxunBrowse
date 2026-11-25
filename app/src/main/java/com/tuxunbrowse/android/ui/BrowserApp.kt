@@ -15376,6 +15376,64 @@ private fun fpSelfCheckProbe(expJson: String): String = """
       (land ? '（横屏）' : '（竖屏）'));
   } catch (e) { row('屏幕尺寸', 'bad', '读取失败'); }
   try {
+    // Orientation agreement (v0.208.0): the payload never
+    // touches screen.orientation — type and angle are the
+    // host's real posture, so the pair must be one of the
+    // four valid combinations, and it must agree with the
+    // screen pair's shape (the payload swaps that pair BY
+    // this type). A row here turns "consistent by
+    // construction" into "checked on the device".
+    var ori = screen.orientation;
+    if (ori && ori.type) {
+      var pairMap = {
+        'portrait-primary': 0, 'portrait-secondary': 180,
+        'landscape-primary': 90, 'landscape-secondary': 270
+      };
+      var pairOk = pairMap[ori.type] === ori.angle;
+      var isLand = String(ori.type).indexOf('landscape') === 0;
+      var shapeOk = isLand
+        ? screen.width >= screen.height
+        : screen.height >= screen.width;
+      row('屏幕方向', pairOk && shapeOk ? 'ok' : 'bad',
+        String(ori.type) + '／' + ori.angle + '°');
+    } else {
+      row('屏幕方向', 'na', '无 orientation');
+    }
+  } catch (e) { row('屏幕方向', 'bad', '读取失败'); }
+  try {
+    // UA derivative (v0.208.0): appVersion is not a JS-layer
+    // value — the engine derives it from the tab's NATIVE UA
+    // (TabController sets the profile's UA on the settings),
+    // so this row fails loudly if that native application
+    // ever breaks and the host model leaks back in.
+    var uaStr = navigator.userAgent || '';
+    var expectAv = uaStr.indexOf('Mozilla/') === 0
+      ? uaStr.substring(8) : null;
+    var avOk = expectAv !== null &&
+      navigator.appVersion === expectAv;
+    row('UA 派生值', avOk ? 'ok' : 'bad',
+      avOk ? 'appVersion 与 UA 同源'
+        : 'appVersion 与 UA 对不上');
+  } catch (e) { row('UA 派生值', 'bad', '读取失败'); }
+  try {
+    // Clock agreement (v0.208.0): the profile zone moves
+    // wall-clock READINGS, never epochs — Date.now() must
+    // still equal timeOrigin + performance.now() (the same
+    // instant the page's own chrome.loadTimes story is
+    // computed from). A drift here would mean the clock
+    // faces stopped telling one story.
+    if (window.performance &&
+        typeof performance.timeOrigin === 'number' &&
+        performance.timeOrigin > 0) {
+      var drift = Math.abs(Date.now() -
+        (performance.timeOrigin + performance.now()));
+      row('时钟一致性', drift <= 5000 ? 'ok' : 'bad',
+        '偏差 ' + Math.round(drift) + ' 毫秒');
+    } else {
+      row('时钟一致性', 'na', '无 timeOrigin');
+    }
+  } catch (e) { row('时钟一致性', 'bad', '读取失败'); }
+  try {
     var c = document.createElement('canvas');
     var gl = c.getContext('webgl') ||
       c.getContext('experimental-webgl');
@@ -15450,9 +15508,10 @@ private fun fpSelfCheckProbe(expJson: String): String = """
   var uaSettled = false;
   var mediaSettled = false;
   var voicesSettled = false;
+  var geoSettled = false;
   function maybeReport() {
     if (gpuSettled && uaSettled && mediaSettled &&
-        voicesSettled) {
+        voicesSettled && geoSettled) {
       FpSelfCheck.report(JSON.stringify(rows));
     }
   }
@@ -15504,6 +15563,72 @@ private fun fpSelfCheckProbe(expJson: String): String = """
   } catch (e) {
     row('设备列表', 'bad', '读取失败');
     mediaSettled = true;
+  }
+  try {
+    // Geolocation shape + permission agreement (v0.208.0):
+    // the answer must carry the profile city's coordinates
+    // on REAL GeolocationPosition / GeolocationCoordinates
+    // objects (interface-grade shape, not a plain literal),
+    // and permissions.query must agree with the delivery —
+    // the payload answers 'granted' there, because the
+    // engine's own state (geolocation disabled app-wide)
+    // would otherwise contradict a delivered position.
+    if (navigator.geolocation &&
+        navigator.geolocation.getCurrentPosition) {
+      var geoDone = false;
+      function geoRow(okState, detail) {
+        if (geoDone) return;
+        geoDone = true;
+        row('定位形态', okState, detail);
+        geoSettled = true; maybeReport();
+      }
+      setTimeout(function () {
+        geoRow('na', '查询超时');
+      }, 3000);
+      navigator.geolocation.getCurrentPosition(
+        function (pos) {
+          try {
+            var shapeOk =
+              Object.prototype.toString.call(pos) ===
+                '[object GeolocationPosition]' &&
+              Object.prototype.toString.call(pos.coords) ===
+                '[object GeolocationCoordinates]';
+            var valOk = !!pos && !!pos.coords &&
+              Math.abs(pos.coords.latitude - EXP.lat) < 1e-9 &&
+              Math.abs(pos.coords.longitude - EXP.lon) < 1e-9;
+            function finishRow(permState) {
+              var permOk = permState === null ||
+                permState === 'granted';
+              geoRow(
+                shapeOk && valOk && permOk ? 'ok' : 'bad',
+                '坐标 ' + (valOk ? '对版' : '不对版') +
+                '，对象形态 ' +
+                (shapeOk ? '真接口' : '普通对象') +
+                (permState === null
+                  ? '，权限查询不可用'
+                  : '，权限 ' + permState));
+            }
+            if (navigator.permissions &&
+                navigator.permissions.query) {
+              navigator.permissions.query(
+                { name: 'geolocation' }
+              ).then(function (st) {
+                finishRow(st && st.state);
+              }).catch(function () { finishRow(null); });
+            } else {
+              finishRow(null);
+            }
+          } catch (e) { geoRow('bad', '读取失败'); }
+        },
+        function () { geoRow('bad', '定位被拒绝'); },
+        { timeout: 2500 });
+    } else {
+      row('定位形态', 'na', '无 geolocation');
+      geoSettled = true;
+    }
+  } catch (e) {
+    row('定位形态', 'bad', '读取失败');
+    geoSettled = true;
   }
   try {
     // Speech voices (v0.201.0): the list must be the PROFILE
@@ -15717,8 +15842,12 @@ private fun FingerprintHome(
     // agreement and RTCPeerConnection's presence. v0.201.0
     // added the network story, the media-device list, the
     // speech-voice list, and an honestly-unmeasurable row for
-    // the Accept-Language request header. Nothing leaves the
-    // device: the page is blank, the results land in this
+    // the Accept-Language request header. v0.208.0 added the
+    // orientation pair, the UA-derivative (appVersion) row,
+    // the clock-agreement row and the geolocation shape +
+    // permission row; the run itself is creation-guarded and
+    // watchdog-timed now (see runSelfCheck). Nothing leaves
+    // the device: the page is blank, the results land in this
     // state and nowhere else.
     var selfCheckRows by remember {
         mutableStateOf<List<Triple<String, String, String>>?>(null)
@@ -15758,6 +15887,8 @@ private fun FingerprintHome(
             .put("languages", resolved.languages.joinToString(","))
             .put("pdfViewer", false)
             .put("tz", zone.id)
+            .put("lat", zone.latitude)
+            .put("lon", zone.longitude)
             .put("uaModel", device.uaModel)
             .put("glVendor", device.webGlVendor)
             .put("glRenderer", device.webGlRenderer)
@@ -15788,7 +15919,26 @@ private fun FingerprintHome(
                     .joinToString(","))
             .toString()
         val probe = fpSelfCheckProbe(exp)
-        val wv = WebView(fpHomeContext)
+        // Creation guard (v0.208.0): every other WebView this
+        // app makes is guarded (tab obtain, the two throwaway
+        // cache views) — this one was not, so on a device whose
+        // WebView provider is disabled or broken, tapping
+        // 开始自查 threw the provider exception straight out
+        // of the click handler and crashed, on the one page a
+        // user with exactly that problem would open. Fail as
+        // one honest row instead.
+        val wv = try {
+            WebView(fpHomeContext)
+        } catch (t: Throwable) {
+            selfCheckRows = listOf(
+                Triple(
+                    "自查", "na",
+                    "这台设备的系统 WebView 建不出来，自查跑不了"
+                )
+            )
+            selfCheckRunning = false
+            return
+        }
         wv.settings.javaScriptEnabled = true
         wv.addJavascriptInterface(object {
             @JavascriptInterface
@@ -15834,6 +15984,31 @@ private fun FingerprintHome(
         }
         checkStarted = false
         checkWebView = wv
+        // Watchdog (v0.208.0): the report callback was the only
+        // way out of 正在自查…… — if the blank page never
+        // finishes loading or the probe dies before reporting,
+        // the card sat on "running" with the button disabled
+        // until the user left the page. Twenty seconds without
+        // a report ends the run as a timeout row and frees the
+        // button; a report that already landed makes this a
+        // no-op (running is false, the view is another one).
+        android.os.Handler(
+            android.os.Looper.getMainLooper()
+        ).postDelayed({
+            if (selfCheckRunning && checkWebView === wv) {
+                selfCheckRows = listOf(
+                    Triple("自查", "na", "自查超时没有回话，请重试")
+                )
+                selfCheckRunning = false
+                checkStarted = false
+                try {
+                    wv.destroy()
+                } catch (t: Throwable) {
+                    // Already gone; the reset above is the point.
+                }
+                checkWebView = null
+            }
+        }, 20000)
     }
     var ipResult by remember { mutableStateOf<IpCheckResult?>(null) }
     var ipFailed by remember { mutableStateOf(false) }

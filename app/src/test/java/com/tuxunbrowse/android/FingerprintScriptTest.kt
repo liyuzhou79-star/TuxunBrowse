@@ -422,6 +422,37 @@ class FingerprintScriptTest {
     }
 
     @Test
+    fun halfCoveredFacesAreClosed() {
+        // v0.208.0: the half-covered faces audit. Geolocation
+        // answers are built on the real interface prototypes
+        // (a plain literal failed instanceof and the string
+        // tags — verified by running the section in Node
+        // against stub interfaces), watch ids are unique and
+        // clearWatch really cancels, the permissions query
+        // agrees with the delivered position, and the two
+        // stock-preference media queries answer for the stock
+        // persona instead of the host OS.
+        val payload = FingerprintScript.payload(
+            FingerprintProfiles.resolve("JP", "Asia/Tokyo")
+        )
+        assertTrue(payload.contains("GeolocationCoordinates"))
+        assertTrue(payload.contains("GeolocationPosition"))
+        assertTrue(payload.contains("nextWatchId"))
+        assertTrue(payload.contains("clearTimeout(watches[id])"))
+        assertTrue(
+            payload.contains(
+                "fpPermissionStatus('geolocation', 'granted')"
+            )
+        )
+        assertTrue(payload.contains("prefers-reduced-motion"))
+        assertTrue(payload.contains("forced-colors"))
+        // The notifications mapping the geolocation answer
+        // now shares a builder with must still be in place.
+        assertTrue(payload.contains("fpPermissionStatus("))
+        assertTrue(payload.contains("'notifications'"))
+    }
+
+    @Test
     fun screenGeometryFollowsPosture() {
         // v0.192.0: the payload carries the dynamic
         // posture-aware screen getters, not a static pair.

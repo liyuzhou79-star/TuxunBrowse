@@ -159,4 +159,55 @@ class FpSelfCheckAgreementTest {
         }
         assertTrue(probe.contains("row('请求头语言', 'na'"))
     }
+
+    @Test
+    fun geolocationProbeReadsTheSameCoordinatesThePayloadClaims() {
+        // v0.208.0: the 定位形态 probe row compares the
+        // delivered position against EXP.lat / EXP.lon; the
+        // EXP builder must write those from the SAME resolved
+        // zone the payload was built with (zone.latitude /
+        // zone.longitude), or the row grades against a second
+        // hand-copied table.
+        val app = browserAppSource()
+        val probe = app.substringAfter("private fun fpSelfCheckProbe")
+            .substringBefore("\nprivate fun")
+        assertTrue(probe.contains("row('定位形态'"))
+        assertTrue(probe.contains("EXP.lat"))
+        assertTrue(probe.contains("EXP.lon"))
+        assertTrue(probe.contains("[object GeolocationPosition]"))
+        assertTrue(probe.contains("[object GeolocationCoordinates]"))
+        val builder = app.substringAfter("fun runSelfCheck")
+            .substringBefore("val probe = fpSelfCheckProbe")
+        assertTrue(builder.contains(".put(\"lat\", zone.latitude)"))
+        assertTrue(builder.contains(".put(\"lon\", zone.longitude)"))
+        // The v0.208.0 sync rows ride along: orientation pair,
+        // UA derivative, clock agreement.
+        for (name in listOf("屏幕方向", "UA 派生值", "时钟一致性")) {
+            assertTrue(
+                "row $name must exist",
+                probe.contains("row('$name'")
+            )
+        }
+        // The report waits for the geolocation row too: five
+        // settled flags, not four.
+        assertTrue(probe.contains("geoSettled"))
+        assertTrue(probe.contains("voicesSettled && geoSettled"))
+    }
+
+    @Test
+    fun selfCheckRunIsCreationGuardedAndWatchdogged() {
+        // v0.208.0: runSelfCheck used to construct its WebView
+        // bare — the one unguarded construction left — and the
+        // report callback was the only exit from the running
+        // state. Both ends are closed now; pin them so a
+        // future edit cannot quietly reopen either.
+        val app = browserAppSource()
+        val run = app.substringAfter("fun runSelfCheck")
+            .substringBefore("var ipResult")
+        assertTrue(run.contains("catch (t: Throwable)"))
+        assertTrue(run.contains("这台设备的系统 WebView 建不出来"))
+        assertTrue(run.contains("postDelayed"))
+        assertTrue(run.contains("自查超时没有回话"))
+        assertTrue(run.contains("checkWebView === wv"))
+    }
 }

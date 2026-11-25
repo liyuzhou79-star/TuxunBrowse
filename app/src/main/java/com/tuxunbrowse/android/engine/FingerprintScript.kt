@@ -56,6 +56,21 @@ package com.tuxunbrowse.android.engine
  * sources, and the hook itself can be cross-examined.
  * Recorded honestly in the checkpoint.
  *
+ * v0.208.0: the half-covered faces audit (the v0.207.0 lesson —
+ * a surface covered in one component and host-voiced in the
+ * next is worse than an honestly open one). Geolocation answers
+ * are built on the real GeolocationPosition /
+ * GeolocationCoordinates prototypes now (a plain object literal
+ * failed instanceof and the [object …] tags), watchPosition
+ * hands out unique ids and clearWatch really cancels;
+ * permissions.query({name: 'geolocation'}) answers 'granted'
+ * so it agrees with the positions the page receives (the
+ * engine's own state never can: the app disables geolocation
+ * at the settings level); matchMedia also answers the two
+ * stock-preference queries (prefers-reduced-motion,
+ * forced-colors) for the stock persona instead of passing the
+ * host OS's accessibility settings through.
+ *
  * v0.174.0: the font ENUMERATION surface joins the covered set —
  * document.fonts.check() answers known system families from the
  * profile device's stock font set (see FingerprintProfiles),
@@ -661,27 +676,79 @@ object FingerprintScript {
   section(function () {
     if (!navigator.geolocation) return;
     var proto = Object.getPrototypeOf(navigator.geolocation);
+    // Position shape (v0.208.0): the answer used to be a plain
+    // object literal — the right numbers on the wrong object.
+    // Real Chrome hands out GeolocationPosition /
+    // GeolocationCoordinates instances, and a cross-check
+    // reading instanceof or the [object …] string tags met
+    // "[object Object]" here while the voices, devices and
+    // battery sections already build on the real prototypes.
+    // Same rule now. altitude/heading/speed stay null: a
+    // stationary phone indoors reports exactly that, and the
+    // accuracy is a plain plausible fix value.
     function position() {
-      return {
-        coords: {
-          latitude: ${tz.latitude}, longitude: ${tz.longitude},
-          accuracy: 35, altitude: null, altitudeAccuracy: null,
-          heading: null, speed: null
-        },
-        timestamp: Date.now()
-      };
+      var coords = Object.create(
+        window.GeolocationCoordinates
+          ? GeolocationCoordinates.prototype
+          : Object.prototype);
+      def(coords, 'latitude', ${tz.latitude});
+      def(coords, 'longitude', ${tz.longitude});
+      def(coords, 'accuracy', 35);
+      def(coords, 'altitude', null);
+      def(coords, 'altitudeAccuracy', null);
+      def(coords, 'heading', null);
+      def(coords, 'speed', null);
+      var pos = Object.create(
+        window.GeolocationPosition
+          ? GeolocationPosition.prototype : Object.prototype);
+      def(pos, 'coords', coords);
+      def(pos, 'timestamp', Date.now());
+      if (!window.GeolocationPosition) {
+        // The real prototype carries toJSON; the plain-object
+        // fallback has to bring its own or the shape differs
+        // by one more member.
+        pos.toJSON = fixFnAs(function () {
+          return {
+            coords: {
+              latitude: ${tz.latitude},
+              longitude: ${tz.longitude},
+              accuracy: 35, altitude: null,
+              altitudeAccuracy: null, heading: null, speed: null
+            },
+            timestamp: this.timestamp
+          };
+        }, 'toJSON', 0);
+      }
+      return pos;
     }
     setMethod(proto, 'getCurrentPosition',
       fixFn(function (ok, err, opts) {
         setTimeout(function () { if (ok) ok(position()); }, 60);
       }, proto.getCurrentPosition));
+    // Watch bookkeeping (v0.208.0): every watch used to return
+    // id 1 and clearWatch was a no-op, so two watchers shared
+    // an id and a "cleared" watch still delivered. Ids are
+    // unique now and clearing really cancels the pending
+    // delivery. A stationary phone gets its one initial fix
+    // per watch and then silence, which is what a real watch
+    // on a motionless device looks like.
+    var nextWatchId = 0;
+    var watches = {};
     setMethod(proto, 'watchPosition',
       fixFn(function (ok, err, opts) {
-        setTimeout(function () { if (ok) ok(position()); }, 60);
-        return 1;
+        var id = ++nextWatchId;
+        watches[id] = setTimeout(function () {
+          if (watches[id] !== undefined && ok) ok(position());
+        }, 60);
+        return id;
       }, proto.watchPosition));
     setMethod(proto, 'clearWatch',
-      fixFn(function (id) {}, proto.clearWatch));
+      fixFn(function (id) {
+        if (watches[id] !== undefined) {
+          clearTimeout(watches[id]);
+          delete watches[id];
+        }
+      }, proto.clearWatch));
   });
 
   section(function () {
@@ -1088,6 +1155,17 @@ object FingerprintScript {
         if (g) return fakeMQL(query, order[g[1]] <= order[GAMUT]);
         var d = /^\(dynamic-range:(standard|high)\)$/.exec(q);
         if (d) return fakeMQL(query, d[1] === 'high' ? HDR : !HDR);
+        // Stock-preference queries (v0.208.0): these two used
+        // to fall through to the HOST OS — a host with
+        // reduce-motion switched on in its accessibility
+        // settings answered "reduce" for a persona that is a
+        // stock device off the shelf. The stock answers are
+        // no-preference and forced-colors: none.
+        var rm = /^\(prefers-reduced-motion:(reduce|no-preference)\)$/
+          .exec(q);
+        if (rm) return fakeMQL(query, rm[1] === 'no-preference');
+        var fc = /^\(forced-colors:(active|none)\)$/.exec(q);
+        if (fc) return fakeMQL(query, fc[1] === 'none');
         return origMM(query);
       }, 'matchMedia', 1));
   });
@@ -1580,17 +1658,32 @@ object FingerprintScript {
     var permsProto = Object.getPrototypeOf(navigator.permissions);
     if (!permsProto || !permsProto.query) return;
     var origQuery = permsProto.query;
+    function fpPermissionStatus(name, state) {
+      return Promise.resolve({
+        name: name, state: state,
+        onchange: null,
+        addEventListener: function () {},
+        removeEventListener: function () {},
+        dispatchEvent: function () { return false; }
+      });
+    }
     setMethod(permsProto, 'query', fixFn(function (desc) {
       if (desc && desc.name === 'notifications') {
         var state = Notification.permission === 'default'
           ? 'prompt' : Notification.permission;
-        return Promise.resolve({
-          name: 'notifications', state: state,
-          onchange: null,
-          addEventListener: function () {},
-          removeEventListener: function () {},
-          dispatchEvent: function () { return false; }
-        });
+        return fpPermissionStatus('notifications', state);
+      }
+      if (desc && desc.name === 'geolocation') {
+        // Agreement with the geolocation section (v0.208.0):
+        // the engine's own state can never tell this story —
+        // the app disables geolocation at the settings level
+        // (it holds no location permission and shows no
+        // prompt), so the engine reads denied/prompt while
+        // the page DOES receive positions, the profile's
+        // city, from the section above. A cross-check of the
+        // two caught exactly that. The persona's story is a
+        // site the user granted, so the query says granted.
+        return fpPermissionStatus('geolocation', 'granted');
       }
       return origQuery.call(navigator.permissions, desc);
     }, permsProto.query));
