@@ -12871,18 +12871,34 @@ private fun ClearDataScreen(
  * to the normal shell; the fingerprint tabs stay as they are.
  */
 /**
- * Edge-swipe web navigation (v0.179.0, both shells): a drag
- * that STARTS within 24dp of the left edge and travels 64dp
- * inward goes back in the web history; the right edge mirrors
- * it forward. Vertical drift past 48dp bails out untouched, so
- * page scrolling and pull-to-refresh never see a consumed
- * event from us; once fired, the rest of that gesture is
- * consumed so the page does not also react. Nothing is
- * consumed before the threshold, so ordinary page touches —
- * including horizontal carousels NOT starting at the very
- * edge — are unaffected; an edge-born horizontal swipe past
- * 64dp is claimed by navigation (the documented trade-off of
- * having this gesture at all).
+ * Edge-swipe web navigation (v0.179.0, both shells;
+ * restructured v0.186.0): a drag that STARTS within 24dp of
+ * the left edge and travels 64dp inward goes back in the web
+ * history; the right edge mirrors it forward. Vertical drift
+ * past 48dp bails out untouched, so page scrolling and
+ * pull-to-refresh never see a consumed event from us; once
+ * fired, the rest of that gesture is consumed so the page
+ * does not also react. Nothing is consumed before the
+ * threshold, so ordinary page touches — including horizontal
+ * carousels NOT starting at the very edge — are unaffected;
+ * an edge-born horizontal swipe past 64dp is claimed by
+ * navigation (the documented trade-off of having this
+ * gesture at all).
+ *
+ * Structure (v0.186.0): the detector lives ONLY on the two
+ * 24dp edge strips below. There is deliberately NO full-size
+ * pointer-input layer over the page any more: the pre-0.186
+ * shape put one full-screen overlay box on top of the
+ * WebView (inside the fingerprint shell's pull-to-refresh
+ * box, as its sibling after the page content), and every
+ * touch on the page had to pass that layer's gesture loop
+ * first — on the real device, fingerprint-mode pages stopped
+ * scrolling altogether. The geometry and the verdict logic
+ * live in [EdgeSwipeSpec] so unit tests pin them; the strips
+ * here only feed it pointer positions. A pointer that starts
+ * on a strip keeps reporting to that strip even after it
+ * travels past the strip's inner edge, so the 64dp trigger
+ * distance is unaffected by the narrower hit area.
  *
  * System-gesture avoidance: the OS back gesture owns the
  * edges by default. Two invisible 24dp x 200dp strips at the
@@ -12899,39 +12915,55 @@ private fun EdgeSwipeNavigation(
     onBack: () -> Unit,
     onForward: () -> Unit
 ) {
-    val density = LocalDensity.current
-    val edgePx = with(density) { 24.dp.toPx() }
-    val triggerPx = with(density) { 64.dp.toPx() }
-    val driftPx = with(density) { 48.dp.toPx() }
     Box(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .align(Alignment.CenterStart)
-                .width(24.dp)
-                .height(200.dp)
-                .systemGestureExclusion()
+        EdgeSwipeStrip(
+            fromLeft = true,
+            onTrigger = onBack,
+            modifier = Modifier.align(Alignment.CenterStart)
         )
+        EdgeSwipeStrip(
+            fromLeft = false,
+            onTrigger = onForward,
+            modifier = Modifier.align(Alignment.CenterEnd)
+        )
+    }
+}
+
+@Composable
+private fun EdgeSwipeStrip(
+    fromLeft: Boolean,
+    onTrigger: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val density = LocalDensity.current
+    val triggerPx = with(density) { EdgeSwipeSpec.TRIGGER_DP.dp.toPx() }
+    val driftPx = with(density) { EdgeSwipeSpec.DRIFT_DP.dp.toPx() }
+    Box(
+        modifier = modifier
+            .width(EdgeSwipeSpec.EDGE_WIDTH_DP.dp)
+            .fillMaxHeight()
+    ) {
         Box(
             modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .width(24.dp)
-                .height(200.dp)
+                .align(
+                    if (fromLeft) {
+                        Alignment.CenterStart
+                    } else {
+                        Alignment.CenterEnd
+                    }
+                )
+                .width(EdgeSwipeSpec.EDGE_WIDTH_DP.dp)
+                .height(EdgeSwipeSpec.EXCLUSION_HEIGHT_DP.dp)
                 .systemGestureExclusion()
         )
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(onBack, onForward) {
+                .pointerInput(onTrigger) {
                     awaitEachGesture {
                         val down = awaitFirstDown(
                             requireUnconsumed = false
                         )
-                        val fromLeft = down.position.x <= edgePx
-                        val fromRight =
-                            down.position.x >= size.width - edgePx
-                        if (!fromLeft && !fromRight) {
-                            return@awaitEachGesture
-                        }
                         var fired = false
                         while (true) {
                             val event = awaitPointerEvent()
@@ -12943,22 +12975,25 @@ private fun EdgeSwipeNavigation(
                                 change.consume()
                                 continue
                             }
-                            val dx = change.position.x -
-                                down.position.x
-                            val dy = change.position.y -
-                                down.position.y
-                            if (kotlin.math.abs(dy) > driftPx &&
-                                kotlin.math.abs(dy) >
-                                kotlin.math.abs(dx)
-                            ) {
-                                break
-                            }
-                            val inward = if (fromLeft) dx else -dx
-                            if (inward >= triggerPx) {
-                                fired = true
-                                change.consume()
-                                if (fromLeft) onBack()
-                                else onForward()
+                            val verdict = EdgeSwipeSpec.classify(
+                                fromLeft = fromLeft,
+                                dxPx = change.position.x -
+                                    down.position.x,
+                                dyPx = change.position.y -
+                                    down.position.y,
+                                triggerPx = triggerPx,
+                                driftPx = driftPx
+                            )
+                            when (verdict) {
+                                EdgeSwipeSpec.Verdict.ABANDON ->
+                                    break
+                                EdgeSwipeSpec.Verdict.FIRE -> {
+                                    fired = true
+                                    change.consume()
+                                    onTrigger()
+                                }
+                                EdgeSwipeSpec.Verdict.CONTINUE ->
+                                    Unit
                             }
                         }
                     }
@@ -13293,22 +13328,35 @@ private fun FingerprintShell(
                     val fpRefreshActive by remember(tab.id) {
                         derivedStateOf { tab.progress < 100 }
                     }
-                    PullToRefreshBox(
-                        isRefreshing = fpRefreshActive,
-                        onRefresh = { tab.reload() },
+                    // Layout mirrors the normal shell exactly
+                    // (v0.186.0): the pull-to-refresh box wraps
+                    // ONLY the page content, and the edge-swipe
+                    // strips are a sibling overlay in the same
+                    // outer box — never children of the refresh
+                    // box. The pre-0.186 fingerprint arrangement
+                    // nested the (then full-screen) gesture layer
+                    // inside the refresh box on top of the
+                    // WebView, and fingerprint pages would not
+                    // scroll on the real device.
+                    Box(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
                     ) {
-                        key(tab.id) {
-                            TabContent(
-                                tab = tab,
-                                modifier = Modifier.fillMaxSize()
-                            )
+                        PullToRefreshBox(
+                            isRefreshing = fpRefreshActive,
+                            onRefresh = { tab.reload() },
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            key(tab.id) {
+                                TabContent(
+                                    tab = tab,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
                         }
-                        // Edge-swipe navigation (v0.179.0):
-                        // same gesture, same geometry as the
-                        // normal shell.
+                        // Edge-swipe navigation: same strips,
+                        // same geometry as the normal shell.
                         EdgeSwipeNavigation(
                             onBack = { tab.goBack() },
                             onForward = { tab.goForward() }
