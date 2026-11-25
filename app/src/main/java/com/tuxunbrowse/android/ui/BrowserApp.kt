@@ -15292,8 +15292,8 @@ private fun fpSelfCheckProbe(expJson: String): String = """
   // receives. This is the known structural item the mode's
   // home page also discloses.
   row('请求头语言', 'na',
-    '本地测不了请求头：网站收到的 Accept-Language 仍是' +
-    '系统语言，可能与上面的页面语言不一致（已知结构性项）');
+    '网站收到的请求头语言仍是系统语言，' +
+    '和页面语言可能不一致');
   try {
     // Network story (v0.201.0): the payload pins a healthy 4g
     // link on the real NetworkInformation prototype; compare
@@ -16057,20 +16057,18 @@ private fun FingerprintHome(
                         .FpProxyControl.isSupported()
                 ) {
                     Text(
-                        "代理按当前的「地区＋机型」组合保存，切换组合会换用" +
-                            "那个组合保存的代理。打开指纹模式期间生效，退出模式自动断开。" +
-                            "这期间普通模式的系统 WebView 标签也会走这个代理，" +
-                            "火狐标签不受影响。系统接口不支持带账号密码的代理。" +
-                            "设好后用上面的出口 IP 自查确认出口对不对。",
+                        "按当前「地区＋机型」组合保存，指纹模式期间生效，" +
+                            "退出自动断开；这期间普通 WebView 标签也会走它，" +
+                            "火狐不受影响。不支持带账号密码的代理，" +
+                            "设好后用上面的出口 IP 自查确认出口。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 } else {
                     Text(
-                        "这台设备的系统 WebView 不支持代理覆盖，" +
-                            "代理设置可以保存，但不会生效，网页仍走直连。" +
-                            "代理按当前的「地区＋机型」组合保存，" +
-                            "换到支持的设备上会按组合自动启用。",
+                        "这台设备的 WebView 不支持代理，设置能保存" +
+                            "但不会生效，网页仍走直连；" +
+                            "代理按「地区＋机型」组合保存。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -16225,8 +16223,8 @@ private fun FingerprintHome(
         val storageSentence = if (com.tuxunbrowse.android.engine
                 .FpStorage.isSupported()
         ) {
-            "Cookie 和网站数据按「地区＋机型」分开存：" +
-                "每个组合一份，与普通模式、与其他组合都不相通；"
+            "Cookie 和网站数据按「地区＋机型」组合分开存，" +
+                "组合之间、与普通模式都不相通；"
         } else {
             "这台设备的系统 WebView 不支持分开存储，" +
                 "Cookie 和网站数据与普通模式共用一份；"
@@ -16328,8 +16326,8 @@ private fun FingerprintHome(
                         )
                     }
                     Text(
-                        "这份代理只属于当前的「地区＋机型」组合；" +
-                            "切换组合后请在那个组合下另行设置。",
+                        "只属于当前「地区＋机型」组合，" +
+                            "切换组合后在那个组合下另行设置。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme
                             .onSurfaceVariant
