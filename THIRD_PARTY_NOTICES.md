@@ -25,3 +25,23 @@ tracking protection instead.
 
 AndroidX libraries, including Jetpack Compose and Material 3, are licensed
 under the Apache License 2.0.
+
+## Fingerprint-mode design references
+
+The fingerprint mode's coverage and consistency approach was
+informed by studying the public documentation, issue trackers
+and published data of several open-source projects. No code
+from these projects is included; the implementation is
+original, and parameters come from public device
+specifications and public measurement data.
+
+- Camoufox (MPL-2.0) — coverage checklist ideas for the
+  fingerprint surface (fonts, WebGL, audio, voices).
+- Apify fingerprint-suite (Apache-2.0) — the idea of encoding
+  cross-field consistency rules so generated profiles cannot
+  contradict themselves.
+- adryfish/fingerprint-chromium (BSD-3-Clause) — the
+  single-seed, multi-surface noise discipline and the
+  practice of pinning real per-GPU parameter sets.
+- Brave's farbling write-ups — the per-profile stable-noise
+  approach.
