@@ -214,7 +214,11 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
+import android.webkit.JavascriptInterface
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -13728,6 +13732,135 @@ private suspend fun fetchExitIpFrom(
  * switching. No bookmarks, no history — the mode keeps nothing
  * of either.
  */
+/**
+ * The self-check probe (v0.184.0): runs INSIDE the throwaway
+ * WebView after the current profile's payload has been
+ * evaluated into it, compares what a page would read with
+ * what the profile claims ([expJson]), and reports the rows
+ * through the FpSelfCheck bridge. ok is "ok" / "bad" / "na"
+ * (the surface does not exist in this environment at all —
+ * shown as 无法检测, never dressed up as a pass).
+ */
+private fun fpSelfCheckProbe(expJson: String): String = """
+(function () {
+  var EXP = $expJson;
+  var rows = [];
+  function row(name, ok, detail) {
+    rows.push({ name: name, ok: ok, detail: detail || '' });
+  }
+  function hashOf(arr) {
+    var h = 0;
+    for (var i = 0; i < arr.length; i++) {
+      h = (h * 31 + arr[i]) >>> 0;
+    }
+    return h;
+  }
+  try {
+    row('语言', navigator.language === EXP.language
+      ? 'ok' : 'bad', String(navigator.language));
+  } catch (e) { row('语言', 'bad', '读取失败'); }
+  try {
+    var tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    row('时区', tz === EXP.tz ? 'ok' : 'bad', String(tz));
+  } catch (e) { row('时区', 'bad', '读取失败'); }
+  try {
+    row('机型（UA）',
+      navigator.userAgent.indexOf(EXP.uaModel) >= 0
+        ? 'ok' : 'bad', EXP.uaModel);
+  } catch (e) { row('机型（UA）', 'bad', '读取失败'); }
+  try {
+    var c = document.createElement('canvas');
+    var gl = c.getContext('webgl') ||
+      c.getContext('experimental-webgl');
+    if (gl) {
+      var ext = gl.getExtension('WEBGL_debug_renderer_info');
+      var v = ext
+        ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL)
+        : gl.getParameter(gl.VENDOR);
+      var r = ext
+        ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)
+        : gl.getParameter(gl.RENDERER);
+      row('WebGL 厂商', v === EXP.glVendor ? 'ok' : 'bad',
+        String(v));
+      row('WebGL 型号', r === EXP.glRenderer ? 'ok' : 'bad',
+        String(r));
+    } else {
+      row('WebGL 厂商', 'na', 'WebGL 不可用');
+      row('WebGL 型号', 'na', 'WebGL 不可用');
+    }
+  } catch (e) { row('WebGL 厂商', 'bad', '读取失败'); }
+  try {
+    var fIn = document.fonts.check(
+      '16px "' + EXP.fontIn + '"');
+    var fOut = document.fonts.check(
+      '16px "' + EXP.fontOut + '"');
+    row('字体清单', fIn === true && fOut === false
+      ? 'ok' : 'bad',
+      EXP.fontIn + ' 应在架、' + EXP.fontOut + ' 应不在架');
+  } catch (e) { row('字体清单', 'bad', '读取失败'); }
+  try {
+    var cv = document.createElement('canvas');
+    cv.width = 64; cv.height = 16;
+    var cx = cv.getContext('2d');
+    cx.fillStyle = '#f60'; cx.fillRect(0, 0, 64, 16);
+    cx.font = '14px sans-serif'; cx.fillStyle = '#069';
+    cx.fillText('fp-check', 2, 12);
+    var h1 = hashOf(cx.getImageData(0, 0, 64, 16).data);
+    var h2 = hashOf(cx.getImageData(0, 0, 64, 16).data);
+    row('画布稳定性', h1 === h2 ? 'ok' : 'bad',
+      h1 === h2 ? '两次读取一致' : '两次读取不一致');
+  } catch (e) { row('画布稳定性', 'bad', '读取失败'); }
+  try {
+    var pair =
+      (navigator.pdfViewerEnabled === false &&
+        navigator.plugins.length === 0) ||
+      (navigator.pdfViewerEnabled === true &&
+        navigator.plugins.length === 5);
+    row('PDF 查看器一致性', pair ? 'ok' : 'bad',
+      'pdfViewerEnabled=' + navigator.pdfViewerEnabled +
+      '，plugins ' + navigator.plugins.length + ' 项');
+  } catch (e) { row('PDF 查看器一致性', 'bad', '读取失败'); }
+  try {
+    row('WebRTC 在场',
+      typeof RTCPeerConnection === 'function' ? 'ok' : 'bad',
+      typeof RTCPeerConnection);
+  } catch (e) { row('WebRTC 在场', 'bad', '读取失败'); }
+  function finish() {
+    FpSelfCheck.report(JSON.stringify(rows));
+  }
+  if (navigator.gpu && navigator.gpu.requestAdapter) {
+    var done = false;
+    setTimeout(function () {
+      if (!done) {
+        done = true;
+        row('WebGPU 厂商', 'na', '查询超时');
+        finish();
+      }
+    }, 3000);
+    navigator.gpu.requestAdapter().then(function (a) {
+      if (done) return;
+      done = true;
+      try {
+        var info = a && a.info;
+        row('WebGPU 厂商',
+          info && info.vendor === EXP.gpuVendor
+            ? 'ok' : 'bad',
+          info ? String(info.vendor) : '无适配器信息');
+      } catch (e) { row('WebGPU 厂商', 'bad', '读取失败'); }
+      finish();
+    }).catch(function () {
+      if (done) return;
+      done = true;
+      row('WebGPU 厂商', 'na', '没有可用适配器');
+      finish();
+    });
+  } else {
+    row('WebGPU 厂商', 'na', '此环境未提供 WebGPU');
+    finish();
+  }
+})();
+"""
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun FingerprintHome(
@@ -13741,7 +13874,109 @@ private fun FingerprintHome(
 ) {
     val profile = resolved.profile
     val zone = resolved.timezone
+    val fpHomeContext = LocalContext.current
     var query by remember { mutableStateOf("") }
+    // Built-in fingerprint self-check (v0.184.0): a local-only
+    // probe run. A throwaway WebView loads about:blank, the
+    // CURRENT profile's payload is evaluated into it, and a
+    // probe script compares what a page would read against
+    // what the profile claims — language, time zone, UA model,
+    // WebGL vendor/renderer, WebGPU vendor, the font shelf,
+    // canvas read stability, the plugins/pdfViewerEnabled
+    // agreement and RTCPeerConnection's presence. Nothing
+    // leaves the device: the page is blank, the results land
+    // in this state and nowhere else.
+    var selfCheckRows by remember {
+        mutableStateOf<List<Triple<String, String, String>>?>(null)
+    }
+    var selfCheckRunning by remember { mutableStateOf(false) }
+    var checkWebView by remember { mutableStateOf<WebView?>(null) }
+    var checkStarted by remember { mutableStateOf(false) }
+    LaunchedEffect(
+        profile.regionId, zone.id, resolved.device.id,
+        resolved.language
+    ) {
+        selfCheckRows = null
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            checkWebView?.destroy()
+            checkWebView = null
+        }
+    }
+    fun runSelfCheck() {
+        if (selfCheckRunning) return
+        selfCheckRunning = true
+        selfCheckRows = null
+        val device = resolved.device
+        val fontIn = when {
+            "SamsungOne" in device.fonts -> "SamsungOne"
+            "Google Sans" in device.fonts -> "Google Sans"
+            else -> device.fonts.firstOrNull() ?: ""
+        }
+        val fontOut = if (fontIn == "SamsungOne") {
+            "Google Sans"
+        } else {
+            "SamsungOne"
+        }
+        val exp = org.json.JSONObject()
+            .put("language", resolved.language)
+            .put("tz", zone.id)
+            .put("uaModel", device.uaModel)
+            .put("glVendor", device.webGlVendor)
+            .put("glRenderer", device.webGlRenderer)
+            .put("gpuVendor", device.webGpuVendor)
+            .put("fontIn", fontIn)
+            .put("fontOut", fontOut)
+            .toString()
+        val probe = fpSelfCheckProbe(exp)
+        val wv = WebView(fpHomeContext)
+        wv.settings.javaScriptEnabled = true
+        wv.addJavascriptInterface(object {
+            @JavascriptInterface
+            fun report(json: String) {
+                android.os.Handler(
+                    android.os.Looper.getMainLooper()
+                ).post {
+                    try {
+                        val arr = org.json.JSONArray(json)
+                        val rows =
+                            mutableListOf<Triple<String, String, String>>()
+                        for (i in 0 until arr.length()) {
+                            val o = arr.getJSONObject(i)
+                            rows += Triple(
+                                o.getString("name"),
+                                o.getString("ok"),
+                                o.optString("detail")
+                            )
+                        }
+                        selfCheckRows = rows
+                    } catch (e: Exception) {
+                        selfCheckRows = listOf(
+                            Triple("自查", "bad", "结果解析失败")
+                        )
+                    }
+                    selfCheckRunning = false
+                    checkWebView?.destroy()
+                    checkWebView = null
+                    checkStarted = false
+                }
+            }
+        }, "FpSelfCheck")
+        wv.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(
+                view: WebView, url: String
+            ) {
+                view.evaluateJavascript(
+                    FingerprintScript.payload(resolved)
+                ) {
+                    view.evaluateJavascript(probe, null)
+                }
+            }
+        }
+        checkStarted = false
+        checkWebView = wv
+    }
     var ipResult by remember { mutableStateOf<IpCheckResult?>(null) }
     var ipFailed by remember { mutableStateOf(false) }
     var ipLoading by remember { mutableStateOf(false) }
@@ -13874,6 +14109,95 @@ private fun FingerprintHome(
                     Text(if (ipResult != null) "重新自查" else "开始自查")
                 }
             }
+        }
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    "指纹自查",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    "在本机用当前档案跑一遍主要探针，逐项和档案对账。" +
+                        "全程不出这台手机，结果不外发。"
+                )
+                if (selfCheckRunning) {
+                    Text("正在自查……")
+                }
+                val scRows = selfCheckRows
+                if (!selfCheckRunning && scRows != null) {
+                    for ((name, ok, detail) in scRows) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment =
+                                Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(name)
+                                if (detail.isNotBlank()) {
+                                    Text(
+                                        detail,
+                                        style = MaterialTheme
+                                            .typography.bodySmall,
+                                        color = MaterialTheme
+                                            .colorScheme
+                                            .onSurfaceVariant
+                                    )
+                                }
+                            }
+                            Text(
+                                when (ok) {
+                                    "ok" -> "通过"
+                                    "na" -> "无法检测"
+                                    else -> "异常"
+                                },
+                                color = when (ok) {
+                                    "ok" -> MaterialTheme
+                                        .colorScheme.primary
+                                    "na" -> MaterialTheme
+                                        .colorScheme
+                                        .onSurfaceVariant
+                                    else -> MaterialTheme
+                                        .colorScheme.error
+                                },
+                                style = MaterialTheme
+                                    .typography.labelLarge
+                            )
+                        }
+                    }
+                }
+                OutlinedButton(
+                    onClick = { runSelfCheck() },
+                    enabled = !selfCheckRunning,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        if (selfCheckRows != null) {
+                            "重新自查"
+                        } else {
+                            "开始自查"
+                        }
+                    )
+                }
+            }
+        }
+        // The probe WebView's host (v0.184.0): attached only
+        // while a run is in flight — a detached WebView may
+        // pause its JS — and destroyed by the report callback
+        // or when this page leaves composition.
+        if (checkWebView != null) {
+            AndroidView(
+                factory = { checkWebView!! },
+                update = { wv ->
+                    if (!checkStarted) {
+                        checkStarted = true
+                        wv.loadUrl("about:blank")
+                    }
+                },
+                modifier = Modifier.size(1.dp)
+            )
         }
         Text(
             "快捷切换地区",
