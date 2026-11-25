@@ -14905,6 +14905,15 @@ private fun fpSelfCheckProbe(expJson: String): String = """
       ? 'ok' : 'bad', String(navigator.language));
   } catch (e) { row('语言', 'bad', '读取失败'); }
   try {
+    // The full fallback chain (v0.194.0): a real-device report
+    // once showed a lone 'ja-JP' here — the chain behind the
+    // primary language is part of the claim, so the probe
+    // compares the whole list, not just its head.
+    var langs = (navigator.languages || []).join(',');
+    row('语言列表', langs === EXP.languages ? 'ok' : 'bad',
+      langs);
+  } catch (e) { row('语言列表', 'bad', '读取失败'); }
+  try {
     var tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     row('时区', tz === EXP.tz ? 'ok' : 'bad', String(tz));
   } catch (e) { row('时区', 'bad', '读取失败'); }
@@ -14978,14 +14987,24 @@ private fun fpSelfCheckProbe(expJson: String): String = """
       h1 === h2 ? '两次读取一致' : '两次读取不一致');
   } catch (e) { row('画布稳定性', 'bad', '读取失败'); }
   try {
+    // The pair must agree with each other AND with the value
+    // the persona claims (v0.194.0): every profile here is an
+    // Android 14 device, where Chrome's inline PDF rollout
+    // never landed as a default — false with an empty plugin
+    // list is the truthful pair for the claimed device, and a
+    // build claiming true/5 here would contradict its own
+    // Android version.
     var pair =
       (navigator.pdfViewerEnabled === false &&
         navigator.plugins.length === 0) ||
       (navigator.pdfViewerEnabled === true &&
         navigator.plugins.length === 5);
-    row('PDF 查看器一致性', pair ? 'ok' : 'bad',
+    var claimed =
+      navigator.pdfViewerEnabled === EXP.pdfViewer;
+    row('PDF 查看器一致性', pair && claimed ? 'ok' : 'bad',
       'pdfViewerEnabled=' + navigator.pdfViewerEnabled +
-      '，plugins ' + navigator.plugins.length + ' 项');
+      '，plugins ' + navigator.plugins.length +
+      ' 项（安卓 14 档案应为 false／0 项）');
   } catch (e) { row('PDF 查看器一致性', 'bad', '读取失败'); }
   try {
     row('WebRTC 在场',
@@ -15190,6 +15209,8 @@ private fun FingerprintHome(
         }
         val exp = org.json.JSONObject()
             .put("language", resolved.language)
+            .put("languages", resolved.languages.joinToString(","))
+            .put("pdfViewer", false)
             .put("tz", zone.id)
             .put("uaModel", device.uaModel)
             .put("glVendor", device.webGlVendor)

@@ -209,6 +209,67 @@ class FingerprintProfilesTest {
     }
 
     @Test
+    fun screenGeometryMatchesTheRealPanels() {
+        // v0.194.0 audit: CSS size × DPR must reproduce the
+        // device's real panel resolution (within CSS rounding),
+        // for every distinct piece of hardware in the library.
+        // Panel resolutions are the manufacturers' spec sheets:
+        // Galaxy S24/S23 1080×2340, Pixel 8/7a 1080×2400,
+        // Pixel 8 Pro 1344×2992, Galaxy A54 1080×2340.
+        val panels = mapOf(
+            "SM-S921U" to (1080 to 2340),
+            "SM-S911U" to (1080 to 2340),
+            "SM-S911B" to (1080 to 2340),
+            "Pixel 8" to (1080 to 2400),
+            "Pixel 8 Pro" to (1344 to 2992),
+            "Pixel 7a" to (1080 to 2400),
+            "SM-A546B" to (1080 to 2340)
+        )
+        val seen = mutableSetOf<String>()
+        for (profile in FingerprintProfiles.all) {
+            for (device in profile.devices) {
+                if (!seen.add(device.id)) continue
+                val panel = panels[device.id]
+                assertTrue(
+                    "no panel on file for ${device.id}",
+                    panel != null
+                )
+                val w = device.screenWidth * device.devicePixelRatio
+                val h = device.screenHeight * device.devicePixelRatio
+                assertTrue(
+                    "${device.id} width $w vs panel ${panel!!.first}",
+                    kotlin.math.abs(w - panel.first) <= 2.0
+                )
+                assertTrue(
+                    "${device.id} height $h vs panel ${panel.second}",
+                    kotlin.math.abs(h - panel.second) <= 2.0
+                )
+            }
+        }
+        assertEquals(panels.size, seen.size)
+    }
+
+    @Test
+    fun galaxyS24SlotsCarryTheSnapdragonBuild() {
+        // v0.194.0: the B build of the S24 is Exynos 2400
+        // silicon (10 cores, Xclipse 940) whose graphics
+        // surface has no verified public values; every S24
+        // slot in the library must therefore be the Snapdragon
+        // U build, with the core count and GPU family that
+        // silicon really reports.
+        for (profile in FingerprintProfiles.all) {
+            for (device in profile.devices) {
+                if (!device.deviceModel.contains("Galaxy S24")) {
+                    continue
+                }
+                assertEquals("SM-S921U", device.uaModel)
+                assertEquals(8, device.hardwareConcurrency)
+                assertTrue(device.webGlRenderer.contains("Adreno"))
+            }
+        }
+    }
+
+    @Test
     fun resolveFallsBackToFirstRegionAndZone() {
         val unknown = FingerprintProfiles.resolve("XX", "Nowhere/Place")
         assertEquals(

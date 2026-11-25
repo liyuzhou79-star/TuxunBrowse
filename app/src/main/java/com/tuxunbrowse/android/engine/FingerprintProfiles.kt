@@ -394,8 +394,19 @@ object FingerprintProfiles {
 
     // The model library. Devices repeat across regions where the
     // same model is sold there (regional UA build-model suffixes
-    // differ where they really do: S921U in the US, S921B in
-    // Singapore/Taiwan, S911B outside the US).
+    // differ where they really do: S911B outside the US).
+    // One deliberate exception (v0.194.0 geometry/silicon audit):
+    // the Galaxy S24's B build (SM-S921B) is Exynos 2400 silicon
+    // — TEN cores and a Samsung Xclipse 940 GPU — whose WebGL
+    // renderer string, WebGPU identity and capability caps have
+    // no verified public values we could pin honestly. The
+    // library therefore carries the Snapdragon U build in every
+    // region (an imported unit is an ordinary sight in SG/TW):
+    // every detector-visible number then stays a verified one,
+    // instead of an Adreno surface bolted onto Exynos silicon
+    // with the wrong core count — the contradiction a spec-sheet
+    // cross-check reads first. Revisit if verified Xclipse
+    // surface values ever surface.
     private fun galaxyS24(model: String, delta: Int) = FpDevice(
         id = model, deviceModel = "Samsung Galaxy S24", uaModel = model,
         userAgent = ua(model), screenWidth = 360, screenHeight = 780,
@@ -591,7 +602,7 @@ object FingerprintProfiles {
         ),
         devices = listOf(
             galaxyS23("SM-S911B", 0),
-            galaxyS24("SM-S921B", 1),
+            galaxyS24("SM-S921U", 1),
             pixel8Pro(2),
             pixel8(3)
         )
@@ -623,7 +634,7 @@ object FingerprintProfiles {
         ),
         devices = listOf(
             galaxyA54(0),
-            galaxyS24("SM-S921B", 1),
+            galaxyS24("SM-S921U", 1),
             pixel8(2),
             pixel7a(3)
         )
