@@ -131,6 +131,26 @@ object FingerprintScript {
     x = (x ^ 61) ^ (x >>> 16); x = x + (x << 3); x = x ^ (x >>> 4);
     x = x * 0x27d4eb2d; x = x ^ (x >>> 15); return x >>> 0;
   }
+  // Shared canvas noise (v0.182.0): ONE rule for every pixel
+  // path — 2D getImageData, toDataURL / toBlob (which funnel
+  // through getImageData on a copy), OffscreenCanvas and
+  // WebGL readPixels. Same seed, same buffer position, same
+  // delta, so a checker comparing the paths against each
+  // other finds one story instead of two noise signatures.
+  // (readPixels used to run a different rule — every 499th
+  // byte, a different hash — with a visibly different
+  // density.) The rule is a pure function of (seed, buffer
+  // position): repeated reads of the same pixels agree.
+  function noiseBytes(d) {
+    for (var i = 0; i + 3 < d.length; i += 4) {
+      var h = hash(SEED * 1000003 + i);
+      if (h % 211 === 0) {
+        var delta = (h % 2 === 0) ? 1 : -1;
+        d[i] = Math.max(0, Math.min(255, d[i] + delta));
+        d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + delta));
+      }
+    }
+  }
   // Stealth registry (v0.177.0): wrapper function -> the
   // toString a native function would produce. Installed
   // before everything else so def() and every section below
@@ -413,15 +433,7 @@ object FingerprintScript {
 
   section(function () {
     function noiseData(img) {
-      var d = img.data;
-      for (var i = 0; i + 3 < d.length; i += 4) {
-        var h = hash(SEED * 1000003 + i);
-        if (h % 211 === 0) {
-          var delta = (h % 2 === 0) ? 1 : -1;
-          d[i] = Math.max(0, Math.min(255, d[i] + delta));
-          d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + delta));
-        }
-      }
+      noiseBytes(img.data);
       return img;
     }
     var origGID = CanvasRenderingContext2D.prototype.getImageData;
@@ -651,13 +663,7 @@ object FingerprintScript {
               try {
                 var pixels = arguments[6];
                 if (pixels && pixels instanceof Uint8Array) {
-                  for (var i = 0; i < pixels.length; i += 499) {
-                    if ((hash(SEED * 31 + i * 11) & 7) === 0) {
-                      pixels[i] = (pixels[i] +
-                        ((hash(SEED * 17 + i * 13) & 1)
-                          ? 1 : 255)) & 255;
-                    }
-                  }
+                  noiseBytes(pixels);
                 }
               } catch (e) {}
               return r;

@@ -260,6 +260,25 @@ class FingerprintScriptTest {
     }
 
     @Test
+    fun canvasNoiseIsOneSharedRule() {
+        // v0.182.0 cross-path reconciliation: exactly ONE
+        // noise rule definition rides in the payload, the 2D
+        // paths delegate to it, readPixels calls it too, and
+        // the old divergent readPixels rule (499-byte stride,
+        // its own hash) is gone — same seed and buffer
+        // position must give the same delta on every path.
+        val payload = FingerprintScript.payload(
+            FingerprintProfiles.resolve("US", null)
+        )
+        assertTrue(payload.contains("function noiseBytes("))
+        assertTrue(payload.contains("noiseBytes(img.data)"))
+        assertTrue(payload.contains("noiseBytes(pixels)"))
+        assertEquals(1, payload.split("% 211").size - 1)
+        assertFalse(payload.contains("i += 499"))
+        assertFalse(payload.contains("SEED * 31 + i * 11"))
+    }
+
+    @Test
     fun payloadCarriesTheFontShelf() {
         // v0.174.0: document.fonts.check answers known system
         // families from the picked device's stock shelf — the
