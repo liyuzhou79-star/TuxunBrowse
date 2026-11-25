@@ -8919,6 +8919,26 @@ private fun BookmarksScreen(
             selectedUrls = emptySet()
         }
     }
+    // Selection hygiene under SEARCH (v0.143.0 audit): the folder
+    // filter clears the selection outright (above), but the search
+    // word did not touch it — select rows, then type a word that
+    // hides some of them, and the batch bar still counted the
+    // hidden rows and 删除所选 deleted them from the full list,
+    // breaking the v0.72.0 rule that batch delete only ever acts
+    // on entries the user can see selected. Same prune the sniff
+    // screen got in v0.93.0: while in batch mode, the selection
+    // is intersected with the visible list whenever that list
+    // changes. (Outside batch mode the selection is inert —
+    // entering batch mode resets it anyway.)
+    LaunchedEffect(visibleBookmarks, batchMode) {
+        if (batchMode && selectedUrls.isNotEmpty()) {
+            val live = visibleBookmarks.map { it.url }.toSet()
+            val pruned = selectedUrls intersect live
+            if (pruned != selectedUrls) {
+                selectedUrls = pruned
+            }
+        }
+    }
     var showBatchDeleteConfirm by remember { mutableStateOf(false) }
     // Long-press menu target (v0.54.0, same shape as the history
     // page's v0.53.0 menu) and the pending single-delete
@@ -9226,7 +9246,17 @@ private fun BookmarksScreen(
             items(displayBookmarks, key = { it.url }) { bookmark ->
                 val selected = bookmark.url in selectedUrls
                 ListItem(
-                    headlineContent = { Text(bookmark.title) },
+                    headlineContent = {
+                        // Capped like every other list row
+                        // (v0.143.0 audit): an uncapped title or
+                        // detail line used to wrap without limit
+                        // and stretch the row.
+                        Text(
+                            bookmark.title,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
                     supportingContent = {
                         Text(
                             listOfNotNull(
@@ -9238,7 +9268,9 @@ private fun BookmarksScreen(
                                 bookmark.folder.takeIf { it.isNotBlank() }
                                     ?.let { "文件夹：$it" },
                                 bookmark.url
-                            ).joinToString(" · ")
+                            ).joinToString(" · "),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     },
                     leadingContent = {
