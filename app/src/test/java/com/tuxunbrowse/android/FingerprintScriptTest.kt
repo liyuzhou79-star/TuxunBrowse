@@ -221,6 +221,30 @@ class FingerprintScriptTest {
     }
 
     @Test
+    fun payloadCarriesTheStealthPass() {
+        // v0.177.0: every installed wrapper is registered for
+        // a native-looking toString, takes the original's
+        // name/length, and lands non-enumerable like a native
+        // method — the registry and its helpers must be in
+        // every payload, ahead of the sections that use them.
+        val payload = FingerprintScript.payload(
+            FingerprintProfiles.resolve("US", null)
+        )
+        assertTrue(payload.contains("FP_TOSTRING"))
+        assertTrue(payload.contains("[native code]"))
+        assertTrue(payload.contains("function fixFn("))
+        assertTrue(payload.contains("function fixFnAs("))
+        assertTrue(payload.contains("function setMethod("))
+        assertTrue(payload.contains("fpFnToString"))
+        // The registry is installed before the first section
+        // that registers into it.
+        assertTrue(
+            payload.indexOf("FP_TOSTRING") <
+                payload.indexOf("userAgentData")
+        )
+    }
+
+    @Test
     fun payloadCarriesTheFontShelf() {
         // v0.174.0: document.fonts.check answers known system
         // families from the picked device's stock shelf — the

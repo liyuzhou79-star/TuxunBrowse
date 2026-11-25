@@ -39,6 +39,19 @@ package com.tuxunbrowse.android.engine
  * fingerprint across sessions — a real fingerprint browser's
  * profile is stable, and per-visit churn would itself be a tell.
  *
+ * v0.177.0: a stealth pass over every wrapper below — each
+ * installed function is registered with the string a native
+ * function would produce and Function.prototype.toString
+ * answers from that registry; name/length are copied from the
+ * originals; prototype methods are installed non-enumerable
+ * like the natives they replace; the def() getters carry
+ * native-style names. This lowers the tamper-detection
+ * surface (the -10%/-5% "tampered function" grades) — it does
+ * NOT erase it: a fresh realm (an iframe's unhooked
+ * Function.prototype.toString) still shows real wrapper
+ * sources, and the hook itself can be cross-examined.
+ * Recorded honestly in the checkpoint.
+ *
  * v0.174.0: the font ENUMERATION surface joins the covered set —
  * document.fonts.check() answers known system families from the
  * profile device's stock font set (see FingerprintProfiles),
@@ -118,10 +131,68 @@ object FingerprintScript {
     x = (x ^ 61) ^ (x >>> 16); x = x + (x << 3); x = x ^ (x >>> 4);
     x = x * 0x27d4eb2d; x = x ^ (x >>> 15); return x >>> 0;
   }
+  // Stealth registry (v0.177.0): wrapper function -> the
+  // toString a native function would produce. Installed
+  // before everything else so def() and every section below
+  // can register what they install.
+  var FP_TOSTRING = new WeakMap();
+  function fpNativeString(name) {
+    return 'function ' + name + '() { [native code] }';
+  }
+  function fixFn(fn, orig) {
+    try {
+      if (orig) {
+        Object.defineProperty(fn, 'name',
+          { value: orig.name, configurable: true });
+        Object.defineProperty(fn, 'length',
+          { value: orig.length, configurable: true });
+        FP_TOSTRING.set(fn, fpNativeString(orig.name));
+      }
+    } catch (e) {}
+    return fn;
+  }
+  function fixFnAs(fn, name, length) {
+    try {
+      Object.defineProperty(fn, 'name',
+        { value: name, configurable: true });
+      Object.defineProperty(fn, 'length',
+        { value: length, configurable: true });
+      FP_TOSTRING.set(fn, fpNativeString(name));
+    } catch (e) {}
+    return fn;
+  }
+  var origFnToString = Function.prototype.toString;
+  var fpFnToString = function () {
+    var fake = FP_TOSTRING.get(this);
+    return fake || origFnToString.call(this);
+  };
+  fixFnAs(fpFnToString, 'toString', 0);
+  Function.prototype.toString = fpFnToString;
+  // Install like a native prototype method: non-enumerable,
+  // writable, configurable — plain assignment would leave an
+  // enumerable own property where natives have none.
+  function setMethod(obj, name, fn) {
+    try {
+      Object.defineProperty(obj, name, {
+        value: fn, writable: true,
+        enumerable: false, configurable: true
+      });
+    } catch (e) {
+      try { obj[name] = fn; } catch (e2) {}
+    }
+  }
   function def(obj, prop, value) {
     try {
+      var getter = function () { return value; };
+      // Native accessors stringify as
+      // "function get <prop>() { [native code] }" and carry
+      // that name; an anonymous getter is a tamper tell.
+      Object.defineProperty(getter, 'name',
+        { value: 'get ' + prop, configurable: true });
+      FP_TOSTRING.set(getter,
+        'function get ' + prop + '() { [native code] }');
       Object.defineProperty(obj, prop, {
-        get: function () { return value; }, configurable: true
+        get: getter, configurable: true
       });
     } catch (e) {}
   }
@@ -167,6 +238,9 @@ object FingerprintScript {
         return { brands: brands, mobile: true, platform: 'Android' };
       }
     };
+    fixFnAs(uaData.getHighEntropyValues,
+      'getHighEntropyValues', 1);
+    fixFnAs(uaData.toJSON, 'toJSON', 0);
     def(nav, 'userAgentData', uaData);
   });
 
@@ -215,7 +289,8 @@ object FingerprintScript {
     }
     FpDTF.prototype = OrigDTF.prototype;
     FpDTF.supportedLocalesOf = OrigDTF.supportedLocalesOf.bind(OrigDTF);
-    Intl.DateTimeFormat = FpDTF;
+    fixFn(FpDTF, OrigDTF);
+    setMethod(Intl, 'DateTimeFormat', FpDTF);
     var OrigNF = Intl.NumberFormat;
     function FpNF(locales, options) {
       var loc = (locales === undefined || locales === null ||
@@ -224,7 +299,8 @@ object FingerprintScript {
     }
     FpNF.prototype = OrigNF.prototype;
     FpNF.supportedLocalesOf = OrigNF.supportedLocalesOf.bind(OrigNF);
-    Intl.NumberFormat = FpNF;
+    fixFn(FpNF, OrigNF);
+    setMethod(Intl, 'NumberFormat', FpNF);
     // The rest of the Intl family (v0.163.0): the two wrappers
     // above covered the formats pages use daily, but the
     // DEFAULT LOCALE of every other Intl constructor still
@@ -252,24 +328,32 @@ object FingerprintScript {
           FpIntlCtor.supportedLocalesOf =
             Orig.supportedLocalesOf.bind(Orig);
         }
-        Intl[name] = FpIntlCtor;
+        fixFn(FpIntlCtor, Orig);
+        setMethod(Intl, name, FpIntlCtor);
       });
   });
   section(function () {
-    Date.prototype.getTimezoneOffset = function () {
-      return -tzOffsetMinutes(this);
-    };
-    Date.prototype.toLocaleString = function (locales, options) {
-      return new Intl.DateTimeFormat(locales, options).format(this);
-    };
-    Date.prototype.toLocaleDateString = function (locales, options) {
-      return new Intl.DateTimeFormat(locales, options).format(this);
-    };
-    Date.prototype.toLocaleTimeString = function (locales, options) {
-      return new Intl.DateTimeFormat(locales, options).format(this);
-    };
+    setMethod(Date.prototype, 'getTimezoneOffset',
+      fixFn(function () {
+        return -tzOffsetMinutes(this);
+      }, Date.prototype.getTimezoneOffset));
+    setMethod(Date.prototype, 'toLocaleString',
+      fixFn(function (locales, options) {
+        return new Intl.DateTimeFormat(locales, options)
+          .format(this);
+      }, Date.prototype.toLocaleString));
+    setMethod(Date.prototype, 'toLocaleDateString',
+      fixFn(function (locales, options) {
+        return new Intl.DateTimeFormat(locales, options)
+          .format(this);
+      }, Date.prototype.toLocaleDateString));
+    setMethod(Date.prototype, 'toLocaleTimeString',
+      fixFn(function (locales, options) {
+        return new Intl.DateTimeFormat(locales, options)
+          .format(this);
+      }, Date.prototype.toLocaleTimeString));
     function pad2(n) { return (n < 10 ? '0' : '') + n; }
-    Date.prototype.toString = function () {
+    setMethod(Date.prototype, 'toString', fixFn(function () {
       if (isNaN(this.getTime())) return 'Invalid Date';
       var dtf = new OrigDTF('en-US', {
         timeZone: TZ, hourCycle: 'h23', weekday: 'short', year: 'numeric',
@@ -298,7 +382,7 @@ object FingerprintScript {
         map.year + ' ' + pad2(+map.hour) + ':' + map.minute + ':' +
         map.second + ' GMT' + sign + pad2(Math.floor(abs / 60)) +
         pad2(abs % 60) + ' (' + name + ')';
-    };
+    }, Date.prototype.toString));
   });
 
   section(function () {
@@ -314,14 +398,17 @@ object FingerprintScript {
         timestamp: Date.now()
       };
     }
-    proto.getCurrentPosition = function (ok, err, opts) {
-      setTimeout(function () { if (ok) ok(position()); }, 60);
-    };
-    proto.watchPosition = function (ok, err, opts) {
-      setTimeout(function () { if (ok) ok(position()); }, 60);
-      return 1;
-    };
-    proto.clearWatch = function (id) {};
+    setMethod(proto, 'getCurrentPosition',
+      fixFn(function (ok, err, opts) {
+        setTimeout(function () { if (ok) ok(position()); }, 60);
+      }, proto.getCurrentPosition));
+    setMethod(proto, 'watchPosition',
+      fixFn(function (ok, err, opts) {
+        setTimeout(function () { if (ok) ok(position()); }, 60);
+        return 1;
+      }, proto.watchPosition));
+    setMethod(proto, 'clearWatch',
+      fixFn(function (id) {}, proto.clearWatch));
   });
 
   section(function () {
@@ -338,9 +425,10 @@ object FingerprintScript {
       return img;
     }
     var origGID = CanvasRenderingContext2D.prototype.getImageData;
-    CanvasRenderingContext2D.prototype.getImageData = function () {
-      return noiseData(origGID.apply(this, arguments));
-    };
+    setMethod(CanvasRenderingContext2D.prototype, 'getImageData',
+      fixFn(function () {
+        return noiseData(origGID.apply(this, arguments));
+      }, origGID));
     function noisedCopy(canvas) {
       var t = document.createElement('canvas');
       t.width = canvas.width; t.height = canvas.height;
@@ -360,35 +448,38 @@ object FingerprintScript {
     if (CanvasRenderingContext2D.prototype.measureText) {
       var scale = 1 + ((hash(SEED * 97 + 13) % 89) - 44) / 10000;
       var origMT = CanvasRenderingContext2D.prototype.measureText;
-      CanvasRenderingContext2D.prototype.measureText = function () {
-        var m = origMT.apply(this, arguments);
-        try {
-          var w = m.width * scale;
-          return new Proxy(m, {
-            get: function (t, prop) {
-              return prop === 'width' ? w : t[prop];
-            }
-          });
-        } catch (e) { return m; }
-      };
+      setMethod(CanvasRenderingContext2D.prototype, 'measureText',
+        fixFn(function () {
+          var m = origMT.apply(this, arguments);
+          try {
+            var w = m.width * scale;
+            return new Proxy(m, {
+              get: function (t, prop) {
+                return prop === 'width' ? w : t[prop];
+              }
+            });
+          } catch (e) { return m; }
+        }, origMT));
     }
     var origTDU = HTMLCanvasElement.prototype.toDataURL;
-    HTMLCanvasElement.prototype.toDataURL = function () {
-      try {
-        return origTDU.apply(noisedCopy(this), arguments);
-      } catch (e) {
-        return origTDU.apply(this, arguments);
-      }
-    };
+    setMethod(HTMLCanvasElement.prototype, 'toDataURL',
+      fixFn(function () {
+        try {
+          return origTDU.apply(noisedCopy(this), arguments);
+        } catch (e) {
+          return origTDU.apply(this, arguments);
+        }
+      }, origTDU));
     if (HTMLCanvasElement.prototype.toBlob) {
       var origTB = HTMLCanvasElement.prototype.toBlob;
-      HTMLCanvasElement.prototype.toBlob = function () {
-        try {
-          return origTB.apply(noisedCopy(this), arguments);
-        } catch (e) {
-          return origTB.apply(this, arguments);
-        }
-      };
+      setMethod(HTMLCanvasElement.prototype, 'toBlob',
+        fixFn(function () {
+          try {
+            return origTB.apply(noisedCopy(this), arguments);
+          } catch (e) {
+            return origTB.apply(this, arguments);
+          }
+        }, origTB));
     }
     // OffscreenCanvas (v0.157.0): the offscreen 2D context is a
     // DIFFERENT prototype from CanvasRenderingContext2D, so none
@@ -402,40 +493,43 @@ object FingerprintScript {
       var octx = OffscreenCanvasRenderingContext2D.prototype;
       if (octx.getImageData) {
         var origOGID = octx.getImageData;
-        octx.getImageData = function () {
-          return noiseData(origOGID.apply(this, arguments));
-        };
+        setMethod(octx, 'getImageData',
+          fixFn(function () {
+            return noiseData(origOGID.apply(this, arguments));
+          }, origOGID));
       }
       if (octx.measureText) {
         var origOMT = octx.measureText;
-        octx.measureText = function () {
-          var m = origOMT.apply(this, arguments);
-          try {
-            var w = m.width * scale;
-            return new Proxy(m, {
-              get: function (t, prop) {
-                return prop === 'width' ? w : t[prop];
-              }
-            });
-          } catch (e) { return m; }
-        };
+        setMethod(octx, 'measureText',
+          fixFn(function () {
+            var m = origOMT.apply(this, arguments);
+            try {
+              var w = m.width * scale;
+              return new Proxy(m, {
+                get: function (t, prop) {
+                  return prop === 'width' ? w : t[prop];
+                }
+              });
+            } catch (e) { return m; }
+          }, origOMT));
       }
     }
     if (window.OffscreenCanvas &&
       OffscreenCanvas.prototype.convertToBlob) {
       var origOCTB = OffscreenCanvas.prototype.convertToBlob;
-      OffscreenCanvas.prototype.convertToBlob = function () {
-        try {
-          var t = new OffscreenCanvas(this.width, this.height);
-          var cx = t.getContext('2d');
-          cx.drawImage(this, 0, 0);
-          cx.putImageData(
-            cx.getImageData(0, 0, t.width, t.height), 0, 0);
-          return origOCTB.apply(t, arguments);
-        } catch (e) {
-          return origOCTB.apply(this, arguments);
-        }
-      };
+      setMethod(OffscreenCanvas.prototype, 'convertToBlob',
+        fixFn(function () {
+          try {
+            var t = new OffscreenCanvas(this.width, this.height);
+            var cx = t.getContext('2d');
+            cx.drawImage(this, 0, 0);
+            cx.putImageData(
+              cx.getImageData(0, 0, t.width, t.height), 0, 0);
+            return origOCTB.apply(t, arguments);
+          } catch (e) {
+            return origOCTB.apply(this, arguments);
+          }
+        }, origOCTB));
     }
   });
 
@@ -482,7 +576,8 @@ object FingerprintScript {
       return { families: out, sawSyntax: sawSyntax };
     }
     var origFontCheck = document.fonts.check.bind(document.fonts);
-    document.fonts.check = function (font, text) {
+    setMethod(document.fonts, 'check',
+      fixFnAs(function (font, text) {
       try {
         var parsed = familiesOf(font);
         if (parsed.sawSyntax) {
@@ -499,7 +594,7 @@ object FingerprintScript {
         }
       } catch (e) {}
       return origFontCheck(font, text);
-    };
+      }, 'check', 1));
   });
 
   section(function () {
@@ -528,15 +623,16 @@ object FingerprintScript {
       .forEach(function (ctor) {
         if (!ctor || !ctor.prototype.getParameter) return;
         var orig = ctor.prototype.getParameter;
-        ctor.prototype.getParameter = function (param) {
-          if (param === 0x9245) return ${jsStr(d.webGlVendor)};
-          if (param === 0x9246) return ${jsStr(d.webGlRenderer)};
-          if (Object.prototype.hasOwnProperty.call(GLP, param)) {
-            var v = GLP[param];
-            return (v && v.slice) ? v.slice() : v;
-          }
-          return orig.apply(this, arguments);
-        };
+        setMethod(ctor.prototype, 'getParameter',
+          fixFn(function (param) {
+            if (param === 0x9245) return ${jsStr(d.webGlVendor)};
+            if (param === 0x9246) return ${jsStr(d.webGlRenderer)};
+            if (Object.prototype.hasOwnProperty.call(GLP, param)) {
+              var v = GLP[param];
+              return (v && v.slice) ? v.slice() : v;
+            }
+            return orig.apply(this, arguments);
+          }, orig));
         // readPixels (v0.149.0): the canvas noise is pointless if
         // a checker can read the framebuffer back raw — readback
         // is the other half of every WebGL fingerprint. Same
@@ -549,21 +645,23 @@ object FingerprintScript {
         // it only moves the hash.
         if (ctor.prototype.readPixels) {
           var origRead = ctor.prototype.readPixels;
-          ctor.prototype.readPixels = function () {
-            var r = origRead.apply(this, arguments);
-            try {
-              var pixels = arguments[6];
-              if (pixels && pixels instanceof Uint8Array) {
-                for (var i = 0; i < pixels.length; i += 499) {
-                  if ((hash(SEED * 31 + i * 11) & 7) === 0) {
-                    pixels[i] = (pixels[i] +
-                      ((hash(SEED * 17 + i * 13) & 1) ? 1 : 255)) & 255;
+          setMethod(ctor.prototype, 'readPixels',
+            fixFn(function () {
+              var r = origRead.apply(this, arguments);
+              try {
+                var pixels = arguments[6];
+                if (pixels && pixels instanceof Uint8Array) {
+                  for (var i = 0; i < pixels.length; i += 499) {
+                    if ((hash(SEED * 31 + i * 11) & 7) === 0) {
+                      pixels[i] = (pixels[i] +
+                        ((hash(SEED * 17 + i * 13) & 1)
+                          ? 1 : 255)) & 255;
+                    }
                   }
                 }
-              }
-            } catch (e) {}
-            return r;
-          };
+              } catch (e) {}
+              return r;
+            }, origRead));
         }
       });
   });
@@ -620,10 +718,11 @@ object FingerprintScript {
         }
       });
     }
-    gpuObj.requestAdapter = function () {
-      return origRequestAdapter.apply(null, arguments)
-        .then(wrapGpuAdapter);
-    };
+    setMethod(gpuObj, 'requestAdapter',
+      fixFnAs(function () {
+        return origRequestAdapter.apply(null, arguments)
+          .then(wrapGpuAdapter);
+      }, 'requestAdapter', 0));
   });
 
   section(function () {
@@ -642,7 +741,9 @@ object FingerprintScript {
       def(v, 'default', d.isDefault);
       return v;
     });
-    speechSynthesis.getVoices = function () { return list.slice(); };
+    var origGetVoices = speechSynthesis.getVoices;
+    setMethod(speechSynthesis, 'getVoices',
+      fixFn(function () { return list.slice(); }, origGetVoices));
     setTimeout(function () {
       try {
         var evt = new Event('voiceschanged');
@@ -674,14 +775,15 @@ object FingerprintScript {
         dispatchEvent: function () { return false; }
       };
     }
-    window.matchMedia = function (query) {
-      var q = String(query).replace(/\s+/g, '');
-      var g = /^\(color-gamut:(srgb|p3|rec2020)\)$/.exec(q);
-      if (g) return fakeMQL(query, order[g[1]] <= order[GAMUT]);
-      var d = /^\(dynamic-range:(standard|high)\)$/.exec(q);
-      if (d) return fakeMQL(query, d[1] === 'high' ? HDR : !HDR);
-      return origMM(query);
-    };
+    setMethod(window, 'matchMedia',
+      fixFnAs(function (query) {
+        var q = String(query).replace(/\s+/g, '');
+        var g = /^\(color-gamut:(srgb|p3|rec2020)\)$/.exec(q);
+        if (g) return fakeMQL(query, order[g[1]] <= order[GAMUT]);
+        var d = /^\(dynamic-range:(standard|high)\)$/.exec(q);
+        if (d) return fakeMQL(query, d[1] === 'high' ? HDR : !HDR);
+        return origMM(query);
+      }, 'matchMedia', 1));
   });
 
   section(function () {
@@ -718,15 +820,18 @@ object FingerprintScript {
       d.toJSON = function () {
         return { deviceId: id, kind: kind, label: '', groupId: group };
       };
+      fixFnAs(d.toJSON, 'toJSON', 0);
       return d;
     }
-    navigator.mediaDevices.enumerateDevices = function () {
-      return Promise.resolve([
-        device('audioinput', 'default', 'fp-audio'),
-        device('videoinput', '', 'fp-video'),
-        device('audiooutput', 'default', 'fp-audio')
-      ]);
-    };
+    var origEnumDevices = navigator.mediaDevices.enumerateDevices;
+    setMethod(navigator.mediaDevices, 'enumerateDevices',
+      fixFn(function () {
+        return Promise.resolve([
+          device('audioinput', 'default', 'fp-audio'),
+          device('videoinput', '', 'fp-video'),
+          device('audiooutput', 'default', 'fp-audio')
+        ]);
+      }, origEnumDevices));
   });
 
   section(function () {
@@ -739,7 +844,8 @@ object FingerprintScript {
     // which is itself a tell. A WeakMap of noised channels keeps
     // the first read's story final.
     var noised = new WeakMap();
-    AudioBuffer.prototype.getChannelData = function (channel) {
+    setMethod(AudioBuffer.prototype, 'getChannelData',
+      fixFn(function (channel) {
       var data = orig.call(this, channel);
       try {
         var seen = noised.get(this);
@@ -752,7 +858,7 @@ object FingerprintScript {
         }
       } catch (e) {}
       return data;
-    };
+      }, orig));
   });
 
   section(function () {
@@ -770,21 +876,24 @@ object FingerprintScript {
     }
     if (window.Element) {
       var origEl = Element.prototype.getBoundingClientRect;
-      Element.prototype.getBoundingClientRect = function () {
-        return jitter(origEl.call(this));
-      };
+      setMethod(Element.prototype, 'getBoundingClientRect',
+        fixFn(function () {
+          return jitter(origEl.call(this));
+        }, origEl));
     }
     if (window.Range) {
       var origRg = Range.prototype.getBoundingClientRect;
-      Range.prototype.getBoundingClientRect = function () {
-        return jitter(origRg.call(this));
-      };
+      setMethod(Range.prototype, 'getBoundingClientRect',
+        fixFn(function () {
+          return jitter(origRg.call(this));
+        }, origRg));
     }
   });
 
   section(function () {
     if (!('getBattery' in navigator)) return;
-    navigator.getBattery = function () {
+    setMethod(navigator, 'getBattery',
+      fixFnAs(function () {
       // The story must agree with itself (v0.158.0): chargingTime
       // is "seconds until full", so 0 is only true at level 1 —
       // a charging profile at 0.91 claiming 0 contradicts itself.
@@ -806,8 +915,11 @@ object FingerprintScript {
       b.addEventListener = function () {};
       b.removeEventListener = function () {};
       b.dispatchEvent = function () { return false; };
+      fixFnAs(b.addEventListener, 'addEventListener', 2);
+      fixFnAs(b.removeEventListener, 'removeEventListener', 2);
+      fixFnAs(b.dispatchEvent, 'dispatchEvent', 1);
       return Promise.resolve(b);
-    };
+      }, 'getBattery', 0));
   });
 
   section(function () {
@@ -859,6 +971,7 @@ object FingerprintScript {
           }
           return origAdd(type, listener, opts);
         };
+        fixFnAs(pc.addEventListener, 'addEventListener', 2);
         var iceDesc = Object.getOwnPropertyDescriptor(
           Object.getPrototypeOf(pc), 'onicecandidate');
         if (iceDesc && iceDesc.set) {
@@ -887,17 +1000,32 @@ object FingerprintScript {
         FpRTCPeerConnection.generateCertificate =
           OrigRTC.generateCertificate.bind(OrigRTC);
       }
-      def(window, 'RTCPeerConnection', FpRTCPeerConnection);
+      fixFn(FpRTCPeerConnection, OrigRTC);
+      // Native constructors sit on the global as writable,
+      // non-enumerable DATA properties; def() would leave a
+      // getter-only accessor instead, so install as data,
+      // with def() as the fallback.
+      function installRTC(name) {
+        try {
+          Object.defineProperty(window, name, {
+            value: FpRTCPeerConnection, writable: true,
+            enumerable: false, configurable: true
+          });
+        } catch (e) {
+          def(window, name, FpRTCPeerConnection);
+        }
+      }
+      installRTC('RTCPeerConnection');
       if (window.webkitRTCPeerConnection) {
-        def(window, 'webkitRTCPeerConnection',
-          FpRTCPeerConnection);
+        installRTC('webkitRTCPeerConnection');
       }
     }
     if (navigator.mediaDevices) {
-      def(navigator.mediaDevices, 'getUserMedia', function () {
-        return Promise.reject(new DOMException(
-          'Permission denied', 'NotAllowedError'));
-      });
+      def(navigator.mediaDevices, 'getUserMedia',
+        fixFnAs(function () {
+          return Promise.reject(new DOMException(
+            'Permission denied', 'NotAllowedError'));
+        }, 'getUserMedia', 0));
     }
   });
 })();
