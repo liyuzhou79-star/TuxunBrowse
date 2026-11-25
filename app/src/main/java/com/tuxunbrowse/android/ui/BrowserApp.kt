@@ -6466,7 +6466,18 @@ private fun BrowserScreen(
                             }
                         }
                     },
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                    // Keyboard fit (v0.138.0 input audit): this
+                    // field held only an IME action until now, so
+                    // it got the plain text keyboard WITH auto-
+                    // correct — an IME could "fix" a typed host
+                    // name into a dictionary word. Uri type asks
+                    // the IME for its URL layout and auto-correct
+                    // is off, like other browsers' address bars.
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Uri,
+                        autoCorrectEnabled = false,
+                        imeAction = ImeAction.Go
+                    ),
                     keyboardActions = KeyboardActions(
                         onGo = { submitAddress() }
                     )
@@ -7085,7 +7096,14 @@ private fun BrowserScreen(
                             .focusRequester(findFocusRequester),
                         singleLine = true,
                         placeholder = { Text("在页面里查找") },
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        // No auto-correct (v0.138.0): the words
+                        // being hunted are page text, often names
+                        // or code — an IME rewriting them would
+                        // search for something never typed.
+                        keyboardOptions = KeyboardOptions(
+                            autoCorrectEnabled = false,
+                            imeAction = ImeAction.Search
+                        ),
                         keyboardActions = KeyboardActions(
                             onSearch = { onFind(findQuery, true) }
                         )
@@ -7751,6 +7769,13 @@ private fun BrowserScreen(
                         onValueChange = { tabQuery = it },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
+                        // Live-filter field (v0.138.0): Search
+                        // action face, no auto-correct — the text
+                        // is matched against titles and URLs.
+                        keyboardOptions = KeyboardOptions(
+                            autoCorrectEnabled = false,
+                            imeAction = ImeAction.Search
+                        ),
                         placeholder = { Text("搜索标签页（标题或网址）") },
                         leadingIcon = {
                             Icon(Icons.Filled.Search, contentDescription = null)
@@ -8508,7 +8533,12 @@ private fun BookmarksScreen(
                                 .focusRequester(editUrlFocusRequester),
                             label = { Text("网址") },
                             singleLine = true,
+                            // URL keyboard, no auto-correct —
+                            // same fit as the address bar
+                            // (v0.138.0 input audit).
                             keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Uri,
+                                autoCorrectEnabled = false,
                                 imeAction = if (editFolderIsNew) {
                                     ImeAction.Next
                                 } else {
@@ -9025,6 +9055,13 @@ private fun BookmarksScreen(
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                         singleLine = true,
+                        // Live-filter field (v0.138.0): Search
+                        // action face, no auto-correct — the text
+                        // is matched against names and URLs.
+                        keyboardOptions = KeyboardOptions(
+                            autoCorrectEnabled = false,
+                            imeAction = ImeAction.Search
+                        ),
                         placeholder = { Text("搜索书签（名称或网址）") },
                         leadingIcon = {
                             Icon(Icons.Filled.Search, contentDescription = null)
@@ -9625,6 +9662,13 @@ private fun HistoryScreen(
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                         singleLine = true,
+                        // Live-filter field (v0.138.0): Search
+                        // action face, no auto-correct — the text
+                        // is matched against titles and URLs.
+                        keyboardOptions = KeyboardOptions(
+                            autoCorrectEnabled = false,
+                            imeAction = ImeAction.Search
+                        ),
                         placeholder = { Text("搜索历史（标题或网址）") },
                         leadingIcon = {
                             Icon(Icons.Filled.Search, contentDescription = null)
@@ -11125,6 +11169,13 @@ private fun DownloadsScreen(
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                         singleLine = true,
+                        // Live-filter field (v0.138.0): Search
+                        // action face, no auto-correct — the text
+                        // is matched against file names.
+                        keyboardOptions = KeyboardOptions(
+                            autoCorrectEnabled = false,
+                            imeAction = ImeAction.Search
+                        ),
                         placeholder = { Text("搜索下载（文件名）") },
                         leadingIcon = {
                             Icon(Icons.Filled.Search, contentDescription = null)

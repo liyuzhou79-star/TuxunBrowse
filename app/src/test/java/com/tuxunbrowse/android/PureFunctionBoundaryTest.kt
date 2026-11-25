@@ -126,15 +126,42 @@ class ResolveInputBoundaryTest {
     }
 
     @Test
-    fun wordsWithTabOrSpaceAreSearches() {
-        assertEquals(
-            SearchEngine.BAIDU.searchUrl("hello\tworld"),
-            resolveInput("hello\tworld")
-        )
+    fun wordsWithSpaceAreSearches() {
         assertEquals(
             SearchEngine.BAIDU.searchUrl("a b.com"),
             resolveInput("a b.com")
         )
+    }
+
+    @Test
+    fun tabsAndNewlinesAreRemovedBeforeResolving() {
+        // v0.138.0: tabs / CR / LF are stripped up front (the URL
+        // standard's own rule), so a URL copied from a wrapped line
+        // still resolves as that URL instead of a broken host or a
+        // search. The mirror function applies the same removal.
+        assertEquals(
+            "https://example.com/path",
+            resolveInput("https://exa\nmple.com/path")
+        )
+        assertEquals(
+            "https://example.com",
+            resolveInput("example.com\r\n")
+        )
+        assertEquals(
+            "https://example.com",
+            resolveInput("exa\tmple.com")
+        )
+        assertEquals(
+            SearchEngine.BAIDU.searchUrl("helloworld"),
+            resolveInput("hello\tworld")
+        )
+        assertEquals(
+            SearchEngine.BAIDU.searchUrl("two words"),
+            resolveInput("two\n words")
+        )
+        assertTrue(isUrlLikeInput("example.com\n"))
+        assertTrue(isUrlLikeInput("https://exa\nmple.com"))
+        assertFalse(isUrlLikeInput("two\nlines of text"))
     }
 
     @Test
@@ -198,7 +225,8 @@ class ResolveInputBoundaryTest {
             "hello world", "hello.world", "a b.com", "例子.中国",
             "news", "intranet", "example.com.", ".com",
             "user@example.com", "javascript:alert(1)",
-            "file:///a.html", "router.local", "a.b c", "中文.com"
+            "file:///a.html", "router.local", "a.b c", "中文.com",
+            "example.com\n", "https://exa\nmple.com"
         )
         for (raw in corpus) {
             val resolved = resolveInput(raw)

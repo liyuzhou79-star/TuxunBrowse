@@ -2170,7 +2170,17 @@ fun resolveInput(
     input: String,
     searchEngine: SearchEngine = SearchEngine.BAIDU
 ): String {
-    val text = input.trim()
+    // Tabs and line breaks are removed before anything else
+    // (v0.138.0 input audit): a URL copied from a wrapped line or
+    // pasted out of a multi-line note arrives with \n / \t inside
+    // it, and leaving them in produced a broken host name or
+    // sent a wrapped URL off to the search engine instead.
+    // This mirrors what the URL standard itself does with tabs and
+    // newlines. Ordinary spaces stay — they still mark the input
+    // as words to search for below.
+    val text = input
+        .filterNot { it == '\t' || it == '\r' || it == '\n' }
+        .trim()
     if (text.isEmpty()) return HOME_URL
     // Only http(s) URLs pass through as-is (v0.31.0): the old about:
     // and file: pass-throughs are gone — file: pages are refused like
@@ -2196,7 +2206,11 @@ fun resolveInput(
  * the address bar can decide whether a "search this" row is needed.
  */
 fun isUrlLikeInput(input: String): Boolean {
-    val text = input.trim()
+    // Same tab/newline removal as resolveInput (v0.138.0), so the
+    // mirror never disagrees with the resolver about pasted text.
+    val text = input
+        .filterNot { it == '\t' || it == '\r' || it == '\n' }
+        .trim()
     if (text.isEmpty()) return false
     // Mirror resolveInput exactly, including its case-insensitive
     // scheme and localhost checks (v0.114.0).
