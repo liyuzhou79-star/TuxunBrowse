@@ -153,12 +153,15 @@ class FingerprintScriptTest {
         val sg = FingerprintScript.payload(
             FingerprintProfiles.resolve("SG", null)
         )
-        assertTrue(sg.contains("charging: true"))
-        assertTrue(sg.contains("chargingTime: 0"))
+        assertTrue(sg.contains("b.charging = true"))
+        // v0.158.0: chargingTime is derived from the level —
+        // 0 would only be true at a full battery, and SG's story
+        // is charging at 0.91.
+        assertTrue(sg.contains("Math.round((1 - 0.91) * 3600)"))
         val us = FingerprintScript.payload(
             FingerprintProfiles.resolve("US", null)
         )
-        assertTrue(us.contains("charging: false"))
-        assertTrue(us.contains("chargingTime: Infinity"))
+        assertTrue(us.contains("b.charging = false"))
+        assertTrue(us.contains("b.chargingTime = Infinity"))
     }
 }
