@@ -1083,7 +1083,37 @@ fun BrowserApp(
      * slept tab simply reloads its page when switched back to.
      */
     fun enforceEngineSleepLimit(limit: Int = ALIVE_ENGINE_LIMIT) {
-        val alive = tabs.filter { it.engineCreated }
+        enforceSleepLimitFor(tabs, activeTabId, limit)
+    }
+
+    /**
+     * The fingerprint group's own sleep pass (v0.170.0): until this
+     * version the cap below covered only the normal group, so
+     * fingerprint engines accumulated without any bound — every
+     * fingerprint tab ever shown kept its WebView alive for the
+     * whole session (the shell's new-tab button can be tapped
+     * without limit, and a restored archive can bring many tabs
+     * back). The fingerprint group now gets the same cap, the same
+     * victim rule and the same sleepEngine() teardown; a slept
+     * fingerprint tab re-creates its engine through the very same
+     * TabContent obtain path as a normal tab (its fingerprint
+     * script handler is dropped at sleep and re-registered at
+     * creation, exactly like the guard/privacy handlers). The two
+     * groups are capped separately on purpose: fingerprint tabs
+     * must never push normal tabs out of memory or the other way
+     * round — each group keeps its own working set.
+     */
+    fun enforceFpEngineSleepLimit(limit: Int = ALIVE_ENGINE_LIMIT) {
+        enforceSleepLimitFor(fpTabs, activeFpTabId, limit)
+    }
+
+    /** One sleep pass over one tab group (see the two callers). */
+    fun enforceSleepLimitFor(
+        group: List<BrowserTab>,
+        groupActiveId: Int,
+        limit: Int
+    ) {
+        val alive = group.filter { it.engineCreated }
         if (alive.size <= limit) return
         // Victim choice is the shared pure function (v0.78.0): the
         // ordinary cap pass and the memory-pressure pass below pick
@@ -1092,7 +1122,7 @@ fun BrowserApp(
             alive.map {
                 EngineSleepCandidate(it.id, it.lastUsedAt, it.geckoDownloadActive)
             },
-            activeTabId,
+            groupActiveId,
             limit
         )
         if (victimIds.isEmpty()) return
@@ -1116,6 +1146,11 @@ fun BrowserApp(
     fun enforceTrimMemoryPressure(level: Int) {
         val limit = trimAliveLimit(level) ?: return
         enforceEngineSleepLimit(limit)
+        // The fingerprint group squeezes under the same pressure
+        // (v0.170.0): its engines are the same WebViews, and a
+        // memory crunch is exactly when an uncapped second group
+        // would hurt most.
+        enforceFpEngineSleepLimit(limit)
         // Same pressure pass, second squeeze (v0.127.0): the tab
         // thumbnails are up to ~11 MB of pure decoration and were
         // previously left alone by this pass. They are dropped
@@ -3212,7 +3247,14 @@ fun BrowserApp(
             // GeckoSession.close). GeckoRuntime is a process-wide
             // singleton and is deliberately NOT shut down: closing
             // it would break a later start in the same process.
-            tabs.forEach { tab ->
+            // The fingerprint group is destroyed on the same pass
+            // (v0.170.0): until this version the loop covered only
+            // the normal group, so on a recreation the process
+            // survives, every fingerprint WebView was abandoned
+            // with its script handlers and callbacks still wired
+            // to a dead activity — the exact leak this teardown
+            // exists to prevent for normal tabs.
+            (tabs + fpTabs).forEach { tab ->
                 try {
                     tab.destroy()
                 } catch (t: Throwable) {
@@ -3303,9 +3345,21 @@ fun BrowserApp(
                     }
                     store.flushBlockedCounter()
                     tabs.forEach { it.pauseEngine() }
+                    // Fingerprint tabs pause on the same pass
+                    // (v0.170.0): they are live WebViews like any
+                    // other, and until this version they kept
+                    // playing media and running JS timers in the
+                    // background while every normal tab idled.
+                    // Pausing touches behaviour only — timers and
+                    // media — never any fingerprint parameter.
+                    fpTabs.forEach { it.pauseEngine() }
                 }
-                Lifecycle.Event.ON_RESUME ->
+                Lifecycle.Event.ON_RESUME -> {
                     tabs.forEach { it.resumeEngine(it.id == activeTabId) }
+                    fpTabs.forEach {
+                        it.resumeEngine(it.id == activeFpTabId)
+                    }
+                }
                 else -> Unit
             }
         }
@@ -3330,6 +3384,20 @@ fun BrowserApp(
         // has been created by TabContent during composition, so the
         // alive count it sees is the real one.
         enforceEngineSleepLimit()
+    }
+
+    // The fingerprint group's twin of the pass above (v0.170.0):
+    // stamp the newly active fingerprint tab as most recently used,
+    // then hold the group to the same alive-engine cap. Keyed on
+    // activeFpTabId, so it runs after every fingerprint tab
+    // creation, switch, profile rebuild and startup restore — and,
+    // exactly like the normal pass, after composition, when the
+    // shell's TabContent has created the newly shown tab's engine.
+    // Fingerprint tabs are WebView-only, so there is no Gecko
+    // active-state to apply here.
+    LaunchedEffect(activeFpTabId) {
+        activeFpTab()?.noteUsed()
+        enforceFpEngineSleepLimit()
     }
 
     // Clipboard-read prompt lifetime (v0.45.0): switching away from
