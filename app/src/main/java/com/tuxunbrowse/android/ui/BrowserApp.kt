@@ -1660,7 +1660,7 @@ fun BrowserApp(
                 val replacement = makeTab(
                     engine = Engine.WEBVIEW,
                     incognito = true,
-                    initialUrl = tab.url,
+                    url = tab.url,
                     desktopMode = tab.desktopMode,
                     fingerprint = true
                 )
