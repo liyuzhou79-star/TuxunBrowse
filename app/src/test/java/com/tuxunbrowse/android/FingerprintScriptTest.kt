@@ -169,6 +169,24 @@ class FingerprintScriptTest {
     }
 
     @Test
+    fun payloadCoversTheWholeIntlFamily() {
+        // v0.163.0: every Intl constructor's default locale
+        // must follow the profile, not only Date/NumberFormat —
+        // Collator and PluralRules resolvedOptions were the
+        // host-locale holes a thorough cross-check reads.
+        val payload = FingerprintScript.payload(
+            FingerprintProfiles.resolve("JP", null)
+        )
+        for (name in listOf(
+            "Collator", "PluralRules", "RelativeTimeFormat",
+            "ListFormat", "DisplayNames", "Segmenter"
+        )) {
+            assertTrue("missing Intl wrap: $name",
+                payload.contains(name))
+        }
+    }
+
+    @Test
     fun payloadCarriesLeakProofLiveWebRtc() {
         // v0.160.0: the WebRTC API stays present (a real Chrome
         // phone has it) with the leak paths closed — relay-only

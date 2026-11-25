@@ -180,6 +180,35 @@ object FingerprintScript {
     FpNF.prototype = OrigNF.prototype;
     FpNF.supportedLocalesOf = OrigNF.supportedLocalesOf.bind(OrigNF);
     Intl.NumberFormat = FpNF;
+    // The rest of the Intl family (v0.163.0): the two wrappers
+    // above covered the formats pages use daily, but the
+    // DEFAULT LOCALE of every other Intl constructor still
+    // resolved to the host's — a cross-check asking
+    // new Intl.Collator().resolvedOptions().locale (or
+    // PluralRules, or DisplayNames) read the real device's
+    // language while DateTimeFormat claimed the profile's.
+    // Same rule for the whole family: no explicit locales
+    // means the profile's language. String.prototype
+    // .localeCompare rides on Collator internally, so it
+    // follows without its own hook.
+    ['Collator', 'PluralRules', 'RelativeTimeFormat',
+      'ListFormat', 'DisplayNames', 'Segmenter'].forEach(
+      function (name) {
+        var Orig = Intl[name];
+        if (!Orig) return;
+        function FpIntlCtor(locales, options) {
+          var loc = (locales === undefined || locales === null ||
+            (Array.isArray(locales) && locales.length === 0))
+            ? LANG : locales;
+          return new Orig(loc, options);
+        }
+        FpIntlCtor.prototype = Orig.prototype;
+        if (Orig.supportedLocalesOf) {
+          FpIntlCtor.supportedLocalesOf =
+            Orig.supportedLocalesOf.bind(Orig);
+        }
+        Intl[name] = FpIntlCtor;
+      });
   });
   section(function () {
     Date.prototype.getTimezoneOffset = function () {
