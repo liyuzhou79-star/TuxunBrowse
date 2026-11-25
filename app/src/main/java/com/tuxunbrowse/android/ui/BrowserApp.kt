@@ -10478,10 +10478,18 @@ private fun DownloadsScreen(
     val context = LocalContext.current
     var entries by remember { mutableStateOf<List<DownloadEntry>>(emptyList()) }
     var refreshTick by remember { mutableStateOf(0) }
+    // The DownloadManager query is a provider call: it runs on the
+    // IO dispatcher, never on the composition thread (v0.141.0
+    // audit — the same applies to the once-a-second poll below; a
+    // slow provider answer used to stall the list's scrolling).
     LaunchedEffect(refreshTick) {
-        entries = readDownloadEntries(
-            context, android.app.DownloadManager.Query()
-        )
+        entries = kotlinx.coroutines.withContext(
+            kotlinx.coroutines.Dispatchers.IO
+        ) {
+            readDownloadEntries(
+                context, android.app.DownloadManager.Query()
+            )
+        }
     }
 
     // Live refresh (v0.70.0): while this screen is visible, once a
@@ -10507,11 +10515,15 @@ private fun DownloadsScreen(
                     it.status == android.app.DownloadManager.STATUS_PAUSED
             }.map { it.id }
             if (activeIds.isEmpty()) continue
-            val fresh = readDownloadEntries(
-                context,
-                android.app.DownloadManager.Query()
-                    .setFilterById(*activeIds.toLongArray())
-            )
+            val fresh = kotlinx.coroutines.withContext(
+                kotlinx.coroutines.Dispatchers.IO
+            ) {
+                readDownloadEntries(
+                    context,
+                    android.app.DownloadManager.Query()
+                        .setFilterById(*activeIds.toLongArray())
+                )
+            }
             if (fresh.isEmpty()) continue
             val freshById = fresh.associateBy { it.id }
             val merged = current.map { freshById[it.id] ?: it }
@@ -11220,7 +11232,9 @@ private fun DownloadsScreen(
                 bottom = 24.dp
             )
         ) {
-            if (entries.isNotEmpty() || geckoRecords.isNotEmpty()) {
+            if (entries.isNotEmpty() || geckoRecords.isNotEmpty() ||
+                activeGeckoDownloads.isNotEmpty()
+            ) {
                 item {
                     OutlinedTextField(
                         value = downloadQuery,
@@ -11280,7 +11294,14 @@ private fun DownloadsScreen(
                         "没有找到包含「${downloadQuery.trim()}」的下载"
                     )
                 }
-            } else if (entries.isNotEmpty() && visibleEntries.isEmpty()) {
+            } else if (entries.isNotEmpty() && visibleEntries.isEmpty() &&
+                downloadQuery.isBlank()
+            ) {
+                // Per-status empty note (v0.141.0: only with no
+                // search word — with a search word the all-sections
+                // empty state above owns the no-match case, and when
+                // the word matched another section this note would
+                // wrongly claim there are no records at all).
                 item {
                     EmptyState(
                         Icons.Filled.Download,
@@ -11295,7 +11316,13 @@ private fun DownloadsScreen(
             }
             items(visibleEntries, key = { it.id }) { entry ->
                 ListItem(
-                    headlineContent = { Text(entry.title, maxLines = 2) },
+                    headlineContent = {
+                        Text(
+                            entry.title,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
                     supportingContent = {
                         val parts = mutableListOf(entry.statusText, entry.sizeText)
                         if (!entry.mediaType.isNullOrBlank()) {
@@ -11413,7 +11440,11 @@ private fun DownloadsScreen(
                 ) { progress ->
                     ListItem(
                         headlineContent = {
-                            Text(progress.fileName, maxLines = 2)
+                            Text(
+                                progress.fileName,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         },
                         supportingContent = {
                             Column {
@@ -11522,7 +11553,13 @@ private fun DownloadsScreen(
                     key = { "gecko-${it.time}-${it.contentUri ?: it.filePath ?: it.fileName}" }
                 ) { record ->
                     ListItem(
-                        headlineContent = { Text(record.fileName, maxLines = 2) },
+                        headlineContent = {
+                            Text(
+                                record.fileName,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        },
                         supportingContent = {
                             val parts = mutableListOf(
                                 formatStorageSize(record.sizeBytes),
