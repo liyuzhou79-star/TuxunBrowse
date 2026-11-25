@@ -1082,32 +1082,11 @@ fun BrowserApp(
      * silent in the UI on purpose — no badge on the tab cards; a
      * slept tab simply reloads its page when switched back to.
      */
-    fun enforceEngineSleepLimit(limit: Int = ALIVE_ENGINE_LIMIT) {
-        enforceSleepLimitFor(tabs, activeTabId, limit)
-    }
-
     /**
-     * The fingerprint group's own sleep pass (v0.170.0): until this
-     * version the cap below covered only the normal group, so
-     * fingerprint engines accumulated without any bound — every
-     * fingerprint tab ever shown kept its WebView alive for the
-     * whole session (the shell's new-tab button can be tapped
-     * without limit, and a restored archive can bring many tabs
-     * back). The fingerprint group now gets the same cap, the same
-     * victim rule and the same sleepEngine() teardown; a slept
-     * fingerprint tab re-creates its engine through the very same
-     * TabContent obtain path as a normal tab (its fingerprint
-     * script handler is dropped at sleep and re-registered at
-     * creation, exactly like the guard/privacy handlers). The two
-     * groups are capped separately on purpose: fingerprint tabs
-     * must never push normal tabs out of memory or the other way
-     * round — each group keeps its own working set.
+     * One sleep pass over one tab group (see the two wrappers
+     * below it). Declared FIRST: Kotlin local functions cannot be
+     * forward-referenced by sibling local functions.
      */
-    fun enforceFpEngineSleepLimit(limit: Int = ALIVE_ENGINE_LIMIT) {
-        enforceSleepLimitFor(fpTabs, activeFpTabId, limit)
-    }
-
-    /** One sleep pass over one tab group (see the two callers). */
     fun enforceSleepLimitFor(
         group: List<BrowserTab>,
         groupActiveId: Int,
@@ -1130,6 +1109,32 @@ fun BrowserApp(
         for (victim in victims) {
             victim.sleepEngine()
         }
+    }
+
+    /** The normal group's sleep pass (v0.41.0). */
+    fun enforceEngineSleepLimit(limit: Int = ALIVE_ENGINE_LIMIT) {
+        enforceSleepLimitFor(tabs, activeTabId, limit)
+    }
+
+    /**
+     * The fingerprint group's own sleep pass (v0.170.0): until this
+     * version the cap above covered only the normal group, so
+     * fingerprint engines accumulated without any bound — every
+     * fingerprint tab ever shown kept its WebView alive for the
+     * whole session (the shell's new-tab button can be tapped
+     * without limit, and a restored archive can bring many tabs
+     * back). The fingerprint group now gets the same cap, the same
+     * victim rule and the same sleepEngine() teardown; a slept
+     * fingerprint tab re-creates its engine through the very same
+     * TabContent obtain path as a normal tab (its fingerprint
+     * script handler is dropped at sleep and re-registered at
+     * creation, exactly like the guard/privacy handlers). The two
+     * groups are capped separately on purpose: fingerprint tabs
+     * must never push normal tabs out of memory or the other way
+     * round — each group keeps its own working set.
+     */
+    fun enforceFpEngineSleepLimit(limit: Int = ALIVE_ENGINE_LIMIT) {
+        enforceSleepLimitFor(fpTabs, activeFpTabId, limit)
     }
 
     // Memory-pressure sleep (v0.78.0): when the system reports a
