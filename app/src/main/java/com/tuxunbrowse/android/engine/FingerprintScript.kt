@@ -670,7 +670,7 @@ object FingerprintScript {
         // the same; fragment medium/low float precision = 10
         // (fp16) with the range left as the host's own.
         // Fragment medium/low INT genuinely differs between
-        // Adreno and Mali and no per-family values could be
+        // GPU families and no per-family values could be
         // verified from public sources, so those pass through
         // untouched rather than being pinned to an invented
         // number. Pinned answers are built on the real
