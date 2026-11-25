@@ -799,6 +799,27 @@ private val SHARED_URL_REGEX =
     Regex("https?://\\S+", RegexOption.IGNORE_CASE)
 
 /**
+ * The longest shared text the share flow will carry
+ * (v0.199.0 stability audit). EXTRA_TEXT is unbounded and
+ * any app can share into us: the share dialog renders the
+ * text it is handed, and laying out a multi-megabyte string
+ * on the main thread is a freeze the user did nothing to
+ * invite. Twenty thousand characters is orders of magnitude
+ * beyond any real "title + blurb + link" share, so realistic
+ * shares are untouched; the accepted trade is that a URL
+ * buried past the cap in a pathological share is not found.
+ */
+const val MAX_SHARED_TEXT_CHARS: Int = 20_000
+
+/** [text] capped at [MAX_SHARED_TEXT_CHARS] characters. */
+fun capSharedText(text: String): String =
+    if (text.length <= MAX_SHARED_TEXT_CHARS) {
+        text
+    } else {
+        text.take(MAX_SHARED_TEXT_CHARS)
+    }
+
+/**
  * Trailing characters that share-sheet text commonly glues onto the
  * end of a URL (sentence punctuation, closing brackets and quotes,
  * in both ASCII and CJK forms). They are trimmed off the end of an

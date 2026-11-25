@@ -20,6 +20,8 @@ import com.tuxunbrowse.android.data.renameBookmarksFolder
 import com.tuxunbrowse.android.data.shouldPreheatGecko
 import com.tuxunbrowse.android.data.bookmarksFromHtml
 import com.tuxunbrowse.android.data.compareVersionNames
+import com.tuxunbrowse.android.data.MAX_SHARED_TEXT_CHARS
+import com.tuxunbrowse.android.data.capSharedText
 import com.tuxunbrowse.android.data.extractFirstWebUrl
 import com.tuxunbrowse.android.data.isAllowedPageUrl
 import com.tuxunbrowse.android.data.DiagnosticInfo
@@ -627,6 +629,39 @@ class BookmarkFolderJsonCompatTest {
         val data = parseBackup(raw)
         assertTrue(data != null)
         assertEquals(listOf("正常"), data!!.bookmarkFolders)
+    }
+}
+
+/**
+ * v0.199.0: the shared-text intake cap. The contract: realistic
+ * shares pass through untouched, pathological ones are cut at
+ * the bound, and a URL inside the bound is still extractable
+ * after capping.
+ */
+class CapSharedTextTest {
+
+    @Test
+    fun shortTextPassesThroughUntouched() {
+        val text = "看这个 https://example.com 不错"
+        assertEquals(text, capSharedText(text))
+        assertEquals("", capSharedText(""))
+    }
+
+    @Test
+    fun hugeTextIsCappedAtTheBound() {
+        val huge = "a".repeat(MAX_SHARED_TEXT_CHARS + 5000)
+        val capped = capSharedText(huge)
+        assertEquals(MAX_SHARED_TEXT_CHARS, capped.length)
+        assertEquals(huge.take(MAX_SHARED_TEXT_CHARS), capped)
+    }
+
+    @Test
+    fun urlInsideTheCapSurvives() {
+        val text = "前言 ".repeat(100) + "https://example.com/x"
+        assertEquals(
+            "https://example.com/x",
+            extractFirstWebUrl(capSharedText(text))
+        )
     }
 }
 

@@ -109,12 +109,16 @@ class MainActivity : ComponentActivity() {
     /**
      * The text of an ACTION_SEND share (text/plain only, matching
      * the manifest filter), or null for any other intent. Blank
-     * shares count as no share at all.
+     * shares count as no share at all. The text is capped at
+     * intake (v0.199.0): EXTRA_TEXT is unbounded, and the share
+     * dialog downstream renders what it is handed — see
+     * capSharedText for the bound and its rationale.
      */
     private fun extractSharedText(intent: Intent?): String? {
         if (intent?.action != Intent.ACTION_SEND) return null
         if (intent.type != "text/plain") return null
         return intent.getStringExtra(Intent.EXTRA_TEXT)
             ?.takeIf { it.isNotBlank() }
+            ?.let { com.tuxunbrowse.android.data.capSharedText(it) }
     }
 }
