@@ -45,8 +45,9 @@ object FingerprintScript {
 
     fun payload(resolved: ResolvedFingerprint): String {
         val p = resolved.profile
+        val d = resolved.device
         val tz = resolved.timezone
-        val languages = p.languages.joinToString(",") { jsStr(it) }
+        val languages = resolved.languages.joinToString(",") { jsStr(it) }
         val voices = p.voices.joinToString(",") { v ->
             "{ name: ${jsStr(v.name)}, lang: ${jsStr(v.lang)}," +
                 " isDefault: ${v.isDefault} }"
@@ -55,8 +56,8 @@ object FingerprintScript {
         return """
 (function () {
   'use strict';
-  var SEED = ${p.noiseSeed};
-  var LANG = ${jsStr(p.language)};
+  var SEED = ${resolved.seed};
+  var LANG = ${jsStr(resolved.language)};
   var TZ = ${jsStr(tz.id)};
   var ZONE_NAME = ${jsStr(tz.zoneName)};
   var DAYLIGHT_NAME = $daylight;
@@ -75,8 +76,8 @@ object FingerprintScript {
 
   section(function () {
     var nav = window.Navigator ? Navigator.prototype : navigator;
-    def(nav, 'userAgent', ${jsStr(p.userAgent)});
-    def(nav, 'platform', ${jsStr(p.platform)});
+    def(nav, 'userAgent', ${jsStr(d.userAgent)});
+    def(nav, 'platform', ${jsStr(FingerprintProfiles.PLATFORM)});
     def(nav, 'language', LANG);
     def(nav, 'languages', Object.freeze([$languages]));
     // Belt and braces (v0.145.0): some detectors read the values
@@ -84,8 +85,8 @@ object FingerprintScript {
     // getter, so pin the same answers on the instance itself.
     def(navigator, 'language', LANG);
     def(navigator, 'languages', Object.freeze([$languages]));
-    def(nav, 'hardwareConcurrency', ${p.hardwareConcurrency});
-    def(nav, 'deviceMemory', ${p.deviceMemory});
+    def(nav, 'hardwareConcurrency', ${d.hardwareConcurrency});
+    def(nav, 'deviceMemory', ${d.deviceMemory});
     var brands = [
       { brand: 'Chromium', version: '131' },
       { brand: 'Google Chrome', version: '131' },
@@ -101,7 +102,7 @@ object FingerprintScript {
             { brand: 'Google Chrome', version: '131.0.6778.104' },
             { brand: 'Not=A?Brand', version: '24.0.0.0' }
           ],
-          mobile: true, model: ${jsStr(p.uaModel)}, platform: 'Android',
+          mobile: true, model: ${jsStr(d.uaModel)}, platform: 'Android',
           platformVersion: '14.0.0', uaFullVersion: '131.0.6778.104',
           formFactors: ['Mobile'], wow64: false
         };
@@ -118,11 +119,11 @@ object FingerprintScript {
 
   section(function () {
     var scr = window.Screen ? Screen.prototype : screen;
-    def(scr, 'width', ${p.screenWidth});
-    def(scr, 'height', ${p.screenHeight});
-    def(scr, 'availWidth', ${p.screenWidth});
-    def(scr, 'availHeight', ${p.screenHeight});
-    def(window, 'devicePixelRatio', ${p.devicePixelRatio});
+    def(scr, 'width', ${d.screenWidth});
+    def(scr, 'height', ${d.screenHeight});
+    def(scr, 'availWidth', ${d.screenWidth});
+    def(scr, 'availHeight', ${d.screenHeight});
+    def(window, 'devicePixelRatio', ${d.devicePixelRatio});
   });
 
   var OrigDTF = Intl.DateTimeFormat;
@@ -305,19 +306,19 @@ object FingerprintScript {
     // answer from the profile too. Arrays are copied per call —
     // real drivers hand out a fresh typed array each time.
     var GLP = {
-      3379: ${p.webGl.maxTextureSize},
-      34076: ${p.webGl.maxCubeMapTextureSize},
-      34024: ${p.webGl.maxRenderbufferSize},
-      3386: new Int32Array([${p.webGl.maxViewportDim}, ${p.webGl.maxViewportDim}]),
-      33901: new Float32Array([1, ${p.webGl.aliasedPointSizeMax}]),
-      33902: new Float32Array([1, ${p.webGl.aliasedLineWidthMax}]),
-      34921: ${p.webGl.maxVertexAttribs},
-      34930: ${p.webGl.maxTextureImageUnits},
-      35660: ${p.webGl.maxVertexTextureImageUnits},
-      35661: ${p.webGl.maxCombinedTextureImageUnits},
-      35803: ${p.webGl.maxFragmentUniformVectors},
-      35801: ${p.webGl.maxVertexUniformVectors},
-      35802: ${p.webGl.maxVaryingVectors},
+      3379: ${d.webGl.maxTextureSize},
+      34076: ${d.webGl.maxCubeMapTextureSize},
+      34024: ${d.webGl.maxRenderbufferSize},
+      3386: new Int32Array([${d.webGl.maxViewportDim}, ${d.webGl.maxViewportDim}]),
+      33901: new Float32Array([1, ${d.webGl.aliasedPointSizeMax}]),
+      33902: new Float32Array([1, ${d.webGl.aliasedLineWidthMax}]),
+      34921: ${d.webGl.maxVertexAttribs},
+      34930: ${d.webGl.maxTextureImageUnits},
+      35660: ${d.webGl.maxVertexTextureImageUnits},
+      35661: ${d.webGl.maxCombinedTextureImageUnits},
+      35803: ${d.webGl.maxFragmentUniformVectors},
+      35801: ${d.webGl.maxVertexUniformVectors},
+      35802: ${d.webGl.maxVaryingVectors},
       34047: 16
     };
     [window.WebGLRenderingContext, window.WebGL2RenderingContext]
@@ -325,8 +326,8 @@ object FingerprintScript {
         if (!ctor || !ctor.prototype.getParameter) return;
         var orig = ctor.prototype.getParameter;
         ctor.prototype.getParameter = function (param) {
-          if (param === 0x9245) return ${jsStr(p.webGlVendor)};
-          if (param === 0x9246) return ${jsStr(p.webGlRenderer)};
+          if (param === 0x9245) return ${jsStr(d.webGlVendor)};
+          if (param === 0x9246) return ${jsStr(d.webGlRenderer)};
           if (Object.prototype.hasOwnProperty.call(GLP, param)) {
             var v = GLP[param];
             return (v && v.slice) ? v.slice() : v;

@@ -1871,9 +1871,16 @@ fun BrowserApp(
      * profiles without a half-applied tab; per-tab history stacks
      * reset, which the mode never promised to keep.
      */
-    fun applyFingerprintProfile(regionId: String, timezoneId: String) {
+    fun applyFingerprintProfile(
+        regionId: String,
+        timezoneId: String,
+        deviceId: String,
+        language: String
+    ) {
         store.fingerprintRegionId = regionId
         store.fingerprintTimezoneId = timezoneId
+        store.fingerprintDeviceId = deviceId
+        store.fingerprintLanguage = language
         if (fpTabs.isEmpty()) return
         val urls = fpTabs.map { it.url }
         val activeIdx = fpTabs.indexOfFirst { it.id == activeFpTabId }
@@ -3606,8 +3613,15 @@ fun BrowserApp(
                     onCloseTab = { closeFpTab(it) },
                     onNewTab = { newFpTab() },
                     onExit = { exitFingerprintMode() },
-                    onProfileChange = { regionId, tzId ->
-                        applyFingerprintProfile(regionId, tzId)
+                    onProfileChange = { regionId, tzId, deviceId, language ->
+                        applyFingerprintProfile(
+                            regionId, tzId, deviceId, language
+                        )
+                    },
+                    customProfiles = store.customFingerprints(),
+                    onSaveCustomProfile = { store.addCustomFingerprint(it) },
+                    onDeleteCustomProfile = {
+                        store.removeCustomFingerprint(it)
                     }
                 )
             } else {
@@ -12087,11 +12101,24 @@ private fun FingerprintShell(
     onCloseTab: (BrowserTab) -> Unit,
     onNewTab: () -> Unit,
     onExit: () -> Unit,
-    onProfileChange: (String, String) -> Unit
+    onProfileChange: (String, String, String, String) -> Unit,
+    customProfiles: List<com.tuxunbrowse.android.engine.CustomFingerprint> =
+        emptyList(),
+    onSaveCustomProfile: (com.tuxunbrowse.android.engine.CustomFingerprint) -> Unit =
+        {},
+    onDeleteCustomProfile: (com.tuxunbrowse.android.engine.CustomFingerprint) -> Unit =
+        {}
 ) {
     val context = LocalContext.current
     val profile = resolved.profile
     val zone = resolved.timezone
+    val device = resolved.device
+    // Saved combinations (v0.146.0): seeded from the store-backed
+    // prop, then held locally so a save/delete shows at once; the
+    // callbacks persist every change alongside.
+    var customs by remember {
+        mutableStateOf(customProfiles)
+    }
     var showTabs by remember { mutableStateOf(false) }
     var showPicker by remember { mutableStateOf(false) }
     var tzExpanded by remember { mutableStateOf(false) }
@@ -12234,7 +12261,7 @@ private fun FingerprintShell(
                     label = {
                         Text(
                             "${profile.regionLabel} · ${zone.city} · " +
-                                profile.deviceModel,
+                                device.deviceModel,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -12351,7 +12378,9 @@ private fun FingerprintShell(
                         onClick = {
                             onProfileChange(
                                 candidate.regionId,
-                                candidate.timezones.first().id
+                                candidate.timezones.first().id,
+                                candidate.devices.first().id,
+                                candidate.language
                             )
                         },
                         modifier = Modifier.fillMaxWidth()
@@ -12362,7 +12391,7 @@ private fun FingerprintShell(
                             },
                             supportingContent = {
                                 Text(
-                                    "${candidate.deviceModel} · " +
+                                    "${candidate.devices.first().deviceModel} · " +
                                         candidate.language
                                 )
                             },
@@ -12370,6 +12399,42 @@ private fun FingerprintShell(
                                 RadioButton(
                                     selected = candidate.regionId ==
                                         profile.regionId,
+                                    onClick = null
+                                )
+                            }
+                        )
+                    }
+                }
+                item {
+                    Text(
+                        "机型",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                }
+                items(profile.devices) { candidate ->
+                    ElevatedCard(
+                        onClick = {
+                            onProfileChange(
+                                profile.regionId, zone.id,
+                                candidate.id, resolved.language
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        ListItem(
+                            headlineContent = {
+                                Text(candidate.deviceModel)
+                            },
+                            supportingContent = {
+                                Text(
+                                    "${candidate.webGlRenderer} · " +
+                                        "${candidate.screenWidth}×" +
+                                        candidate.screenHeight.toString()
+                                )
+                            },
+                            trailingContent = {
+                                RadioButton(
+                                    selected = candidate.id == device.id,
                                     onClick = null
                                 )
                             }
@@ -12414,7 +12479,8 @@ private fun FingerprintShell(
                         ElevatedCard(
                             onClick = {
                                 onProfileChange(
-                                    profile.regionId, candidate.id
+                                    profile.regionId, candidate.id,
+                                    device.id, resolved.language
                                 )
                             },
                             modifier = Modifier.fillMaxWidth()
@@ -12439,6 +12505,36 @@ private fun FingerprintShell(
                         }
                     }
                 }
+                if (profile.languageOptions.size > 1) {
+                    item {
+                        Text(
+                            "语言",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                    }
+                    items(profile.languageOptions) { candidate ->
+                        ElevatedCard(
+                            onClick = {
+                                onProfileChange(
+                                    profile.regionId, zone.id,
+                                    device.id, candidate
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            ListItem(
+                                headlineContent = { Text(candidate) },
+                                trailingContent = {
+                                    RadioButton(
+                                        selected = candidate ==
+                                            resolved.language,
+                                        onClick = null
+                                    )
+                                }
+                            )
+                        }
+                    }
+                }
                 item {
                     Text(
                         "跟时区联动",
@@ -12453,17 +12549,88 @@ private fun FingerprintShell(
                                 Arrangement.spacedBy(4.dp)
                         ) {
                             Text("定位：${zone.city}（${zone.latitude}，${zone.longitude}）")
-                            Text("语言：${profile.language}")
+                            Text("语言：${resolved.language}")
                             Text("日期格式：${profile.dateFormatSample}")
-                            Text("设备：${profile.deviceModel}")
+                            Text("设备：${device.deviceModel}")
                         }
                     }
                 }
                 item {
                     Text(
-                        "切换地区或时区后，已打开的指纹标签会按新档案重开当前网页。",
+                        "切换地区、机型、时区或语言后，已打开的指纹标签会按新档案重开当前网页。",
                         style = MaterialTheme.typography.bodyMedium
                     )
+                }
+                item {
+                    Text(
+                        "我的档案",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                }
+                item {
+                    OutlinedButton(
+                        onClick = {
+                            val entry =
+                                com.tuxunbrowse.android.engine
+                                    .CustomFingerprint(
+                                        regionId = profile.regionId,
+                                        deviceId = device.id,
+                                        timezoneId = zone.id,
+                                        language = resolved.language,
+                                        label = "${profile.regionLabel} · " +
+                                            "${device.deviceModel} · " +
+                                            zone.city
+                                    )
+                            if (customs.none {
+                                    it.regionId == entry.regionId &&
+                                        it.deviceId == entry.deviceId &&
+                                        it.timezoneId == entry.timezoneId &&
+                                        it.language == entry.language
+                                }
+                            ) {
+                                customs = customs + entry
+                                onSaveCustomProfile(entry)
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("保存当前组合")
+                    }
+                }
+                items(customs) { entry ->
+                    ElevatedCard(
+                        onClick = {
+                            onProfileChange(
+                                entry.regionId, entry.timezoneId,
+                                entry.deviceId, entry.language
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        ListItem(
+                            headlineContent = {
+                                Text(
+                                    entry.label,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
+                            supportingContent = {
+                                Text("点一下切换到这个组合")
+                            },
+                            trailingContent = {
+                                IconButton(onClick = {
+                                    customs = customs - entry
+                                    onDeleteCustomProfile(entry)
+                                }) {
+                                    Icon(
+                                        Icons.Filled.Close,
+                                        contentDescription = "删除这条档案"
+                                    )
+                                }
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -12513,8 +12680,8 @@ private fun FingerprintHome(
                     style = MaterialTheme.typography.titleMedium
                 )
                 Text("地区：${profile.regionLabel}")
-                Text("设备：${profile.deviceModel}")
-                Text("语言：${profile.language}")
+                Text("设备：${resolved.device.deviceModel}")
+                Text("语言：${resolved.language}")
                 Text("时区：${zone.label} · ${zone.city}")
                 Text("定位：${zone.latitude}，${zone.longitude}")
                 Text("日期格式：${profile.dateFormatSample}")
@@ -12524,7 +12691,7 @@ private fun FingerprintHome(
             onClick = onOpenPicker,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("选择地区与时区")
+            Text("选择地区、机型与时区")
         }
         Text(
             "指纹模式只用系统 WebView，标签页不记历史；" +

@@ -115,6 +115,30 @@ class FingerprintScriptTest {
     }
 
     @Test
+    fun payloadFollowsThePickedDevice() {
+        // v0.146.0: the model library pick drives the whole
+        // hardware story — a Pixel picked inside the US region
+        // reports the Pixel's UA, GPU strings and caps, and none
+        // of the default Galaxy's identity leaks through.
+        val payload = FingerprintScript.payload(
+            FingerprintProfiles.resolve(
+                "US", null, deviceId = "Pixel 8 Pro"
+            )
+        )
+        assertTrue(payload.contains("Pixel 8 Pro"))
+        assertTrue(payload.contains("Mali-G715s"))
+        assertFalse(payload.contains("SM-S921U"))
+        assertFalse(payload.contains("Adreno"))
+        // …and the languages follow a picked in-region language.
+        val spanish = FingerprintScript.payload(
+            FingerprintProfiles.resolve(
+                "US", null, language = "es-US"
+            )
+        )
+        assertTrue(spanish.contains("'es-US','es','en-US','en'"))
+    }
+
+    @Test
     fun chargingStoryMatchesTheProfile() {
         val sg = FingerprintScript.payload(
             FingerprintProfiles.resolve("SG", null)

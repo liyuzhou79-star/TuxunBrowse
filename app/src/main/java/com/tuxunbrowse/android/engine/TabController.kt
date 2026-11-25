@@ -1899,7 +1899,7 @@ class BrowserTab(
         // desktop-mode tabs; if both somehow applied, the
         // profile wins by coming last.
         fingerprintProfileProvider()?.let { resolved ->
-            view.settings.userAgentString = resolved.profile.userAgent
+            view.settings.userAgentString = resolved.device.userAgent
         }
         view.setOnLongClickListener { v ->
             val wv = v as WebView

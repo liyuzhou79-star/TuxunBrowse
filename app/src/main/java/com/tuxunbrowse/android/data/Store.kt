@@ -1214,12 +1214,96 @@ class Store(context: Context) {
         get() = safeString(KEY_FP_TIMEZONE, null) ?: ""
         set(value) = prefs.edit().putString(KEY_FP_TIMEZONE, value).apply()
 
-    /** The live fingerprint profile + zone the mode runs with. */
+    /** Fingerprint mode's chosen device id inside the region (v0.146.0). */
+    var fingerprintDeviceId: String
+        get() = safeString(KEY_FP_DEVICE, null) ?: ""
+        set(value) = prefs.edit().putString(KEY_FP_DEVICE, value).apply()
+
+    /** Fingerprint mode's chosen language inside the region (v0.146.0). */
+    var fingerprintLanguage: String
+        get() = safeString(KEY_FP_LANGUAGE, null) ?: ""
+        set(value) = prefs.edit().putString(KEY_FP_LANGUAGE, value).apply()
+
+    /** The live fingerprint combination the mode runs with. */
     fun resolvedFingerprint():
         com.tuxunbrowse.android.engine.ResolvedFingerprint =
         com.tuxunbrowse.android.engine.FingerprintProfiles.resolve(
-            fingerprintRegionId, fingerprintTimezoneId
+            fingerprintRegionId, fingerprintTimezoneId,
+            fingerprintDeviceId, fingerprintLanguage
         )
+
+    /**
+     * The user's saved fingerprint combinations (v0.146.0,
+     * 「我的档案」): four ids plus a display label each, JSON in
+     * one pref. Applying one goes through the same bounded
+     * resolve as the picker, so a stale entry (a device a later
+     * version dropped) degrades to the region default instead of
+     * producing an impossible mix. Same not-in-backup rationale
+     * as the fp_* keys above.
+     */
+    fun customFingerprints():
+        List<com.tuxunbrowse.android.engine.CustomFingerprint> =
+        parseJsonObjectList(safeString(KEY_FP_CUSTOM, null)) { obj ->
+            com.tuxunbrowse.android.engine.CustomFingerprint(
+                regionId = obj.optString("r"),
+                deviceId = obj.optString("d"),
+                timezoneId = obj.optString("t"),
+                language = obj.optString("l"),
+                label = obj.optString("label")
+            )
+        }
+
+    /** Save [entry] unless an identical combination is saved. */
+    fun addCustomFingerprint(
+        entry: com.tuxunbrowse.android.engine.CustomFingerprint
+    ) {
+        val current = customFingerprints()
+        if (current.any {
+                it.regionId == entry.regionId &&
+                    it.deviceId == entry.deviceId &&
+                    it.timezoneId == entry.timezoneId &&
+                    it.language == entry.language
+            }
+        ) {
+            return
+        }
+        val arr = JSONArray()
+        for (item in current + entry) {
+            arr.put(
+                JSONObject()
+                    .put("r", item.regionId)
+                    .put("d", item.deviceId)
+                    .put("t", item.timezoneId)
+                    .put("l", item.language)
+                    .put("label", item.label)
+            )
+        }
+        prefs.edit().putString(KEY_FP_CUSTOM, arr.toString()).apply()
+    }
+
+    /** Drop the saved combination with the same four ids. */
+    fun removeCustomFingerprint(
+        entry: com.tuxunbrowse.android.engine.CustomFingerprint
+    ) {
+        val kept = customFingerprints().filterNot {
+            it.regionId == entry.regionId &&
+                it.deviceId == entry.deviceId &&
+                it.timezoneId == entry.timezoneId &&
+                it.language == entry.language
+        }
+        val arr = JSONArray()
+        for (item in kept) {
+            arr.put(
+                JSONObject()
+                    .put("r", item.regionId)
+                    .put("d", item.deviceId)
+                    .put("t", item.timezoneId)
+                    .put("l", item.language)
+                    .put("label", item.label)
+            )
+        }
+        prefs.edit().putString(KEY_FP_CUSTOM, arr.toString()).apply()
+    }
 
     /** Web page text size in percent: 85 / 100 / 115 / 130. */
     var textZoomPercent: Int
@@ -1564,6 +1648,9 @@ class Store(context: Context) {
         private const val KEY_WEBRTC_OFF = "webrtc_off"
         private const val KEY_FP_REGION = "fp_region"
         private const val KEY_FP_TIMEZONE = "fp_timezone"
+        private const val KEY_FP_DEVICE = "fp_device"
+        private const val KEY_FP_LANGUAGE = "fp_language"
+        private const val KEY_FP_CUSTOM = "fp_custom"
         private const val KEY_COMPAT_SITES = "compat_sites"
         private const val KEY_DESKTOP_SITES = "desktop_sites"
         private const val KEY_BOOKMARKS = "bookmarks"
