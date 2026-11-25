@@ -583,17 +583,28 @@ object FingerprintScript {
   section(function () {
     if (!('getBattery' in navigator)) return;
     navigator.getBattery = function () {
-      return Promise.resolve({
-        charging: ${p.batteryCharging},
-        chargingTime: ${if (p.batteryCharging) "0" else "Infinity"},
-        dischargingTime: Infinity,
-        level: ${p.batteryLevel},
-        onchargingchange: null, onchargingtimechange: null,
-        ondischargingtimechange: null, onlevelchange: null,
-        addEventListener: function () {},
-        removeEventListener: function () {},
-        dispatchEvent: function () { return false; }
-      });
+      // The story must agree with itself (v0.158.0): chargingTime
+      // is "seconds until full", so 0 is only true at level 1 —
+      // a charging profile at 0.91 claiming 0 contradicts itself.
+      // Derive it from the level instead ((1 - level) hours).
+      // The object is built on the real BatteryManager prototype
+      // when the engine exposes one, like the voices/devices
+      // objects, so instanceof does not give it away.
+      var b = Object.create(
+        window.BatteryManager ? BatteryManager.prototype
+          : Object.prototype);
+      b.charging = ${p.batteryCharging};
+      b.chargingTime = ${if (p.batteryCharging) "Math.round((1 - " + p.batteryLevel + ") * 3600)" else "Infinity"};
+      b.dischargingTime = Infinity;
+      b.level = ${p.batteryLevel};
+      b.onchargingchange = null;
+      b.onchargingtimechange = null;
+      b.ondischargingtimechange = null;
+      b.onlevelchange = null;
+      b.addEventListener = function () {};
+      b.removeEventListener = function () {};
+      b.dispatchEvent = function () { return false; };
+      return Promise.resolve(b);
     };
   });
 
