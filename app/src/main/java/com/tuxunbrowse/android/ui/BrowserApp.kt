@@ -196,6 +196,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
@@ -3220,7 +3221,12 @@ fun BrowserApp(
                         leadingContent = {
                             RadioButton(
                                 selected = !exportAsHtml,
-                                onClick = { exportAsHtml = false }
+                                // Passive indicator (v0.136.0 accessibility
+                                // pass): the enclosing row/card is the one
+                                // click stop; a live onClick here made
+                                // TalkBack stop twice on the same choice
+                                // (same fix as v0.99.0).
+                                onClick = null
                             )
                         },
                         modifier = Modifier.clickable { exportAsHtml = false }
@@ -3233,7 +3239,12 @@ fun BrowserApp(
                         leadingContent = {
                             RadioButton(
                                 selected = exportAsHtml,
-                                onClick = { exportAsHtml = true }
+                                // Passive indicator (v0.136.0 accessibility
+                                // pass): the enclosing row/card is the one
+                                // click stop; a live onClick here made
+                                // TalkBack stop twice on the same choice
+                                // (same fix as v0.99.0).
+                                onClick = null
                             )
                         },
                         modifier = Modifier.clickable { exportAsHtml = true }
@@ -5575,7 +5586,11 @@ private fun EngineCard(
             headlineContent = { Text(engine.label) },
             supportingContent = { Text(description) },
             leadingContent = { Icon(Icons.Filled.Language, contentDescription = null) },
-            trailingContent = { RadioButton(selected = selected, onClick = onSelect) }
+            // Passive indicator (v0.136.0 accessibility pass):
+            // the card itself is the one click stop; a live
+            // onClick on the radio made TalkBack stop twice on
+            // the same choice (same fix as v0.99.0).
+            trailingContent = { RadioButton(selected = selected, onClick = null) }
         )
     }
 }
@@ -6613,9 +6628,15 @@ private fun BrowserScreen(
                                 Icon(Icons.Filled.Language, contentDescription = null)
                             },
                             trailingIcon = {
+                                // Named for TalkBack (v0.136.0, same fix as
+                                // the v0.99.0 privacy switches): a bare Switch
+                                // announces only its on/off state.
                                 Switch(
                                     checked = activeDesktopMode,
-                                    onCheckedChange = { onToggleDesktopMode(it) }
+                                    onCheckedChange = { onToggleDesktopMode(it) },
+                                    modifier = Modifier.semantics {
+                                        contentDescription = "桌面版网站"
+                                    }
                                 )
                             },
                             onClick = { onToggleDesktopMode(!activeDesktopMode) }
@@ -7701,6 +7722,16 @@ private fun BrowserScreen(
                 }
                 gridItems(visibleTabs, key = { it.id }) { tab ->
                     val isActive = tab.id == activeTab?.id
+                    // Engine / incognito badge text, shared by the
+                    // badge chip (visual) and the card's own
+                    // semantics (what TalkBack reads), v0.136.0.
+                    val engineBadge =
+                        (if (tab.incognito) "无痕 · " else "") +
+                            if (tab.engine == Engine.GECKO) {
+                                "火狐"
+                            } else {
+                                "系统 WebView"
+                            }
                     // Long-press menu (v0.72.0): the card itself
                     // carries combinedClickable (tap still selects
                     // the tab, the close button keeps its own tap),
@@ -7741,20 +7772,25 @@ private fun BrowserScreen(
                             // stateDescription puts "已选 / 未选" on
                             // the card stop as well; visuals and
                             // behaviour are unchanged.
-                            .then(
+                            // The card stop also carries the engine
+                            // badge as its content description
+                            // (v0.136.0 accessibility pass): the
+                            // badge chip itself is a label with an
+                            // empty onClick, which left a dead
+                            // button stop on every card — the chip
+                            // is now cleared from the semantics
+                            // tree and its text lives here instead.
+                            .semantics {
+                                contentDescription = engineBadge
                                 if (tabMultiSelect) {
-                                    Modifier.semantics {
-                                        stateDescription =
-                                            if (tab.id in selectedTabIds) {
-                                                "已选"
-                                            } else {
-                                                "未选"
-                                            }
-                                    }
-                                } else {
-                                    Modifier
+                                    stateDescription =
+                                        if (tab.id in selectedTabIds) {
+                                            "已选"
+                                        } else {
+                                            "未选"
+                                        }
                                 }
-                            )
+                            }
                             .combinedClickable(
                                 onClick = {
                                     // Multi-select (v0.76.0): a tap
@@ -7790,16 +7826,17 @@ private fun BrowserScreen(
                             ) {
                                 AssistChip(
                                     onClick = { },
-                                    label = {
-                                        Text(
-                                            (if (tab.incognito) "无痕 · " else "") +
-                                                if (tab.engine == Engine.GECKO) {
-                                                    "火狐"
-                                                } else {
-                                                    "系统 WebView"
-                                                }
-                                        )
-                                    }
+                                    label = { Text(engineBadge) },
+                                    // Visual only (v0.136.0): the
+                                    // badge text is read on the
+                                    // card stop (see the card's
+                                    // semantics above), so the chip
+                                    // itself stays out of the
+                                    // semantics tree instead of
+                                    // posing as a button that does
+                                    // nothing.
+                                    modifier = Modifier
+                                        .clearAndSetSemantics { }
                                 )
                                 if (tabMultiSelect) {
                                     // Multi-select (v0.76.0): the
@@ -8159,7 +8196,12 @@ private fun BrowserScreen(
                             leadingContent = {
                                 RadioButton(
                                     selected = picked == engine,
-                                    onClick = { picked = engine }
+                                    // Passive indicator (v0.136.0 accessibility
+                                    // pass): the enclosing row/card is the one
+                                    // click stop; a live onClick here made
+                                    // TalkBack stop twice on the same choice
+                                    // (same fix as v0.99.0).
+                                    onClick = null
                                 )
                             },
                             modifier = Modifier
@@ -8175,9 +8217,15 @@ private fun BrowserScreen(
                                 headlineContent = { Text("这个网站以后都用兼容模式打开") },
                                 supportingContent = { Text(currentHost) },
                                 trailingContent = {
+                                    // Named for TalkBack (v0.136.0, same fix as
+                                    // the v0.99.0 privacy switches): a bare Switch
+                                    // announces only its on/off state.
                                     Switch(
                                         checked = rememberSite,
-                                        onCheckedChange = { rememberSite = it }
+                                        onCheckedChange = { rememberSite = it },
+                                        modifier = Modifier.semantics {
+                                            contentDescription = "这个网站以后都用兼容模式打开"
+                                        }
                                     )
                                 }
                             )
@@ -8189,9 +8237,15 @@ private fun BrowserScreen(
                                 headlineContent = { Text("取消这个网站的自动兼容记忆") },
                                 supportingContent = { Text(currentHost) },
                                 trailingContent = {
+                                    // Named for TalkBack (v0.136.0, same fix as
+                                    // the v0.99.0 privacy switches): a bare Switch
+                                    // announces only its on/off state.
                                     Switch(
                                         checked = rememberSite,
-                                        onCheckedChange = { rememberSite = it }
+                                        onCheckedChange = { rememberSite = it },
+                                        modifier = Modifier.semantics {
+                                            contentDescription = "取消这个网站的自动兼容记忆"
+                                        }
                                     )
                                 }
                             )
@@ -8229,7 +8283,12 @@ private fun BrowserScreen(
                             leadingContent = {
                                 RadioButton(
                                     selected = picked == engine,
-                                    onClick = { picked = engine }
+                                    // Passive indicator (v0.136.0 accessibility
+                                    // pass): the enclosing row/card is the one
+                                    // click stop; a live onClick here made
+                                    // TalkBack stop twice on the same choice
+                                    // (same fix as v0.99.0).
+                                    onClick = null
                                 )
                             },
                             modifier = Modifier
@@ -9084,6 +9143,19 @@ private fun BookmarksScreen(
                                     } else {
                                         selectedUrls - bookmark.url
                                     }
+                                },
+                                // Name the toggle for TalkBack
+                                // (v0.136.0 accessibility pass, same
+                                // fix as the tab-card and sniff-row
+                                // checkboxes): a bare Checkbox
+                                // announces only checked / not
+                                // checked, never WHICH bookmark it
+                                // selects.
+                                modifier = Modifier.semantics {
+                                    contentDescription =
+                                        "选择 " + bookmark.title.ifBlank {
+                                            bookmark.url
+                                        }
                                 }
                             )
                         } else {
@@ -9106,6 +9178,23 @@ private fun BookmarksScreen(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
+                        // Selection state on the row itself in
+                        // batch mode (v0.136.0 accessibility pass,
+                        // same fix as the tab cards in v0.99.0 and
+                        // the sniff rows): the row tap toggles the
+                        // selection, so the row stop says 已选 /
+                        // 未选 instead of leaving the state to the
+                        // Checkbox stop alone.
+                        .then(
+                            if (batchMode) {
+                                Modifier.semantics {
+                                    stateDescription =
+                                        if (selected) "已选" else "未选"
+                                }
+                            } else {
+                                Modifier
+                            }
+                        )
                         .combinedClickable(
                             onClick = {
                                 if (batchMode) {
@@ -9284,7 +9373,12 @@ private fun HistoryRangeClearDialog(
                         leadingContent = {
                             RadioButton(
                                 selected = selected == range,
-                                onClick = { selected = range }
+                                // Passive indicator (v0.136.0 accessibility
+                                // pass): the enclosing row/card is the one
+                                // click stop; a live onClick here made
+                                // TalkBack stop twice on the same choice
+                                // (same fix as v0.99.0).
+                                onClick = null
                             )
                         },
                         modifier = Modifier
@@ -10475,7 +10569,12 @@ private fun DownloadsScreen(
                             leadingContent = {
                                 RadioButton(
                                     selected = bulkPick == 0,
-                                    onClick = { bulkPick = 0 },
+                                    // Passive indicator (v0.136.0 accessibility
+                                    // pass): the enclosing row/card is the one
+                                    // click stop; a live onClick here made
+                                    // TalkBack stop twice on the same choice
+                                    // (same fix as v0.99.0).
+                                    onClick = null,
                                     enabled = completedCount > 0
                                 )
                             },
@@ -10495,7 +10594,12 @@ private fun DownloadsScreen(
                             leadingContent = {
                                 RadioButton(
                                     selected = bulkPick == 1,
-                                    onClick = { bulkPick = 1 },
+                                    // Passive indicator (v0.136.0 accessibility
+                                    // pass): the enclosing row/card is the one
+                                    // click stop; a live onClick here made
+                                    // TalkBack stop twice on the same choice
+                                    // (same fix as v0.99.0).
+                                    onClick = null,
                                     enabled = failedCount > 0
                                 )
                             },
@@ -10518,7 +10622,12 @@ private fun DownloadsScreen(
                             leadingContent = {
                                 RadioButton(
                                     selected = bulkPick == 2,
-                                    onClick = { bulkPick = 2 },
+                                    // Passive indicator (v0.136.0 accessibility
+                                    // pass): the enclosing row/card is the one
+                                    // click stop; a live onClick here made
+                                    // TalkBack stop twice on the same choice
+                                    // (same fix as v0.99.0).
+                                    onClick = null,
                                     enabled = finishedCount > 0
                                 )
                             },
@@ -11481,9 +11590,15 @@ private fun ClearDataScreen(
                     headlineContent = { Text("历史记录") },
                     supportingContent = { Text("应用里记下的浏览历史会全部清掉。") },
                     trailingContent = {
+                        // Named for TalkBack (v0.136.0, same fix as
+                        // the v0.99.0 privacy switches): a bare Switch
+                        // announces only its on/off state.
                         Switch(
                             checked = clearHistorySel,
-                            onCheckedChange = { clearHistorySel = it }
+                            onCheckedChange = { clearHistorySel = it },
+                            modifier = Modifier.semantics {
+                                contentDescription = "历史记录"
+                            }
                         )
                     }
                 )
@@ -11493,9 +11608,15 @@ private fun ClearDataScreen(
                     headlineContent = { Text("系统 WebView 的 Cookie、网站数据和缓存") },
                     supportingContent = { Text("清完后用系统 WebView 打开的网站都要重新登录。") },
                     trailingContent = {
+                        // Named for TalkBack (v0.136.0, same fix as
+                        // the v0.99.0 privacy switches): a bare Switch
+                        // announces only its on/off state.
                         Switch(
                             checked = clearWebView,
-                            onCheckedChange = { clearWebView = it }
+                            onCheckedChange = { clearWebView = it },
+                            modifier = Modifier.semantics {
+                                contentDescription = "系统 WebView 的 Cookie、网站数据和缓存"
+                            }
                         )
                     }
                 )
@@ -11514,10 +11635,16 @@ private fun ClearDataScreen(
                         )
                     },
                     trailingContent = {
+                        // Named for TalkBack (v0.136.0, same fix as
+                        // the v0.99.0 privacy switches): a bare Switch
+                        // announces only its on/off state.
                         Switch(
                             checked = clearGecko && geckoStarted,
                             onCheckedChange = { clearGecko = it },
-                            enabled = geckoStarted
+                            enabled = geckoStarted,
+                            modifier = Modifier.semantics {
+                                contentDescription = "火狐的 Cookie、网站数据和缓存"
+                            }
                         )
                     }
                 )
@@ -11532,7 +11659,21 @@ private fun ClearDataScreen(
                 }
             }
             if (doneText != null) {
-                item { Text(doneText!!) }
+                item {
+                    // Polite live region (v0.136.0 accessibility
+                    // pass): the text only appears once the clear's
+                    // real completion callback lands (v0.129.0), and
+                    // until now it appeared silently — a TalkBack
+                    // user who had just confirmed the clear heard
+                    // nothing. Same pattern as the tab-sheet and
+                    // sniff selection counts (v0.78.0).
+                    Text(
+                        doneText!!,
+                        modifier = Modifier.semantics {
+                            liveRegion = LiveRegionMode.Polite
+                        }
+                    )
+                }
             }
             item { Spacer(modifier = Modifier.padding(bottom = 24.dp)) }
         }
@@ -11929,10 +12070,12 @@ private fun SettingsScreen(
                         trailingContent = {
                             RadioButton(
                                 selected = mainEngine == engine,
-                                onClick = {
-                                    mainEngine = engine
-                                    store.mainEngine = engine
-                                }
+                                // Passive indicator (v0.136.0 accessibility
+                                // pass): the enclosing row/card is the one
+                                // click stop; a live onClick here made
+                                // TalkBack stop twice on the same choice
+                                // (same fix as v0.99.0).
+                                onClick = null
                             )
                         }
                     )
@@ -11958,10 +12101,12 @@ private fun SettingsScreen(
                         trailingContent = {
                             RadioButton(
                                 selected = incognitoEngine == engine,
-                                onClick = {
-                                    incognitoEngine = engine
-                                    store.incognitoEngine = engine
-                                }
+                                // Passive indicator (v0.136.0 accessibility
+                                // pass): the enclosing row/card is the one
+                                // click stop; a live onClick here made
+                                // TalkBack stop twice on the same choice
+                                // (same fix as v0.99.0).
+                                onClick = null
                             )
                         }
                     )
@@ -11988,11 +12133,12 @@ private fun SettingsScreen(
                         trailingContent = {
                             RadioButton(
                                 selected = searchEngine == engine,
-                                onClick = {
-                                    searchEngine = engine
-                                    store.searchEngine = engine
-                                    onSearchEngineChange()
-                                }
+                                // Passive indicator (v0.136.0 accessibility
+                                // pass): the enclosing row/card is the one
+                                // click stop; a live onClick here made
+                                // TalkBack stop twice on the same choice
+                                // (same fix as v0.99.0).
+                                onClick = null
                             )
                         }
                     )
@@ -12076,11 +12222,17 @@ private fun SettingsScreen(
                         Text("系统 WebView 按内置名单拦截；火狐用内核自带的反跟踪，名单里的域名在打开时也会拦下。")
                     },
                     trailingContent = {
+                        // Named for TalkBack (v0.136.0, same fix as
+                        // the v0.99.0 privacy switches): a bare Switch
+                        // announces only its on/off state.
                         Switch(
                             checked = adBlock,
                             onCheckedChange = {
                                 adBlock = it
                                 store.adBlockEnabled = it
+                            },
+                            modifier = Modifier.semantics {
+                                contentDescription = "拦截广告和跟踪请求"
                             }
                         )
                     }
@@ -12093,11 +12245,17 @@ private fun SettingsScreen(
                         Text("在系统 WebView 网页打开前运行，清理广告、拦截恶意跳转和跟踪指纹；火狐标签不支持。")
                     },
                     trailingContent = {
+                        // Named for TalkBack (v0.136.0, same fix as
+                        // the v0.99.0 privacy switches): a bare Switch
+                        // announces only its on/off state.
                         Switch(
                             checked = guardScript,
                             onCheckedChange = {
                                 guardScript = it
                                 store.guardScriptEnabled = it
+                            },
+                            modifier = Modifier.semantics {
+                                contentDescription = "内置净化脚本"
                             }
                         )
                     }
@@ -12149,10 +12307,12 @@ private fun SettingsScreen(
                         trailingContent = {
                             RadioButton(
                                 selected = downloadMode == mode,
-                                onClick = {
-                                    downloadMode = mode
-                                    store.downloadMode = mode
-                                }
+                                // Passive indicator (v0.136.0 accessibility
+                                // pass): the enclosing row/card is the one
+                                // click stop; a live onClick here made
+                                // TalkBack stop twice on the same choice
+                                // (same fix as v0.99.0).
+                                onClick = null
                             )
                         }
                     )
@@ -12184,11 +12344,12 @@ private fun SettingsScreen(
                         trailingContent = {
                             RadioButton(
                                 selected = themeMode == mode,
-                                onClick = {
-                                    themeMode = mode
-                                    store.themeMode = mode
-                                    onThemeModeChange(mode)
-                                }
+                                // Passive indicator (v0.136.0 accessibility
+                                // pass): the enclosing row/card is the one
+                                // click stop; a live onClick here made
+                                // TalkBack stop twice on the same choice
+                                // (same fix as v0.99.0).
+                                onClick = null
                             )
                         }
                     )
@@ -12224,11 +12385,12 @@ private fun SettingsScreen(
                         trailingContent = {
                             RadioButton(
                                 selected = textZoom == percent,
-                                onClick = {
-                                    textZoom = percent
-                                    store.textZoomPercent = percent
-                                    onTextZoomChange(percent)
-                                }
+                                // Passive indicator (v0.136.0 accessibility
+                                // pass): the enclosing row/card is the one
+                                // click stop; a live onClick here made
+                                // TalkBack stop twice on the same choice
+                                // (same fix as v0.99.0).
+                                onClick = null
                             )
                         }
                     )
@@ -12241,12 +12403,18 @@ private fun SettingsScreen(
                         Text("系统 WebView 需 Android 13 以上；火狐跟随系统深色模式。")
                     },
                     trailingContent = {
+                        // Named for TalkBack (v0.136.0, same fix as
+                        // the v0.99.0 privacy switches): a bare Switch
+                        // announces only its on/off state.
                         Switch(
                             checked = webDark,
                             onCheckedChange = {
                                 webDark = it
                                 store.webDarkMode = it
                                 onWebDarkChange(it)
+                            },
+                            modifier = Modifier.semantics {
+                                contentDescription = "网页深色模式"
                             }
                         )
                     }
@@ -12275,11 +12443,12 @@ private fun SettingsScreen(
                         trailingContent = {
                             RadioButton(
                                 selected = readerFont == font,
-                                onClick = {
-                                    readerFont = font
-                                    store.readerFontSize = font
-                                    onReaderStyleChange()
-                                }
+                                // Passive indicator (v0.136.0 accessibility
+                                // pass): the enclosing row/card is the one
+                                // click stop; a live onClick here made
+                                // TalkBack stop twice on the same choice
+                                // (same fix as v0.99.0).
+                                onClick = null
                             )
                         }
                     )
@@ -12304,11 +12473,12 @@ private fun SettingsScreen(
                         trailingContent = {
                             RadioButton(
                                 selected = readerBg == bg,
-                                onClick = {
-                                    readerBg = bg
-                                    store.readerBackground = bg
-                                    onReaderStyleChange()
-                                }
+                                // Passive indicator (v0.136.0 accessibility
+                                // pass): the enclosing row/card is the one
+                                // click stop; a live onClick here made
+                                // TalkBack stop twice on the same choice
+                                // (same fix as v0.99.0).
+                                onClick = null
                             )
                         }
                     )
@@ -12326,11 +12496,17 @@ private fun SettingsScreen(
                         Text("无痕标签不会被恢复。")
                     },
                     trailingContent = {
+                        // Named for TalkBack (v0.136.0, same fix as
+                        // the v0.99.0 privacy switches): a bare Switch
+                        // announces only its on/off state.
                         Switch(
                             checked = startupRestore,
                             onCheckedChange = {
                                 startupRestore = it
                                 store.startupRestore = it
+                            },
+                            modifier = Modifier.semantics {
+                                contentDescription = "启动时恢复上次的标签页"
                             }
                         )
                     }
@@ -12647,10 +12823,12 @@ private fun SettingsScreen(
                         trailingContent = {
                             RadioButton(
                                 selected = historyRetention == retention,
-                                onClick = {
-                                    historyRetention = retention
-                                    store.historyRetention = retention
-                                }
+                                // Passive indicator (v0.136.0 accessibility
+                                // pass): the enclosing row/card is the one
+                                // click stop; a live onClick here made
+                                // TalkBack stop twice on the same choice
+                                // (same fix as v0.99.0).
+                                onClick = null
                             )
                         }
                     )
@@ -12671,11 +12849,17 @@ private fun SettingsScreen(
                         )
                     },
                     trailingContent = {
+                        // Named for TalkBack (v0.136.0, same fix as
+                        // the v0.99.0 privacy switches): a bare Switch
+                        // announces only its on/off state.
                         Switch(
                             checked = httpsFirst,
                             onCheckedChange = {
                                 httpsFirst = it
                                 store.httpsFirstEnabled = it
+                            },
+                            modifier = Modifier.semantics {
+                                contentDescription = "优先用 HTTPS 打开网站"
                             }
                         )
                     }
