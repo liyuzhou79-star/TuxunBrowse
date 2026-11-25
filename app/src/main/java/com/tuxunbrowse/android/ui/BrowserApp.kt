@@ -6218,7 +6218,7 @@ private fun HomeContent(
                     .fillMaxWidth()
                     .onFocusChanged { homeSearchFocused = it.isFocused },
                 placeholder = {
-                    Text("用${currentEngine.label}搜索，或输入网址", maxLines = 1)
+                    Text("用${currentEngine.label}搜索，或输入网址", maxLines = 1, overflow = TextOverflow.Ellipsis)
                 },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) }
             ) {}
@@ -6251,7 +6251,8 @@ private fun HomeContent(
                                 headlineContent = {
                                     Text(
                                         "粘贴并打开：$pasteSummary",
-                                        maxLines = 1
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 },
                                 leadingContent = {
@@ -6277,7 +6278,8 @@ private fun HomeContent(
                                             suggestion.title, query,
                                             MaterialTheme.colorScheme.primary
                                         ),
-                                        maxLines = 1
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 },
                                 supportingContent = {
@@ -6286,7 +6288,8 @@ private fun HomeContent(
                                             suggestion.url, query,
                                             MaterialTheme.colorScheme.primary
                                         ),
-                                        maxLines = 1
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 },
                                 leadingContent = {
@@ -6319,7 +6322,8 @@ private fun HomeContent(
                                             homeSuggestionQuery,
                                             MaterialTheme.colorScheme.primary
                                         ),
-                                        maxLines = 1
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 },
                                 leadingContent = {
@@ -6351,7 +6355,7 @@ private fun HomeContent(
             // keeps the full width of the row.
             AssistChip(
                 onClick = { showEnginePicker = true },
-                label = { Text(currentEngine.label, maxLines = 1) },
+                label = { Text(currentEngine.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 leadingIcon = {
                     Icon(Icons.Filled.Search, contentDescription = null)
                 },
@@ -7815,7 +7819,7 @@ private fun BrowserScreen(
                             clipDismissed = true
                             onOpenSuggestion(clip)
                         },
-                        label = { Text("打开复制的链接：${hostOf(clip) ?: clip}", maxLines = 1) },
+                        label = { Text("打开复制的链接：${hostOf(clip) ?: clip}", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         leadingIcon = {
                             Icon(Icons.Filled.ContentCopy, contentDescription = null)
                         },
@@ -7889,7 +7893,8 @@ private fun BrowserScreen(
                                     headlineContent = {
                                         Text(
                                             "粘贴并打开：$pasteSummary",
-                                            maxLines = 1
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     },
                                     leadingContent = {
@@ -7915,7 +7920,8 @@ private fun BrowserScreen(
                                             suggestion.title, addressText,
                                             MaterialTheme.colorScheme.primary
                                         ),
-                                        maxLines = 1
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 },
                                 supportingContent = {
@@ -7924,7 +7930,8 @@ private fun BrowserScreen(
                                             suggestion.url, addressText,
                                             MaterialTheme.colorScheme.primary
                                         ),
-                                        maxLines = 1
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 },
                                 leadingContent = {
@@ -7959,7 +7966,8 @@ private fun BrowserScreen(
                                                 trimmedAddress,
                                                 MaterialTheme.colorScheme.primary
                                             ),
-                                            maxLines = 1
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     },
                                     leadingContent = {
@@ -9287,10 +9295,11 @@ private fun BrowserScreen(
                                 }
                             }
                             // Preview area, same height on every card.
-                            // WebView tabs show their real captured
-                            // thumbnail when one exists; GeckoView has
-                            // no screenshot API, so its cards say so in
-                            // words instead of faking a preview image.
+                            // Both engines show their real captured
+                            // thumbnail when one exists (WebView draws
+                            // its view; Gecko uses capturePixels since
+                            // v0.214.0). A tab with no capture yet
+                            // shows the generic placeholder below.
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -9348,27 +9357,6 @@ private fun BrowserScreen(
                                         alignment = Alignment.TopCenter,
                                         modifier = Modifier.fillMaxSize()
                                     )
-                                    tab.engine == Engine.GECKO -> Column(
-                                        horizontalAlignment =
-                                            Alignment.CenterHorizontally
-                                    ) {
-                                        Icon(
-                                            Icons.Filled.Language,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme
-                                                .onSurfaceVariant,
-                                            modifier = Modifier
-                                                .size(28.dp)
-                                                .padding(bottom = 4.dp)
-                                        )
-                                        Text(
-                                            "火狐标签暂无预览",
-                                            style = MaterialTheme.typography
-                                                .bodySmall,
-                                            color = MaterialTheme.colorScheme
-                                                .onSurfaceVariant
-                                        )
-                                    }
                                     else -> Icon(
                                         Icons.Filled.Language,
                                         contentDescription = "暂无预览",
@@ -15894,7 +15882,8 @@ private fun TabCountButton(count: Int, onClick: () -> Unit) {
             Text(
                 "$count",
                 style = MaterialTheme.typography.labelMedium,
-                maxLines = 1
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }

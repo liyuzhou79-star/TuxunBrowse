@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextOverflow
 
 /**
  * The one pill-shaped single-line input for every shell
@@ -103,6 +104,7 @@ internal fun PillTextField(
                             color = MaterialTheme.colorScheme
                                 .onSurfaceVariant,
                             maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                             softWrap = false
                         )
                     }
