@@ -112,7 +112,9 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Tab
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
@@ -132,6 +134,7 @@ import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -2098,6 +2101,19 @@ fun BrowserApp(
     /** Enter fingerprint mode (from 设置 → 隐私与数据 → 指纹模式). */
     fun enterFingerprintMode() {
         if (fpTabs.isEmpty()) newFpTab()
+        fingerprintMode = true
+        screen = Screen.BROWSER
+    }
+
+    /**
+     * Enter fingerprint mode with a brand-new fingerprint tab
+     * (v0.188.0): the incognito picker's fingerprint option —
+     * unlike plain entry it always opens a fresh tab on the
+     * current profile instead of landing on whatever tab the
+     * mode last showed.
+     */
+    fun enterFingerprintModeWithNewTab() {
+        newFpTab()
         fingerprintMode = true
         screen = Screen.BROWSER
     }
@@ -4115,7 +4131,11 @@ fun BrowserApp(
                         activeFpTab()?.let {
                             toggleBookmarkForTab(it)
                         }
-                    }
+                    },
+                    onOpenDownloads = { screen = Screen.DOWNLOADS },
+                    onOpenBookmarks = { screen = Screen.BOOKMARKS },
+                    onOpenHistory = { screen = Screen.HISTORY },
+                    onOpenSettings = { screen = Screen.SETTINGS }
                 )
             } else {
             BrowserScreen(
@@ -4244,6 +4264,10 @@ fun BrowserApp(
                     switchTabEngine(tab, engine, rememberSite)
                 },
                 onEnterFingerprintMode = { enterFingerprintMode() },
+                onEnterFingerprintNewTab = {
+                    enterFingerprintModeWithNewTab()
+                },
+                onOpenClearData = { screen = Screen.CLEAR_DATA },
                 onToggleSiteCompat = { toggleSiteCompat() },
                 onClearSiteData = { host -> clearSiteData(host) },
                 activeDesktopMode = current?.desktopMode ?: false,
@@ -6649,6 +6673,8 @@ private fun BrowserScreen(
     onEngineFallbackRetry: () -> Unit = {},
     onSwitchEngine: (Engine, Boolean) -> Unit,
     onEnterFingerprintMode: () -> Unit = {},
+    onEnterFingerprintNewTab: () -> Unit = {},
+    onOpenClearData: () -> Unit = {},
     onToggleSiteCompat: () -> Unit = {},
     onClearSiteData: (String) -> Boolean = { true },
     activeDesktopMode: Boolean,
@@ -7433,240 +7459,8 @@ private fun BrowserScreen(
                         )
                     }
                 }
-                Box {
-                    IconButton(onClick = { showMenu = true }) {
-                        Icon(Icons.Filled.MoreVert, contentDescription = "菜单")
-                    }
-                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                        // Slim main menu (user's own list): high-
-                        // frequency items only. The ad-block status
-                        // line moved to the settings ad-block page;
-                        // low-frequency tools live under "更多工具".
-                        // While a load is live this slot offers
-                        // stop instead of reload (v0.139.0 network
-                        // audit): a slow or hung page used to be
-                        // uncancellable — reload only restarted the
-                        // wait. The tab's loading state covers both
-                        // engines, so the entry is in place for
-                        // WebView and Gecko tabs alike.
-                        if (activeTab?.loading == true) {
-                            DropdownMenuItem(
-                                text = { Text("停止加载") },
-                                leadingIcon = {
-                                    Icon(Icons.Filled.Close, contentDescription = null)
-                                },
-                                onClick = { showMenu = false; activeTab?.stopLoading() }
-                            )
-                        } else {
-                            DropdownMenuItem(
-                                text = { Text("重新加载") },
-                                leadingIcon = {
-                                    Icon(Icons.Filled.Refresh, contentDescription = null)
-                                },
-                                onClick = { showMenu = false; activeTab?.reload() }
-                            )
-                        }
-                        DropdownMenuItem(
-                            text = { Text("前进") },
-                            leadingIcon = {
-                                Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null)
-                            },
-                            enabled = activeTab?.canGoForward == true,
-                            onClick = { showMenu = false; activeTab?.goForward() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("新建标签页") },
-                            leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                            onClick = { showMenu = false; onNewTab() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("新建无痕标签页") },
-                            leadingIcon = { Icon(Icons.Filled.VisibilityOff, contentDescription = null) },
-                            onClick = { showMenu = false; showIncognitoPicker = true }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("回到首页") },
-                            leadingIcon = { Icon(Icons.Filled.Home, contentDescription = null) },
-                            onClick = { showMenu = false; onGoHome() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("分享当前页") },
-                            leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
-                            onClick = {
-                                showMenu = false
-                                val tab = activeTab
-                                if (tab == null || tab.isHome) {
-                                    android.widget.Toast.makeText(
-                                        context, "先打开一个网页再分享",
-                                        android.widget.Toast.LENGTH_SHORT
-                                    ).show()
-                                } else {
-                                    try {
-                                        val intent = android.content.Intent(
-                                            android.content.Intent.ACTION_SEND
-                                        )
-                                            .setType("text/plain")
-                                            .putExtra(
-                                                android.content.Intent.EXTRA_SUBJECT,
-                                                tab.title.ifBlank { tab.url }
-                                            )
-                                            .putExtra(
-                                                android.content.Intent.EXTRA_TEXT, tab.url
-                                            )
-                                        context.startActivity(
-                                            android.content.Intent.createChooser(
-                                                intent, "分享当前页"
-                                            )
-                                        )
-                                    } catch (t: Throwable) {
-                                        android.widget.Toast.makeText(
-                                            context, "没有能分享的应用",
-                                            android.widget.Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
-                                }
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("复制当前网址") },
-                            leadingIcon = {
-                                Icon(Icons.Filled.ContentCopy, contentDescription = null)
-                            },
-                            onClick = {
-                                showMenu = false
-                                val tab = activeTab
-                                if (tab == null || tab.isHome) {
-                                    android.widget.Toast.makeText(
-                                        context, "现在没有可复制的网址",
-                                        android.widget.Toast.LENGTH_SHORT
-                                    ).show()
-                                } else {
-                                    val ok = copyTextToClipboard(
-                                        context, "url", tab.url
-                                    )
-                                    android.widget.Toast.makeText(
-                                        context,
-                                        if (ok) "网址已复制" else "复制失败，请重试",
-                                        android.widget.Toast.LENGTH_SHORT
-                                    ).show()
-                                }
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("添加到主屏幕") },
-                            leadingIcon = {
-                                Icon(
-                                    Icons.Filled.AddToHomeScreen,
-                                    contentDescription = null
-                                )
-                            },
-                            onClick = {
-                                showMenu = false
-                                handlePinToHomeScreen()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("页面内查找") },
-                            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                            onClick = {
-                                showMenu = false
-                                if (activeTab == null || activeTab.isHome) {
-                                    android.widget.Toast.makeText(
-                                        context, "先打开一个网页再查找",
-                                        android.widget.Toast.LENGTH_SHORT
-                                    ).show()
-                                } else {
-                                    showFindBar = true
-                                }
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    if (activeTab?.readerActive == true) {
-                                        "退出阅读模式"
-                                    } else {
-                                        "阅读模式"
-                                    }
-                                )
-                            },
-                            leadingIcon = {
-                                Icon(Icons.Filled.MenuBook, contentDescription = null)
-                            },
-                            onClick = { showMenu = false; onToggleReaderMode() }
-                        )
-                        // The home tab has no site and no engine:
-                        // a desktop-mode switch there flips a state
-                        // that can never take effect, so the item is
-                        // not offered on it (v0.61.0 regression fix).
-                        if (activeTab?.isHome != true) {
-                        DropdownMenuItem(
-                            text = {
-                                Column {
-                                    Text("桌面版网站")
-                                    Text(
-                                        // Incognito toggles are never
-                                        // remembered (v0.56.0), so the
-                                        // subtitle must not promise
-                                        // memory there (v0.61.0).
-                                        if (activeTab?.incognito == true) {
-                                            "无痕标签里只对这个标签生效，不会记住这个网站"
-                                        } else {
-                                            "打开后会记住这个网站，下次打开自动用桌面版"
-                                        },
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            },
-                            leadingIcon = {
-                                Icon(Icons.Filled.Language, contentDescription = null)
-                            },
-                            trailingIcon = {
-                                // Named for TalkBack (v0.136.0, same fix as
-                                // the v0.99.0 privacy switches): a bare Switch
-                                // announces only its on/off state.
-                                Switch(
-                                    checked = activeDesktopMode,
-                                    onCheckedChange = { onToggleDesktopMode(it) },
-                                    modifier = Modifier.semantics {
-                                        contentDescription = "桌面版网站"
-                                    }
-                                )
-                            },
-                            onClick = { onToggleDesktopMode(!activeDesktopMode) }
-                        )
-                        }
-                        DropdownMenuItem(
-                            text = { Text("下载") },
-                            leadingIcon = {
-                                Icon(Icons.Filled.Download, contentDescription = null)
-                            },
-                            onClick = { showMenu = false; onOpenDownloads() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("书签") },
-                            leadingIcon = { Icon(Icons.Filled.Bookmark, contentDescription = null) },
-                            onClick = { showMenu = false; onOpenBookmarks() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("历史记录") },
-                            leadingIcon = { Icon(Icons.Filled.History, contentDescription = null) },
-                            onClick = { showMenu = false; onOpenHistory() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("设置") },
-                            leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
-                            onClick = { showMenu = false; onOpenSettings() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("更多工具") },
-                            leadingIcon = {
-                                Icon(Icons.Filled.MoreHoriz, contentDescription = null)
-                            },
-                            onClick = { showMenu = false; showMoreTools = true }
-                        )
-                    }
+                IconButton(onClick = { showMenu = true }) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = "菜单")
                 }
             }
             }
@@ -8182,6 +7976,263 @@ private fun BrowserScreen(
                 )
             }
         }
+    }
+
+    // ---- Main menu: the floating panel (v0.188.0) ----
+    // The DropdownMenu is gone: the menu is now the shared
+    // FloatingMenuPanel — a rounded card floating at the top
+    // end with air on every side, a circle-button row (back /
+    // forward / star / downloads / reload) and grouped rows,
+    // the same form the fingerprint shell's menu uses. Only
+    // real pathways are listed: there is no page-translation
+    // feature in this browser, so no translation row is shown
+    // (the sample browser has one; a fake entry is worse than
+    // an absent one).
+    FloatingMenuPanel(
+        visible = showMenu,
+        onDismiss = { showMenu = false },
+        topOffsetDp = 64
+    ) {
+        MenuPanelCircleRow {
+            FilledTonalIconButton(
+                onClick = { showMenu = false; activeTab?.goBack() },
+                enabled = activeTab?.canGoBack == true
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "后退"
+                )
+            }
+            FilledTonalIconButton(
+                onClick = {
+                    showMenu = false; activeTab?.goForward()
+                },
+                enabled = activeTab?.canGoForward == true
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowForward,
+                    contentDescription = "前进"
+                )
+            }
+            FilledTonalIconButton(
+                onClick = { showMenu = false; onToggleBookmark() }
+            ) {
+                Icon(
+                    if (isBookmarked) {
+                        Icons.Filled.Star
+                    } else {
+                        Icons.Filled.StarBorder
+                    },
+                    contentDescription =
+                        if (isBookmarked) {
+                            "已加入书签，点按取消书签"
+                        } else {
+                            "加入书签"
+                        }
+                )
+            }
+            FilledTonalIconButton(
+                onClick = { showMenu = false; onOpenDownloads() }
+            ) {
+                Icon(
+                    Icons.Filled.Download,
+                    contentDescription = "下载"
+                )
+            }
+            if (activeTab?.loading == true) {
+                FilledTonalIconButton(
+                    onClick = {
+                        showMenu = false; activeTab?.stopLoading()
+                    }
+                ) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "停止加载"
+                    )
+                }
+            } else {
+                FilledTonalIconButton(
+                    onClick = { showMenu = false; activeTab?.reload() }
+                ) {
+                    Icon(
+                        Icons.Filled.Refresh,
+                        contentDescription = "重新加载"
+                    )
+                }
+            }
+        }
+        MenuPanelDivider()
+        MenuPanelItem(
+            icon = Icons.Filled.Add,
+            label = "新建标签页",
+            onClick = { showMenu = false; onNewTab() }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.VisibilityOff,
+            label = "新建无痕标签页",
+            onClick = { showMenu = false; showIncognitoPicker = true }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.History,
+            label = "历史记录",
+            onClick = { showMenu = false; onOpenHistory() }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.Restore,
+            label = "最近关闭的标签页",
+            onClick = {
+                showMenu = false
+                onTabsOpened(); tabQuery = ""; showTabs = true
+            }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.Delete,
+            label = "删除浏览资料",
+            onClick = { showMenu = false; onOpenClearData() }
+        )
+        MenuPanelDivider()
+        MenuPanelItem(
+            icon = Icons.Filled.Tune,
+            label = "网站控制选项",
+            onClick = { showMenu = false; showSiteInfo = true }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.Bookmark,
+            label = "书签",
+            onClick = { showMenu = false; onOpenBookmarks() }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.Share,
+            label = "分享当前页",
+            onClick = {
+                showMenu = false
+                val tab = activeTab
+                if (tab == null || tab.isHome) {
+                    android.widget.Toast.makeText(
+                        context, "先打开一个网页再分享",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    try {
+                        val intent = android.content.Intent(
+                            android.content.Intent.ACTION_SEND
+                        )
+                            .setType("text/plain")
+                            .putExtra(
+                                android.content.Intent.EXTRA_SUBJECT,
+                                tab.title.ifBlank { tab.url }
+                            )
+                            .putExtra(
+                                android.content.Intent.EXTRA_TEXT,
+                                tab.url
+                            )
+                        context.startActivity(
+                            android.content.Intent.createChooser(
+                                intent, "分享当前页"
+                            )
+                        )
+                    } catch (t: Throwable) {
+                        android.widget.Toast.makeText(
+                            context, "没有能分享的应用",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.ContentCopy,
+            label = "复制当前网址",
+            onClick = {
+                showMenu = false
+                val tab = activeTab
+                if (tab == null || tab.isHome) {
+                    android.widget.Toast.makeText(
+                        context, "现在没有可复制的网址",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    val ok = copyTextToClipboard(context, "url", tab.url)
+                    android.widget.Toast.makeText(
+                        context,
+                        if (ok) "网址已复制" else "复制失败，请重试",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.Search,
+            label = "在网页中寻找",
+            onClick = {
+                showMenu = false
+                if (activeTab == null || activeTab.isHome) {
+                    android.widget.Toast.makeText(
+                        context, "先打开一个网页再查找",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    showFindBar = true
+                }
+            }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.MenuBook,
+            label = if (activeTab?.readerActive == true) {
+                "退出阅读模式"
+            } else {
+                "显示阅读模式"
+            },
+            onClick = { showMenu = false; onToggleReaderMode() }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.AddToHomeScreen,
+            label = "安装并建立捷径",
+            supporting = "把当前页加到主屏幕",
+            onClick = { showMenu = false; handlePinToHomeScreen() }
+        )
+        if (activeTab?.isHome != true) {
+            MenuPanelItem(
+                icon = Icons.Filled.Language,
+                label = "桌面版网站",
+                supporting = if (activeTab?.incognito == true) {
+                    "无痕标签里只对这个标签生效，不会记住这个网站"
+                } else {
+                    "打开后会记住这个网站，下次打开自动用桌面版"
+                },
+                trailing = {
+                    Checkbox(
+                        checked = activeDesktopMode,
+                        onCheckedChange = { onToggleDesktopMode(it) },
+                        modifier = Modifier.semantics {
+                            contentDescription = "桌面版网站"
+                        }
+                    )
+                },
+                onClick = { onToggleDesktopMode(!activeDesktopMode) }
+            )
+        }
+        MenuPanelDivider()
+        MenuPanelItem(
+            icon = Icons.Filled.SwapHoriz,
+            label = "切换内核",
+            onClick = { showMenu = false; showEngineSwitch = true }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.Fingerprint,
+            label = "指纹模式",
+            onClick = { showMenu = false; onEnterFingerprintMode() }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.Settings,
+            label = "设置",
+            onClick = { showMenu = false; onOpenSettings() }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.MoreHoriz,
+            label = "更多工具",
+            onClick = { showMenu = false; showMoreTools = true }
+        )
     }
 
     // ---- More-tools sheet: the low-frequency tools that left the
@@ -9325,6 +9376,7 @@ private fun BrowserScreen(
 
     if (showIncognitoPicker) {
         var picked by remember { mutableStateOf(incognitoEngine) }
+        var pickedFingerprint by remember { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = { showIncognitoPicker = false },
             title = { Text("无痕浏览用哪个内核？") },
@@ -9338,7 +9390,8 @@ private fun BrowserScreen(
                             headlineContent = { Text(engine.label) },
                             leadingContent = {
                                 RadioButton(
-                                    selected = picked == engine,
+                                    selected = picked == engine &&
+                                        !pickedFingerprint,
                                     // Passive indicator (v0.136.0 accessibility
                                     // pass): the enclosing row/card is the one
                                     // click stop; a live onClick here made
@@ -9349,18 +9402,65 @@ private fun BrowserScreen(
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { picked = engine }
+                                                                .clickable {
+                                    picked = engine
+                                    pickedFingerprint = false
+                                }
+                        )
+                    }
+                    item {
+                        // Fingerprint option (v0.188.0): not an
+                        // engine, and NOT remembered as the
+                        // incognito engine — picking it enters
+                        // fingerprint mode with a fresh
+                        // fingerprint tab instead of opening an
+                        // incognito tab here.
+                        ListItem(
+                            headlineContent = { Text("指纹模式") },
+                            supportingContent = {
+                                Text("不记历史，按当前档案伪装参数")
+                            },
+                            leadingContent = {
+                                RadioButton(
+                                    selected = pickedFingerprint,
+                                    onClick = null
+                                )
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { pickedFingerprint = true }
+                        )
+                    }
+                    item {
+                        Text(
+                            "选指纹模式不会改上面记住的无痕内核。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme
+                                .onSurfaceVariant
                         )
                     }
                 }
             },
             confirmButton = {
                 Button(onClick = {
-                    onIncognitoEngineChosen(picked)
                     showIncognitoPicker = false
-                    onNewIncognitoTab(picked)
+                    if (pickedFingerprint) {
+                        // Deliberately NOT routed through
+                        // onIncognitoEngineChosen: the remembered
+                        // incognito engine stays whatever it was.
+                        onEnterFingerprintNewTab()
+                    } else {
+                        onIncognitoEngineChosen(picked)
+                        onNewIncognitoTab(picked)
+                    }
                 }) {
-                    Text("打开无痕标签")
+                    Text(
+                        if (pickedFingerprint) {
+                            "打开指纹标签"
+                        } else {
+                            "打开无痕标签"
+                        }
+                    )
                 }
             },
             dismissButton = {
@@ -13123,7 +13223,11 @@ private fun FingerprintShell(
     onDeleteCustomProfile: (com.tuxunbrowse.android.engine.CustomFingerprint) -> Unit =
         {},
     isBookmarked: Boolean = false,
-    onToggleBookmark: () -> Unit = {}
+    onToggleBookmark: () -> Unit = {},
+    onOpenDownloads: () -> Unit = {},
+    onOpenBookmarks: () -> Unit = {},
+    onOpenHistory: () -> Unit = {},
+    onOpenSettings: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val profile = resolved.profile
@@ -13150,6 +13254,50 @@ private fun FingerprintShell(
             }
         }
     }
+    // The fingerprint-conflict rule (v0.188.0): an item that
+    // would change a parameter the profile is disguising (or
+    // reach outside the mode's own bookkeeping) is shown
+    // greyed but stays tappable; the tap explains, in plain
+    // words, that running it could leak the fingerprint. The
+    // action itself never runs in this mode.
+    fun fpConflictToast(reason: String) {
+        android.widget.Toast.makeText(
+            context,
+            "与指纹模式冲突：$reason，可能导致指纹泄漏",
+            android.widget.Toast.LENGTH_LONG
+        ).show()
+    }
+
+    fun shareFpPage() {
+        val tab = activeTab
+        if (tab == null || tab.isHome) {
+            android.widget.Toast.makeText(
+                context, "先打开一个网页再分享",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        try {
+            val intent = android.content.Intent(
+                android.content.Intent.ACTION_SEND
+            )
+                .setType("text/plain")
+                .putExtra(
+                    android.content.Intent.EXTRA_SUBJECT,
+                    tab.title.ifBlank { tab.url }
+                )
+                .putExtra(android.content.Intent.EXTRA_TEXT, tab.url)
+            context.startActivity(
+                android.content.Intent.createChooser(intent, "分享当前页")
+            )
+        } catch (t: Throwable) {
+            android.widget.Toast.makeText(
+                context, "没有能分享的应用",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
     fun submitAddress() {
         val tab = activeTab ?: return
         val text = addressText.trim()
@@ -13405,12 +13553,9 @@ private fun FingerprintShell(
                 // switching engines would break the profile's
                 // disguise and could leak the fingerprint.
                 IconButton(onClick = {
-                    android.widget.Toast.makeText(
-                        context,
-                        "与指纹模式冲突：指纹模式只用系统 WebView，" +
-                            "切换内核会让伪装失效，可能导致指纹泄漏",
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
+                    fpConflictToast(
+                        "指纹模式只用系统 WebView，切换内核会让伪装失效"
+                    )
                 }) {
                     Icon(
                         Icons.Filled.SwapHoriz,
@@ -13451,101 +13596,11 @@ private fun FingerprintShell(
                         )
                     }
                 }
-                Box {
-                    IconButton(onClick = { showFpMenu = true }) {
-                        Icon(
-                            Icons.Filled.MoreVert,
-                            contentDescription = "菜单"
-                        )
-                    }
-                    DropdownMenu(
-                        expanded = showFpMenu,
-                        onDismissRequest = { showFpMenu = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("前进") },
-                            leadingIcon = {
-                                Icon(
-                                    Icons.AutoMirrored.Filled
-                                        .ArrowForward,
-                                    contentDescription = null
-                                )
-                            },
-                            enabled = activeTab?.canGoForward == true,
-                            onClick = {
-                                showFpMenu = false
-                                activeTab?.goForward()
-                            }
-                        )
-                        if (activeTab?.loading == true) {
-                            DropdownMenuItem(
-                                text = { Text("停止加载") },
-                                leadingIcon = {
-                                    Icon(
-                                        Icons.Filled.Close,
-                                        contentDescription = null
-                                    )
-                                },
-                                onClick = {
-                                    showFpMenu = false
-                                    activeTab?.stopLoading()
-                                }
-                            )
-                        } else {
-                            DropdownMenuItem(
-                                text = { Text("重新加载") },
-                                leadingIcon = {
-                                    Icon(
-                                        Icons.Filled.Refresh,
-                                        contentDescription = null
-                                    )
-                                },
-                                onClick = {
-                                    showFpMenu = false
-                                    activeTab?.reload()
-                                }
-                            )
-                        }
-                        DropdownMenuItem(
-                            text = { Text("新建标签页") },
-                            leadingIcon = {
-                                Icon(
-                                    Icons.Filled.Add,
-                                    contentDescription = null
-                                )
-                            },
-                            onClick = {
-                                showFpMenu = false
-                                onNewTab()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("切换档案") },
-                            leadingIcon = {
-                                Icon(
-                                    Icons.Filled.Fingerprint,
-                                    contentDescription = null
-                                )
-                            },
-                            onClick = {
-                                showFpMenu = false
-                                showPicker = true
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("退出指纹模式") },
-                            leadingIcon = {
-                                Icon(
-                                    Icons.Filled.Close,
-                                    contentDescription = null
-                                )
-                            },
-                            onClick = {
-                                showFpMenu = false
-                                onExit()
-                            }
-                        )
-                    }
+                IconButton(onClick = { showFpMenu = true }) {
+                    Icon(
+                        Icons.Filled.MoreVert,
+                        contentDescription = "菜单"
+                    )
                 }
             }
             // The always-on profile strip (v0.147.0): region,
@@ -13730,6 +13785,184 @@ private fun FingerprintShell(
                 }
             }
         }
+    }
+    // ---- Fingerprint menu: the same floating panel
+    // (v0.188.0) ---- Items that would fight the profile are
+    // present but greyed and tappable (the conflict rule):
+    // tapping one explains the leak risk and nothing runs.
+    // Items the mode genuinely has work as usual; items the
+    // mode does not have at all (site-info sheet, find bar,
+    // reader mode) are not listed — no fake entries.
+    FloatingMenuPanel(
+        visible = showFpMenu,
+        onDismiss = { showFpMenu = false },
+        topOffsetDp = 156
+    ) {
+        MenuPanelCircleRow {
+            FilledTonalIconButton(
+                onClick = { showFpMenu = false; activeTab?.goBack() },
+                enabled = activeTab?.canGoBack == true
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "后退"
+                )
+            }
+            FilledTonalIconButton(
+                onClick = {
+                    showFpMenu = false; activeTab?.goForward()
+                },
+                enabled = activeTab?.canGoForward == true
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowForward,
+                    contentDescription = "前进"
+                )
+            }
+            FilledTonalIconButton(
+                onClick = { showFpMenu = false; onToggleBookmark() }
+            ) {
+                Icon(
+                    if (isBookmarked) {
+                        Icons.Filled.Star
+                    } else {
+                        Icons.Filled.StarBorder
+                    },
+                    contentDescription =
+                        if (isBookmarked) {
+                            "已加入书签，点按取消书签"
+                        } else {
+                            "加入书签"
+                        }
+                )
+            }
+            FilledTonalIconButton(
+                onClick = { showFpMenu = false; onOpenDownloads() }
+            ) {
+                Icon(
+                    Icons.Filled.Download,
+                    contentDescription = "下载"
+                )
+            }
+            if (activeTab?.loading == true) {
+                FilledTonalIconButton(
+                    onClick = {
+                        showFpMenu = false; activeTab?.stopLoading()
+                    }
+                ) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "停止加载"
+                    )
+                }
+            } else {
+                FilledTonalIconButton(
+                    onClick = { showFpMenu = false; activeTab?.reload() }
+                ) {
+                    Icon(
+                        Icons.Filled.Refresh,
+                        contentDescription = "重新加载"
+                    )
+                }
+            }
+        }
+        MenuPanelDivider()
+        MenuPanelItem(
+            icon = Icons.Filled.Add,
+            label = "新建指纹标签页",
+            onClick = { showFpMenu = false; onNewTab() }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.VisibilityOff,
+            label = "新建无痕标签页",
+            conflict = true,
+            onClick = {
+                showFpMenu = false
+                fpConflictToast(
+                    "无痕标签走普通模式的口径，会和指纹档案混杂"
+                )
+            }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.History,
+            label = "历史记录",
+            onClick = { showFpMenu = false; onOpenHistory() }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.Delete,
+            label = "删除浏览资料",
+            conflict = true,
+            onClick = {
+                showFpMenu = false
+                fpConflictToast(
+                    "浏览资料和普通模式共用一份存储，清掉会连指纹标签的登录一起清掉"
+                )
+            }
+        )
+        MenuPanelDivider()
+        MenuPanelItem(
+            icon = Icons.Filled.Bookmark,
+            label = "书签",
+            onClick = { showFpMenu = false; onOpenBookmarks() }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.Share,
+            label = "分享当前页",
+            onClick = { showFpMenu = false; shareFpPage() }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.Language,
+            label = "桌面版网站",
+            supporting = "会改掉档案的手机参数",
+            conflict = true,
+            trailing = {
+                Checkbox(
+                    checked = false,
+                    onCheckedChange = {
+                        showFpMenu = false
+                        fpConflictToast(
+                            "桌面版网站会改用户代理和页面宽度，和档案的机型对不上"
+                        )
+                    },
+                    modifier = Modifier.semantics {
+                        contentDescription = "桌面版网站（指纹模式下不可用）"
+                    }
+                )
+            },
+            onClick = {
+                showFpMenu = false
+                fpConflictToast(
+                    "桌面版网站会改用户代理和页面宽度，和档案的机型对不上"
+                )
+            }
+        )
+        MenuPanelDivider()
+        MenuPanelItem(
+            icon = Icons.Filled.SwapHoriz,
+            label = "切换内核",
+            conflict = true,
+            onClick = {
+                showFpMenu = false
+                fpConflictToast(
+                    "指纹模式只用系统 WebView，切换内核会让伪装失效"
+                )
+            }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.Fingerprint,
+            label = "切换档案",
+            onClick = { showFpMenu = false; showPicker = true }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.Settings,
+            label = "设置",
+            onClick = { showFpMenu = false; onOpenSettings() }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.Close,
+            label = "退出指纹模式",
+            onClick = { showFpMenu = false; onExit() }
+        )
     }
     if (showTabs) {
         ModalBottomSheet(onDismissRequest = { showTabs = false }) {
