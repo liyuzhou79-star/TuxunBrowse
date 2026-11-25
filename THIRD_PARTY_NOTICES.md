@@ -52,3 +52,9 @@ specifications and public measurement data.
 - Cromite (GPL-3.0) — its published Android patch list was
   used as a coverage reference for Android-specific surfaces
   (sensors among them); no patches are included.
+- The Chromium project (BSD-style license) — the UA client
+  hints brand-list algorithm (GREASE brand derivation and
+  the seeded list ordering in user_agent_utils.cc) was
+  re-implemented from the public source so the claimed
+  version's brand list matches what a real Chrome of that
+  version sends; no Chromium code is included.

@@ -464,4 +464,50 @@ class FingerprintScriptTest {
         assertTrue(payload.contains("412"))
         assertTrue(payload.contains("915"))
     }
+
+    @Test
+    fun payloadBrandsFollowTheClaimedMajor() {
+        // v0.210.0: the brand list is computed from the
+        // claimed major (Chromium's seeded algorithm), not
+        // the old frozen triple — a host-followed 157
+        // combination carries 157's exact measured list,
+        // GREASE spelling, version and order alike, in both
+        // the low-entropy list and the full version list.
+        val payload = FingerprintScript.payload(
+            FingerprintProfiles.withHostChrome(
+                FingerprintProfiles.resolve("JP", null),
+                FingerprintProfiles.HostChrome(
+                    "157", "157.0.8103.50"
+                )
+            )
+        )
+        assertTrue(payload.contains(
+            "{ brand: 'Not-A.Brand', version: '99' }"))
+        assertTrue(payload.contains(
+            "{ brand: 'Google Chrome', version: '157' }"))
+        assertTrue(payload.contains(
+            "{ brand: 'Not-A.Brand', version: '99.0.0.0' }"))
+        assertTrue(payload.contains(
+            "{ brand: 'Chromium', version: '157.0.8103.50' }"))
+        // The frozen triple's fingerprints are gone: the
+        // old GREASE spelling at '24' and Chromium-first
+        // ordering for every version alike.
+        assertFalse(payload.contains("'Not=A?Brand'"))
+    }
+
+    @Test
+    fun payloadCoversTheColdSurfaces() {
+        // v0.210.0: downlinkMax joins the connection story,
+        // the absolute orientation type joins the sensor
+        // interception AND its synthetic stream, and
+        // getGamepads answers the empty-slot array.
+        val payload = FingerprintScript.payload(
+            FingerprintProfiles.resolve("JP", null)
+        )
+        assertTrue(payload.contains("'downlinkMax', Infinity"))
+        assertTrue(payload.contains("deviceorientationabsolute"))
+        assertTrue(payload.contains("absolute: true"))
+        assertTrue(payload.contains("getGamepads"))
+        assertTrue(payload.contains("[null, null, null, null]"))
+    }
 }

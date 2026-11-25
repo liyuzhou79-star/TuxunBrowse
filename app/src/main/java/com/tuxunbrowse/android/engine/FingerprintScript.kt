@@ -71,6 +71,28 @@ package com.tuxunbrowse.android.engine
  * forced-colors) for the stock persona instead of passing the
  * host OS's accessibility settings through.
  *
+ * v0.210.0: the cold-surface sweep. The UA-CH brand list is
+ * computed by Chromium's own seeded algorithm now (GREASE
+ * spelling, GREASE version and list order all follow the
+ * claimed major version — the old frozen triple matched no
+ * real Chrome); navigator.connection also pins downlinkMax
+ * (the one NetworkInformation field the v0.145.0 story left
+ * to the prototype, where it read as an exception/undefined
+ * instead of a number); the sensor stream also serves
+ * deviceorientationabsolute — the one orientation event
+ * type the v0.190.0 interception never claimed, so it used
+ * to deliver the HOST's live compass stream — with
+ * absolute=true events over the same held-phone story (the
+ * plain deviceorientation event stays absolute=false,
+ * Chrome's post-M50 relative default, verified); and
+ * navigator.getGamepads answers four empty slots, so a
+ * controller paired to the host cannot name itself to the
+ * page. Surfaces inventoried and deliberately NOT touched
+ * (engine gaps with no interface-grade JS answer, recorded
+ * in the checkpoint): navigator.xr, SpeechRecognition,
+ * navigator.share/canShare; navigator.keyboard is absent
+ * on Android Chrome too, so its absence here agrees.
+ *
  * v0.174.0: the font ENUMERATION surface joins the covered set —
  * document.fonts.check() answers known system families from the
  * profile device's stock font set (see FingerprintProfiles),
@@ -146,6 +168,27 @@ object FingerprintScript {
         }
         val knownFonts = FingerprintProfiles.KNOWN_FONT_FAMILIES
             .joinToString(", ") { "'" + it.lowercase() + "': 1" }
+        // UA-CH brand lists for the claimed version, computed
+        // by Chromium's own seeded algorithm (v0.210.0, see
+        // FingerprintProfiles.uaBrandList) — spelling, GREASE
+        // version and list order all follow the major version
+        // instead of one frozen triple no real Chrome ships.
+        val majorInt = resolved.chromeMajor.toIntOrNull()
+            ?: FingerprintProfiles.CHROME_MAJOR.toInt()
+        fun brandLiteral(
+            list: List<Pair<String, String>>
+        ): String = list.joinToString(", ") {
+            "{ brand: ${jsStr(it.first)}," +
+                " version: ${jsStr(it.second)} }"
+        }
+        val brandsJs = brandLiteral(
+            FingerprintProfiles.uaBrandList(majorInt)
+        )
+        val fullBrandsJs = brandLiteral(
+            FingerprintProfiles.uaFullVersionList(
+                majorInt, resolved.chromeFullVersion
+            )
+        )
         return """
 (function () {
   'use strict';
@@ -277,21 +320,13 @@ object FingerprintScript {
     def(navigator, 'platform', ${jsStr(FingerprintProfiles.PLATFORM)});
     def(nav, 'hardwareConcurrency', ${d.hardwareConcurrency});
     def(nav, 'deviceMemory', ${d.deviceMemory});
-    var brands = [
-      { brand: 'Chromium', version: '${resolved.chromeMajor}' },
-      { brand: 'Google Chrome', version: '${resolved.chromeMajor}' },
-      { brand: 'Not=A?Brand', version: '24' }
-    ];
+    var brands = [$brandsJs];
     var uaData = {
       brands: brands, mobile: true, platform: '${FingerprintProfiles.UA_PLATFORM}',
       getHighEntropyValues: function (hints) {
         var all = {
           architecture: '${FingerprintProfiles.UA_ARCHITECTURE}', bitness: '${FingerprintProfiles.UA_BITNESS}', brands: brands,
-          fullVersionList: [
-            { brand: 'Chromium', version: '${resolved.chromeFullVersion}' },
-            { brand: 'Google Chrome', version: '${resolved.chromeFullVersion}' },
-            { brand: 'Not=A?Brand', version: '24.0.0.0' }
-          ],
+          fullVersionList: [$fullBrandsJs],
           mobile: true, model: ${jsStr(d.uaModel)}, platform: '${FingerprintProfiles.UA_PLATFORM}',
           platformVersion: '14.0.0', uaFullVersion: '${resolved.chromeFullVersion}',
           formFactors: ['Mobile'], wow64: false
@@ -1182,6 +1217,15 @@ object FingerprintScript {
     def(conn, 'rtt', ${p.connectionRtt});
     def(conn, 'saveData', false);
     def(conn, 'type', 'wifi');
+    // downlinkMax (v0.210.0): the one field of the story
+    // left unpinned — read on this prototype-built object
+    // it falls to the native getter, which has no real
+    // instance behind it and answers an exception or
+    // undefined where real Chrome always answers a number.
+    // For the claimed wifi / 4g story that number is
+    // Infinity (the spec's 4g row caps downlink at ∞, and
+    // Chromium reports Infinity as the max for wifi).
+    def(conn, 'downlinkMax', Infinity);
     def(navigator, 'connection', conn);
   });
 
@@ -1216,6 +1260,31 @@ object FingerprintScript {
           device('audiooutput', 'default', 'fp-audio')
         ]);
       }, origEnumDevices));
+  });
+
+  section(function () {
+    // Gamepads (v0.210.0): the Gamepad API exists in
+    // WebView exactly as in Chrome for Android, so removing
+    // it is not an option — but a controller paired to the
+    // HOST would otherwise answer getGamepads() with the
+    // real accessory's id string ("Xbox Wireless
+    // Controller", a DualSense, …), an identity the stock
+    // persona does not have. The persona's answer is the
+    // one real Chrome gives on any phone with no controller
+    // in play: four empty slots, a fresh array per call.
+    // Recorded residual: gamepadconnected /
+    // gamepaddisconnected listeners still register
+    // natively, so a controller paired AND used mid-session
+    // can fire an event the poll then contradicts — that
+    // needs a second addEventListener wrapper swallowing
+    // into a dead registry, more cross-examination surface
+    // than the narrow case is worth.
+    if (typeof navigator.getGamepads !== 'function') return;
+    var nav = window.Navigator ? Navigator.prototype : navigator;
+    setMethod(nav, 'getGamepads',
+      fixFnAs(function () {
+        return [null, null, null, null];
+      }, 'getGamepads', 0));
   });
 
   // AudioContext static parameters (v0.181.0): the section
@@ -1493,16 +1562,33 @@ object FingerprintScript {
     // profile is not. The gravity vector's magnitude stays at
     // 9.81 and its components follow the same beta/gamma the
     // orientation events report.
+    // v0.210.0: the THIRD orientation type joins —
+    // deviceorientationabsolute was never claimed by the
+    // interception, so its listeners registered natively
+    // and received the HOST's live compass stream while the
+    // other two types told the held-phone story (a classic
+    // half-covered face). Since Chrome 50 the plain
+    // deviceorientation event is RELATIVE (absolute=false —
+    // the magnetometer left that event), and the absolute
+    // story lives on this separate type, whose events
+    // guarantee absolute=true; the stream below serves it
+    // with the same alpha/beta/gamma and absolute=true.
     if (!window.DeviceOrientationEvent &&
       !window.DeviceMotionEvent) return;
-    var listeners = { deviceorientation: [], devicemotion: [] };
+    var listeners = {
+      deviceorientation: [], devicemotion: [],
+      deviceorientationabsolute: []
+    };
     var propHandlers = {
-      deviceorientation: null, devicemotion: null
+      deviceorientation: null, devicemotion: null,
+      deviceorientationabsolute: null
     };
     var origAdd = window.addEventListener;
     var origRemove = window.removeEventListener;
     function isSensorType(t) {
-      return t === 'deviceorientation' || t === 'devicemotion';
+      return t === 'deviceorientation' ||
+        t === 'devicemotion' ||
+        t === 'deviceorientationabsolute';
     }
     setMethod(window, 'addEventListener',
       fixFn(function (t, fn) {
@@ -1521,7 +1607,8 @@ object FingerprintScript {
         }
         return origRemove.apply(window, arguments);
       }, window.removeEventListener));
-    ['deviceorientation', 'devicemotion'].forEach(function (t) {
+    ['deviceorientation', 'devicemotion',
+      'deviceorientationabsolute'].forEach(function (t) {
       try {
         Object.defineProperty(window, 'on' + t, {
           get: function () { return propHandlers[t]; },
@@ -1550,11 +1637,21 @@ object FingerprintScript {
       var beta = betaBase + Math.sin(tick / 9) * 0.6;
       var gamma = gammaBase + Math.cos(tick / 13) * 0.5;
       if (window.DeviceOrientationEvent) {
+        var alphaNow = (alphaBase + tick * 0.02) % 360;
         dispatch('deviceorientation',
           new DeviceOrientationEvent('deviceorientation', {
-            alpha: (alphaBase + tick * 0.02) % 360,
+            alpha: alphaNow,
             beta: beta, gamma: gamma, absolute: false
           }));
+        // The absolute twin (v0.210.0): same held phone,
+        // same angles — only the reference frame differs,
+        // exactly as Chrome serves the pair on Android.
+        dispatch('deviceorientationabsolute',
+          new DeviceOrientationEvent(
+            'deviceorientationabsolute', {
+              alpha: alphaNow,
+              beta: beta, gamma: gamma, absolute: true
+            }));
       }
       if (window.DeviceMotionEvent) {
         var br = beta * Math.PI / 180;

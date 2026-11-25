@@ -291,6 +291,83 @@ object FingerprintProfiles {
         )
     }
 
+    // UA-CH brand lists, computed exactly the way Chromium
+    // computes them (v0.210.0). Until this version the payload
+    // pinned one frozen triple — Chromium first, then Google
+    // Chrome, then a "Not=A?Brand" GREASE entry at version
+    // 24 — which matches NO real Chrome release: since M103
+    // the GREASE brand's spelling, its version AND the order
+    // of the whole list are a deterministic function of the
+    // major version (components/embedder_support/
+    // user_agent_utils.cc: GetGreasedUserAgentBrandVersion +
+    // the seeded shuffle in GenerateBrandVersionList /
+    // ShuffleBrandList). Re-implemented here from that public
+    // source (Chromium is BSD-licensed; see
+    // THIRD_PARTY_NOTICES.md), NOT copied — and cross-checked
+    // against independently measured brand lists for Chrome
+    // 151 / 152 / 155 / 156 / 157, all five reproduced
+    // exactly, spelling, version and order alike:
+    //   151 → Not=A?Brand;99, Google Chrome, Chromium
+    //   152 → Chromium, Not?A_Brand;24, Google Chrome
+    //   155 → Google Chrome, Chromium, Not(A:Brand;24
+    //   156 → Not:A-Brand;8, Chromium, Google Chrome
+    //   157 → Not-A.Brand;99, Google Chrome, Chromium
+    // The seed is the major version the combination claims —
+    // the host engine's own version on the live path — so the
+    // JS-visible list also agrees with the Sec-CH-UA header
+    // the engine itself generates from the same algorithm.
+    private val GREASE_CHARS = listOf(
+        " ", "(", ":", "-", ".", "/", ")", ";", "=", "?", "_"
+    )
+    private val GREASE_VERSIONS = listOf("8", "99", "24")
+    private val BRAND_ORDERS = listOf(
+        listOf(0, 1, 2), listOf(0, 2, 1), listOf(1, 0, 2),
+        listOf(1, 2, 0), listOf(2, 0, 1), listOf(2, 1, 0)
+    )
+
+    /** The GREASE (brand, major version) pair for [major]. */
+    fun greaseBrand(major: Int): Pair<String, String> {
+        val brand = "Not" +
+            GREASE_CHARS[major % GREASE_CHARS.size] + "A" +
+            GREASE_CHARS[(major + 1) % GREASE_CHARS.size] +
+            "Brand"
+        return brand to GREASE_VERSIONS[major % GREASE_VERSIONS.size]
+    }
+
+    private fun shuffledBrands(
+        major: Int,
+        greaseVersion: String,
+        productVersion: String
+    ): List<Pair<String, String>> {
+        val (greaseBrand, _) = greaseBrand(major)
+        val base = listOf(
+            greaseBrand to greaseVersion,
+            "Chromium" to productVersion,
+            "Google Chrome" to productVersion
+        )
+        val order = BRAND_ORDERS[major % BRAND_ORDERS.size]
+        val out = arrayOfNulls<Pair<String, String>>(3)
+        for (i in 0 until 3) out[order[i]] = base[i]
+        return out.map { it!! }
+    }
+
+    /** navigator.userAgentData.brands for a claimed [major]. */
+    fun uaBrandList(major: Int): List<Pair<String, String>> =
+        shuffledBrands(major, greaseBrand(major).second, "$major")
+
+    /**
+     * The fullVersionList for a claimed [major] / [fullVersion]:
+     * same seed, same order; the GREASE entry's full version
+     * is its major version padded to four parts, exactly as
+     * GetProcessedGreasedBrandVersion produces it.
+     */
+    fun uaFullVersionList(
+        major: Int,
+        fullVersion: String
+    ): List<Pair<String, String>> = shuffledBrands(
+        major, greaseBrand(major).second + ".0.0.0", fullVersion
+    )
+
     private const val CHROME_TAIL =
         ") AppleWebKit/537.36 (KHTML, like Gecko) " +
             "Chrome/$CHROME_FULL_VERSION Mobile Safari/537.36"

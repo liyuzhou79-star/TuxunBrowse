@@ -1,6 +1,7 @@
 package com.tuxunbrowse.android
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -116,37 +117,45 @@ class FpSelfCheckAgreementTest {
      * switch turned off must read as 已关闭 (off) in the
      * self-check, never as an anomaly — and ONLY the rows
      * whose surfaces a switch actually gates may have an off
-     * state. The payload gates exactly two probed surfaces
+     * state. The payload gates exactly three probed surfaces
      * by switch (WebGL/WebGPU via webglDisguise, the font
-     * shelf via fontSet); the v0.201.0 rows （网络信息 /
-     * 设备列表 / 语音列表） are ungated in the payload — no
-     * FP_OPT flag exists for them — so their rows must not
-     * grow an off state either, or the page would claim a
-     * switch exists that does not. 请求头语言 stays
-     * permanently 'na' by design.
+     * shelf via fontSet, and — since v0.210.0 — the
+     * orientation pair via sensors); the v0.201.0 rows
+     * （网络信息 / 设备列表 / 语音列表） are ungated in the
+     * payload — no FP_OPT flag exists for them — so their
+     * rows must not grow an off state either, or the page
+     * would claim a switch exists that does not. 请求头语言
+     * stays permanently 'na' by design.
      */
     @Test
     fun offStateExistsExactlyOnTheSwitchGatedRows() {
         val app = browserAppSource()
         val probe = app.substringAfter("private fun fpSelfCheckProbe")
             .substringBefore("The tab-count box")
-        // Four rows are off-aware: WebGL 厂商 / WebGL 型号 /
-        // WebGPU 厂商 (webglOff) and 字体清单 (fontOff).
+        // Four rows report off through the ternary shape:
+        // WebGL 厂商 / WebGL 型号 / WebGPU 厂商 (webglOff)
+        // and 字体清单 (fontOff). The fifth off-aware row —
+        // 方向事件 (sensorsOff, v0.210.0) — reports through
+        // an if-branch, so the ternary count stays four and
+        // the flag SET is the invariant that grows.
         assertEquals(
             "exactly the switch-gated rows may report 'off'",
             4, probe.split("? 'off'").size - 1
         )
         assertEquals(
-            setOf("webglOff", "fontOff"),
+            setOf("webglOff", "fontOff", "sensorsOff"),
             Regex("""EXP\.(\w+Off)""").findAll(probe)
                 .map { it.groupValues[1] }.toSet()
         )
-        // The EXP builder writes both flags, from the same
+        assertTrue(probe.contains("row('方向事件', 'off'"))
+        assertTrue(probe.contains("EXP.sensorsOff"))
+        // The EXP builder writes the flags, from the same
         // protection state the payload was built with.
         val builder = app.substringAfter("fun runSelfCheck")
             .substringBefore("val probe = fpSelfCheckProbe")
         assertTrue(builder.contains(".put(\"webglOff\", !protection.webglDisguise)"))
         assertTrue(builder.contains(".put(\"fontOff\", !protection.fontSet)"))
+        assertTrue(builder.contains(".put(\"sensorsOff\", !protection.sensors)"))
         // The ungated v0.201.0 rows are all present and none
         // of them references an off flag (checked above by
         // the identifier set); the header-language row is
@@ -188,10 +197,47 @@ class FpSelfCheckAgreementTest {
                 probe.contains("row('$name'")
             )
         }
-        // The report waits for the geolocation row too: five
-        // settled flags, not four.
+        // The report waits for the geolocation row too (and,
+        // since v0.210.0, for the orientation row as well:
+        // six settled flags in the conjunction).
         assertTrue(probe.contains("geoSettled"))
         assertTrue(probe.contains("voicesSettled && geoSettled"))
+    }
+
+    @Test
+    fun brandListRowGradesAgainstTheSameAlgorithm() {
+        // v0.210.0: the probe's UA 品牌列表 row compares the
+        // page's brands against EXP.brands, and the builder
+        // computes EXP.brands with FingerprintProfiles'
+        // seeded algorithm — the same function the payload
+        // builds its list from. A hand-kept expected triple
+        // on either side breaks the single source.
+        val app = browserAppSource()
+        val probe = app.substringAfter("private fun fpSelfCheckProbe")
+            .substringBefore("The tab-count box")
+        val builder = app.substringAfter("fun runSelfCheck")
+            .substringBefore("val probe = fpSelfCheckProbe")
+        assertTrue(probe.contains("row('UA 品牌列表'"))
+        assertTrue(probe.contains("EXP.brands"))
+        assertTrue(builder.contains("uaBrandList"))
+        assertFalse(builder.contains("Not=A?Brand"))
+        assertFalse(probe.contains("Not=A?Brand"))
+    }
+
+    @Test
+    fun orientationRowSettlesTheReport() {
+        // v0.210.0: the orientation row is the probe's sixth
+        // asynchronous surface — it owns a settled flag and
+        // that flag gates the report, or the run either
+        // reports early without the row or hangs to the
+        // watchdog.
+        val app = browserAppSource()
+        val probe = app.substringAfter("private fun fpSelfCheckProbe")
+            .substringBefore("The tab-count box")
+        assertTrue(probe.contains("var oriSettled = false"))
+        assertTrue(probe.contains("geoSettled && oriSettled"))
+        assertTrue(probe.contains("row('方向事件'"))
+        assertTrue(probe.contains("deviceorientationabsolute"))
     }
 
     @Test

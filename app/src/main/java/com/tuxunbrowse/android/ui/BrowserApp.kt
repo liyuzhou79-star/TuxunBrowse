@@ -15300,18 +15300,39 @@ private fun fpSelfCheckProbe(expJson: String): String = """
     // all four fields the profile claims.
     var conn = navigator.connection;
     if (conn) {
+      // downlinkMax joins the comparison (v0.210.0): the
+      // payload pins it to Infinity for the claimed wifi
+      // story; unpinned it read as an exception/undefined
+      // on the prototype-built object, never a number.
       var connOk = conn.effectiveType === '4g' &&
         conn.rtt === EXP.connRtt &&
         conn.downlink === EXP.connDownlink &&
+        conn.downlinkMax === Infinity &&
         conn.saveData === false;
       row('网络信息', connOk ? 'ok' : 'bad',
         'effectiveType=' + conn.effectiveType +
         '，rtt=' + conn.rtt + '，downlink=' + conn.downlink +
+        '，downlinkMax=' + conn.downlinkMax +
         '，saveData=' + conn.saveData);
     } else {
       row('网络信息', 'na', '无 navigator.connection');
     }
   } catch (e) { row('网络信息', 'bad', '读取失败'); }
+  try {
+    // Gamepads (v0.210.0): the payload answers four empty
+    // slots; any object in the array is a host controller
+    // naming itself to the page.
+    if (typeof navigator.getGamepads === 'function') {
+      var pads = navigator.getGamepads() || [];
+      var padsOk = pads.length === 4 && pads.every(
+        function (p) { return p === null; });
+      row('手柄', padsOk ? 'ok' : 'bad',
+        pads.length + ' 个槽位' +
+        (padsOk ? '，全空' : '，有手柄对象（疑似真机泄漏）'));
+    } else {
+      row('手柄', 'na', '无 getGamepads');
+    }
+  } catch (e) { row('手柄', 'bad', '读取失败'); }
   try {
     var tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     row('时区', tz === EXP.tz ? 'ok' : 'bad', String(tz));
@@ -15361,6 +15382,21 @@ private fun fpSelfCheckProbe(expJson: String): String = """
     row('平台标识', navigator.platform === EXP.platform
       ? 'ok' : 'bad', String(navigator.platform));
   } catch (e) { row('平台标识', 'bad', '读取失败'); }
+  try {
+    // UA brand list (v0.210.0): spelling, GREASE version
+    // and order are a function of the claimed major
+    // version (Chromium's seeded algorithm); EXP.brands is
+    // computed by that same function on the Kotlin side,
+    // so this row grades the payload against the algorithm,
+    // not against a second hand-kept triple.
+    var ub = (navigator.userAgentData &&
+      navigator.userAgentData.brands) || [];
+    var ubs = ub.map(function (b) {
+      return b.brand + ';' + b.version;
+    }).join(',');
+    row('UA 品牌列表', ubs === EXP.brands ? 'ok' : 'bad',
+      ubs);
+  } catch (e) { row('UA 品牌列表', 'bad', '读取失败'); }
   try {
     var land = !!(screen.orientation &&
       String(screen.orientation.type)
@@ -15509,9 +15545,10 @@ private fun fpSelfCheckProbe(expJson: String): String = """
   var mediaSettled = false;
   var voicesSettled = false;
   var geoSettled = false;
+  var oriSettled = false;
   function maybeReport() {
     if (gpuSettled && uaSettled && mediaSettled &&
-        voicesSettled && geoSettled) {
+        voicesSettled && geoSettled && oriSettled) {
       FpSelfCheck.report(JSON.stringify(rows));
     }
   }
@@ -15629,6 +15666,59 @@ private fun fpSelfCheckProbe(expJson: String): String = """
   } catch (e) {
     row('定位形态', 'bad', '读取失败');
     geoSettled = true;
+  }
+  try {
+    // Orientation pair (v0.210.0): the payload serves BOTH
+    // orientation event types from its held-phone stream —
+    // deviceorientation relative (absolute=false, Chrome's
+    // post-M50 default) and deviceorientationabsolute
+    // absolute (absolute=true). Before this version the
+    // absolute type was never intercepted, so its listeners
+    // heard the HOST's live compass; this row listens for
+    // one event of each kind and grades the pair. When the
+    // sensors switch is off the payload serves nothing and
+    // the row reports 'off' without judging the host stream.
+    if (EXP.sensorsOff) {
+      row('方向事件', 'off', '已在保护选项里关闭');
+      oriSettled = true;
+    } else {
+      var oriDone = false;
+      var relAbs = null;
+      var absAbs = null;
+      function oriRow(state, detail) {
+        if (oriDone) return;
+        oriDone = true;
+        row('方向事件', state, detail);
+        oriSettled = true; maybeReport();
+      }
+      function oriCheck() {
+        if (relAbs === null || absAbs === null) return;
+        oriRow(
+          relAbs === false && absAbs === true
+            ? 'ok' : 'bad',
+          'deviceorientation 的 absolute=' + relAbs +
+          '，deviceorientationabsolute 的 absolute=' +
+          absAbs);
+      }
+      window.addEventListener('deviceorientation',
+        function (e) {
+          if (relAbs === null) {
+            relAbs = e.absolute; oriCheck();
+          }
+        });
+      window.addEventListener('deviceorientationabsolute',
+        function (e) {
+          if (absAbs === null) {
+            absAbs = e.absolute; oriCheck();
+          }
+        });
+      setTimeout(function () {
+        oriRow('na', '等不到方向事件');
+      }, 3000);
+    }
+  } catch (e) {
+    row('方向事件', 'bad', '读取失败');
+    oriSettled = true;
   }
   try {
     // Speech voices (v0.201.0): the list must be the PROFILE
@@ -15911,6 +16001,15 @@ private fun FingerprintHome(
             .put("scrH", device.screenHeight)
             .put("webglOff", !protection.webglDisguise)
             .put("fontOff", !protection.fontSet)
+            .put("sensorsOff", !protection.sensors)
+            .put("brands",
+                FingerprintProfiles.uaBrandList(
+                    resolved.chromeMajor.toIntOrNull()
+                        ?: FingerprintProfiles.CHROME_MAJOR
+                            .toInt()
+                ).joinToString(",") {
+                    "${it.first};${it.second}"
+                })
             .put("connRtt", profile.connectionRtt)
             .put("connDownlink", profile.connectionDownlink)
             .put("voiceCount", profile.voices.size)
