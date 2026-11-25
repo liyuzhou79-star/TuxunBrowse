@@ -2567,10 +2567,22 @@ fun BrowserApp(
             fpTabs.map { Triple(it.engine, it.url, it.desktopMode) } to
                 fpTabs.indexOfFirst { it.id == activeFpTabId }
         }.debounce(400L).collect { (list, idx) ->
-            store.saveFpTabs(
-                list.map { SavedTab(it.first, it.second, it.third) },
-                idx.coerceAtLeast(0)
-            )
+            // Never create an archive for a group that has never
+            // held a tab (v0.173.0 regression fix): this writer and
+            // the ON_PAUSE one used to save an EMPTY archive on
+            // every install, so the v0.165.0 cold-start short
+            // circuit (hasFpTabsArchive) could only ever fire on
+            // the very first install — from the second cold start
+            // on, every user paid the restore round-trip the fix
+            // removed. An empty group has nothing to restore, so
+            // skipping the write changes no restore outcome; once
+            // an archive exists, writes proceed exactly as before.
+            if (list.isNotEmpty() || store.hasFpTabsArchive) {
+                store.saveFpTabs(
+                    list.map { SavedTab(it.first, it.second, it.third) },
+                    idx.coerceAtLeast(0)
+                )
+            }
         }
     }
 
@@ -3418,15 +3430,21 @@ fun BrowserApp(
                             }.coerceAtLeast(0)
                         )
                         // The fingerprint archive settles on the
-                        // same pause (v0.161.0), same mapping.
-                        store.saveFpTabs(
-                            fpTabs.map {
-                                SavedTab(it.engine, it.url, it.desktopMode)
-                            },
-                            fpTabs.indexOfFirst {
-                                it.id == activeFpTabId
-                            }.coerceAtLeast(0)
-                        )
+                        // same pause (v0.161.0), same mapping — with
+                        // the same never-create-an-empty-archive
+                        // guard as the debounced writer (v0.173.0).
+                        if (fpTabs.isNotEmpty() ||
+                            store.hasFpTabsArchive
+                        ) {
+                            store.saveFpTabs(
+                                fpTabs.map {
+                                    SavedTab(it.engine, it.url, it.desktopMode)
+                                },
+                                fpTabs.indexOfFirst {
+                                    it.id == activeFpTabId
+                                }.coerceAtLeast(0)
+                            )
+                        }
                     }
                     store.flushBlockedCounter()
                     tabs.forEach { it.pauseEngine() }
