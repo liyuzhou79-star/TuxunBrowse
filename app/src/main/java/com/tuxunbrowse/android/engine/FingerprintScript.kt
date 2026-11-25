@@ -309,6 +309,53 @@ object FingerprintScript {
         }
       };
     }
+    // OffscreenCanvas (v0.157.0): the offscreen 2D context is a
+    // DIFFERENT prototype from CanvasRenderingContext2D, so none
+    // of the hooks above reach it — a checker drawing offscreen
+    // would read the host's raw canvas fingerprint and raw font
+    // widths. Same noise, same measureText scale, and the export
+    // path (convertToBlob) goes through a noised copy just like
+    // toBlob. (Offscreen WebGL contexts share the regular WebGL
+    // prototypes, so that half was already covered.)
+    if (window.OffscreenCanvasRenderingContext2D) {
+      var octx = OffscreenCanvasRenderingContext2D.prototype;
+      if (octx.getImageData) {
+        var origOGID = octx.getImageData;
+        octx.getImageData = function () {
+          return noiseData(origOGID.apply(this, arguments));
+        };
+      }
+      if (octx.measureText) {
+        var origOMT = octx.measureText;
+        octx.measureText = function () {
+          var m = origOMT.apply(this, arguments);
+          try {
+            var w = m.width * scale;
+            return new Proxy(m, {
+              get: function (t, prop) {
+                return prop === 'width' ? w : t[prop];
+              }
+            });
+          } catch (e) { return m; }
+        };
+      }
+    }
+    if (window.OffscreenCanvas &&
+      OffscreenCanvas.prototype.convertToBlob) {
+      var origOCTB = OffscreenCanvas.prototype.convertToBlob;
+      OffscreenCanvas.prototype.convertToBlob = function () {
+        try {
+          var t = new OffscreenCanvas(this.width, this.height);
+          var cx = t.getContext('2d');
+          cx.drawImage(this, 0, 0);
+          cx.putImageData(
+            cx.getImageData(0, 0, t.width, t.height), 0, 0);
+          return origOCTB.apply(t, arguments);
+        } catch (e) {
+          return origOCTB.apply(this, arguments);
+        }
+      };
+    }
   });
 
   section(function () {

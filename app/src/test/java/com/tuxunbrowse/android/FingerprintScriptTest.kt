@@ -38,6 +38,9 @@ class FingerprintScriptTest {
         assertTrue(payload.contains("maxTouchPoints"))
         // v0.152.0: audio noise applies once per buffer (WeakMap).
         assertTrue(payload.contains("WeakMap"))
+        // v0.157.0: the offscreen canvas path is noised too.
+        assertTrue(payload.contains("OffscreenCanvasRenderingContext2D"))
+        assertTrue(payload.contains("convertToBlob"))
         assertTrue(payload.contains("getChannelData"))
         assertTrue(payload.contains("getBoundingClientRect"))
         assertTrue(payload.contains("getBattery"))
