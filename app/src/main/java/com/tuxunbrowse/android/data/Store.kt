@@ -311,10 +311,15 @@ const val HOME_URL = "tuxun://home"
  * onLoadRequest), and subresource loads (a data: image inside a page,
  * say) never pass through openUrl at all.
  */
-fun isAllowedPageUrl(url: String): Boolean =
-    url == HOME_URL ||
-        url.startsWith("http://") ||
-        url.startsWith("https://")
+fun isAllowedPageUrl(url: String): Boolean {
+    if (url == HOME_URL) return true
+    // Schemes are case-insensitive (RFC 3986): a link arriving
+    // as "HTTP://…" from another app or a QR code is a valid
+    // http link, and refusing it would be a false refusal
+    // (v0.156.0). Only the scheme prefix is compared, folded.
+    val scheme = url.take(8).lowercase()
+    return scheme.startsWith("http://") || scheme.startsWith("https://")
+}
 
 /** Schemes that must never be opened as a page, however they arrive. */
 private val BLOCKED_PAGE_SCHEMES = listOf(
@@ -790,7 +795,8 @@ fun isDesktopHost(host: String?, sites: Set<String>): Boolean {
     return sites.any { site -> hostMatchesSite(host, site) }
 }
 
-private val SHARED_URL_REGEX = Regex("https?://\\S+")
+private val SHARED_URL_REGEX =
+    Regex("https?://\\S+", RegexOption.IGNORE_CASE)
 
 /**
  * Trailing characters that share-sheet text commonly glues onto the
@@ -814,8 +820,10 @@ fun extractFirstWebUrl(text: String?): String? {
     if (text.isNullOrBlank()) return null
     val raw = SHARED_URL_REGEX.find(text)?.value ?: return null
     val trimmed = raw.trimEnd { it in SHARED_URL_TRAILING }
-    return trimmed.takeIf { it.startsWith("http://") || it.startsWith("https://") }
-        ?.takeIf { it.length > "https://".length }
+    return trimmed.takeIf {
+        val scheme = it.take(8).lowercase()
+        scheme.startsWith("http://") || scheme.startsWith("https://")
+    }?.takeIf { it.length > "https://".length }
 }
 
 /**

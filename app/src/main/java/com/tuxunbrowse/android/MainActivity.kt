@@ -64,7 +64,8 @@ class MainActivity : ComponentActivity() {
         // the manifest's VIEW filter already limits us to those two
         // schemes, and BrowserApp.openUrl re-checks at its own gate.
         externalUrl = intent?.dataString?.takeIf {
-            it.startsWith("http://") || it.startsWith("https://")
+            val scheme = it.take(8).lowercase()
+            scheme.startsWith("http://") || scheme.startsWith("https://")
         }
         sharedText = extractSharedText(intent)
         setContent {
@@ -99,7 +100,8 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         externalUrl = intent.dataString?.takeIf {
-            it.startsWith("http://") || it.startsWith("https://")
+            val scheme = it.take(8).lowercase()
+            scheme.startsWith("http://") || scheme.startsWith("https://")
         }
         extractSharedText(intent)?.let { sharedText = it }
     }

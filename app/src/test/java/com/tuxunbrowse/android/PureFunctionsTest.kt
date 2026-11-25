@@ -21,6 +21,7 @@ import com.tuxunbrowse.android.data.shouldPreheatGecko
 import com.tuxunbrowse.android.data.bookmarksFromHtml
 import com.tuxunbrowse.android.data.compareVersionNames
 import com.tuxunbrowse.android.data.extractFirstWebUrl
+import com.tuxunbrowse.android.data.isAllowedPageUrl
 import com.tuxunbrowse.android.data.DiagnosticInfo
 import com.tuxunbrowse.android.data.GECKOVIEW_VERSION
 import com.tuxunbrowse.android.data.diagnosticText
@@ -647,6 +648,20 @@ class ExtractFirstWebUrlTest {
     }
 
     @Test
+    fun uppercaseSchemeUrlIsStillFound() {
+        // v0.156.0: schemes are case-insensitive; a share whose
+        // link shouts its scheme still contains a URL.
+        assertEquals(
+            "HTTP://example.com/x",
+            extractFirstWebUrl("看这个 HTTP://example.com/x 不错")
+        )
+        assertEquals(
+            "Https://example.com",
+            extractFirstWebUrl("Https://example.com")
+        )
+    }
+
+    @Test
     fun bareUrlIsExtractedAsIs() {
         assertEquals(
             "https://example.com/a?b=1",
@@ -1185,5 +1200,32 @@ class TrimMemoryPressureTest {
             listOf(1),
             selectSleepVictims(alive, activeTabId = 7, limit = 6)
         )
+    }
+}
+
+/**
+ * The inbound page gate (v0.156.0): schemes are case-insensitive,
+ * everything else about the gate is unchanged — an uppercase
+ * HTTP link is a link, and no casing trick smuggles a blocked
+ * scheme past it.
+ */
+class AllowedPageUrlTest {
+
+    @Test
+    fun uppercaseSchemesAreAllowed() {
+        assertEquals(true, isAllowedPageUrl("HTTP://example.com"))
+        assertEquals(true, isAllowedPageUrl("Https://example.com/x"))
+        assertEquals(true, isAllowedPageUrl("http://example.com"))
+        assertEquals(true, isAllowedPageUrl("https://example.com"))
+    }
+
+    @Test
+    fun nonHttpSchemesStayRefusedInAnyCase() {
+        assertEquals(false, isAllowedPageUrl("JaVaScRiPt:alert(1)"))
+        assertEquals(false, isAllowedPageUrl("FILE:///etc/passwd"))
+        assertEquals(false, isAllowedPageUrl("data:text/html,hi"))
+        assertEquals(false, isAllowedPageUrl("ftp://example.com"))
+        assertEquals(false, isAllowedPageUrl("example.com"))
+        assertEquals(false, isAllowedPageUrl(""))
     }
 }
