@@ -276,6 +276,7 @@ import com.tuxunbrowse.android.data.backupToJson
 import com.tuxunbrowse.android.data.parseBackup
 import com.tuxunbrowse.android.data.bookmarksFromHtml
 import com.tuxunbrowse.android.data.bookmarksFromJson
+import com.tuxunbrowse.android.data.selectNewBookmarks
 import com.tuxunbrowse.android.data.bookmarksToHtml
 import com.tuxunbrowse.android.data.bookmarksToJson
 import com.tuxunbrowse.android.data.MAX_IMPORT_FILE_CHARS
@@ -2710,38 +2711,43 @@ fun BrowserApp(
         // background dispatcher; only the merge into the live
         // bookmark list and the result toast stay on the main
         // thread, exactly as before.
+        // Merge shape (v0.200.0): WHICH rows to add is also
+        // decided on the background dispatcher now, against a
+        // URL set snapshotted here — the old main-thread merge
+        // scanned the whole live list once per imported row
+        // (quadratic; a large desktop export froze the UI).
+        // The main thread only appends the decided rows.
         appScope.launch {
             try {
-                val (imported, parseSkipped) =
+                val existingUrls =
+                    bookmarks.map { it.url }.toHashSet()
+                val (toAdd, skipped) =
                     withContext(Dispatchers.Default) {
                         val raw = readImportFileText(context, uri)
                         val head = raw.trimStart()
                         val isHtml = head.startsWith(
                             "<!DOCTYPE NETSCAPE", ignoreCase = true
                         ) || head.startsWith("<DL", ignoreCase = true)
-                        var skipped = 0
+                        var bad = 0
                         val parsed = if (isHtml) {
-                            val (list, bad) = bookmarksFromHtml(raw)
-                            skipped += bad
+                            val (list, badCount) =
+                                bookmarksFromHtml(raw)
+                            bad = badCount
                             list
                         } else {
                             bookmarksFromJson(raw)
                         }
-                        // De-duplicate within the file itself as well.
-                        val distinct = parsed.distinctBy { it.url }
-                        skipped += parsed.size - distinct.size
-                        distinct to skipped
+                        // De-duplicates within the file and
+                        // against the existing list in one
+                        // set pass (see selectNewBookmarks).
+                        val (newOnes, dupes) = selectNewBookmarks(
+                            existingUrls, parsed
+                        )
+                        newOnes to (bad + dupes)
                     }
-                var skipped = parseSkipped
-                var added = 0
-                imported.forEach { bm ->
-                    if (bookmarks.none { it.url == bm.url }) {
-                        bookmarks.add(bm)
-                        added++
-                    } else {
-                        skipped++
-                    }
-                }
+                val imported = toAdd
+                val added = toAdd.size
+                bookmarks.addAll(toAdd)
                 if (added > 0) store.saveBookmarks(bookmarks)
                 android.widget.Toast.makeText(
                     context,
@@ -2872,8 +2878,12 @@ fun BrowserApp(
      */
     fun applyBackup(data: BackupData): String {
         var addedBookmarks = 0
+        // Set membership, the same shape the history merge below
+        // already uses (v0.200.0): the per-row none{} scan this
+        // replaces was quadratic in the size of a large backup.
+        val bookmarkUrls = bookmarks.map { it.url }.toHashSet()
         data.bookmarks.distinctBy { it.url }.forEach { bm ->
-            if (bookmarks.none { it.url == bm.url }) {
+            if (bookmarkUrls.add(bm.url)) {
                 bookmarks.add(bm)
                 addedBookmarks++
             }
@@ -13508,6 +13518,7 @@ private fun FingerprintShell(
         {}
 ) {
     val context = LocalContext.current
+    val shellScope = rememberCoroutineScope()
     val profile = resolved.profile
     val zone = resolved.timezone
     val device = resolved.device
@@ -13556,40 +13567,54 @@ private fun FingerprintShell(
                 .ActivityResultContracts.OpenDocument()
         ) { uri ->
             if (uri == null) return@rememberLauncherForActivityResult
-            try {
-                val text = context.contentResolver
-                    .openInputStream(uri)?.bufferedReader()
-                    ?.readText()
-                val parsed = com.tuxunbrowse.android.engine
-                    .FingerprintProfiles.parseCustomProfiles(text)
-                var added = 0
-                for (entry in parsed) {
-                    if (customs.none {
-                            it.regionId == entry.regionId &&
-                                it.deviceId == entry.deviceId &&
-                                it.timezoneId == entry.timezoneId &&
-                                it.language == entry.language
-                        }
-                    ) {
-                        customs = customs + entry
-                        onSaveCustomProfile(entry)
-                        added++
+            // Bounded read + background parse (v0.200.0): this
+            // was the one import path still reading its file
+            // with an unbounded readText() on the main thread —
+            // the bookmark and backup imports both moved to
+            // readImportFileText (8M-char cap) off the main
+            // thread in v0.167.0. An oversized or pathological
+            // file could exhaust memory before the parser ever
+            // rejected it; now it fails the same plain way the
+            // other imports do, and existing combinations are
+            // untouched on failure.
+            shellScope.launch {
+                try {
+                    val parsed = withContext(Dispatchers.Default) {
+                        com.tuxunbrowse.android.engine
+                            .FingerprintProfiles
+                            .parseCustomProfiles(
+                                readImportFileText(context, uri)
+                            )
                     }
+                    var added = 0
+                    for (entry in parsed) {
+                        if (customs.none {
+                                it.regionId == entry.regionId &&
+                                    it.deviceId == entry.deviceId &&
+                                    it.timezoneId == entry.timezoneId &&
+                                    it.language == entry.language
+                            }
+                        ) {
+                            customs = customs + entry
+                            onSaveCustomProfile(entry)
+                            added++
+                        }
+                    }
+                    android.widget.Toast.makeText(
+                        context,
+                        if (added > 0) {
+                            "已导入 $added 条档案"
+                        } else {
+                            "没有导入新的档案（文件里没有新组合）"
+                        },
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                } catch (t: Throwable) {
+                    android.widget.Toast.makeText(
+                        context, "导入失败，这个文件读不了",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
                 }
-                android.widget.Toast.makeText(
-                    context,
-                    if (added > 0) {
-                        "已导入 $added 条档案"
-                    } else {
-                        "没有导入新的档案（文件里没有新组合）"
-                    },
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
-            } catch (t: Throwable) {
-                android.widget.Toast.makeText(
-                    context, "导入失败，这个文件读不了",
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
             }
         }
     var showTabs by remember { mutableStateOf(false) }

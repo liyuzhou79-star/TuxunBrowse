@@ -820,6 +820,37 @@ fun capSharedText(text: String): String =
     }
 
 /**
+ * Which of [imported] a bookmark import should actually add
+ * (v0.200.0 stability audit): the ones whose URL is neither in
+ * [existingUrls] nor earlier in [imported] itself, in file
+ * order; the second value counts everything dropped. This is a
+ * set-membership pass — the merge it replaces scanned the live
+ * bookmark list once per imported row on the main thread, which
+ * is quadratic: a desktop browser's HTML export can carry tens
+ * of thousands of bookmarks under the import size cap, and
+ * merging one froze the UI for seconds. The history merge in
+ * the backup restore already used a HashSet for the same job;
+ * this gives bookmarks the same shape, as a pure function the
+ * tests can pin.
+ */
+fun selectNewBookmarks(
+    existingUrls: Set<String>,
+    imported: List<Bookmark>
+): Pair<List<Bookmark>, Int> {
+    val seen = HashSet(existingUrls)
+    val toAdd = ArrayList<Bookmark>()
+    var skipped = 0
+    for (bm in imported) {
+        if (seen.add(bm.url)) {
+            toAdd.add(bm)
+        } else {
+            skipped++
+        }
+    }
+    return toAdd to skipped
+}
+
+/**
  * Trailing characters that share-sheet text commonly glues onto the
  * end of a URL (sentence punctuation, closing brackets and quotes,
  * in both ASCII and CJK forms). They are trimmed off the end of an
