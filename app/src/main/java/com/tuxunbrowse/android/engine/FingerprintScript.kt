@@ -39,15 +39,23 @@ package com.tuxunbrowse.android.engine
  * fingerprint across sessions — a real fingerprint browser's
  * profile is stable, and per-visit churn would itself be a tell.
  *
+ * v0.174.0: the font ENUMERATION surface joins the covered set —
+ * document.fonts.check() answers known system families from the
+ * profile device's stock font set (see FingerprintProfiles),
+ * borrowed as a coverage idea from the open-source anti-detect
+ * projects' patch lists (Camoufox's font surface, the Chromium
+ * fingerprint patches' font item) and re-implemented here in the
+ * injection layer. The font files themselves still render on
+ * the host: enumeration now follows the profile and measureText
+ * scaling blurs measurement, but glyphs are not swapped.
+ *
  * NOT covered, on purpose and recorded in the checkpoint: the HTTP
  * Accept-Language header (the WebView offers no per-request header
- * rewrite; the JS-visible language is the profile's), the device's
- * real font set (measureText scaling and rect jitter only shift
- * the measurements off the raw values — a mitigation, not a font
- * swap), and anything on the Gecko engine (no per-session
- * surface — see the checkpoint's Gecko findings; fingerprint
- * tabs are WebView-only). WebGL readPixels noise joined the
- * covered set in v0.149.0.
+ * rewrite; the JS-visible language is the profile's), and
+ * anything on the Gecko engine (no per-session surface — see
+ * the checkpoint's Gecko findings; fingerprint tabs are
+ * WebView-only). WebGL readPixels noise joined the covered set
+ * in v0.149.0.
  */
 object FingerprintScript {
 
@@ -90,6 +98,14 @@ object FingerprintScript {
                 " isDefault: ${v.isDefault} }"
         }
         val daylight = tz.zoneDaylightName?.let { jsStr(it) } ?: "null"
+        // Font sets as JS lookup objects, lower-cased family
+        // names (v0.174.0). Names are plain ASCII, so direct
+        // quoting is safe here.
+        val fpFonts = d.fonts.joinToString(", ") {
+            "'" + it.lowercase() + "': 1"
+        }
+        val knownFonts = FingerprintProfiles.KNOWN_FONT_FAMILIES
+            .joinToString(", ") { "'" + it.lowercase() + "': 1" }
         return """
 (function () {
   'use strict';
@@ -421,6 +437,69 @@ object FingerprintScript {
         }
       };
     }
+  });
+
+  section(function () {
+    // Font list surface (v0.174.0): document.fonts.check() is
+    // the enumeration probe — check('16px "SamsungOne"') asks
+    // "is this family on this device?" without loading a thing.
+    // It used to answer with the HOST's shelf: a Galaxy profile
+    // on a host lacking SamsungOne said no, while the host
+    // vendor's own UI font said yes. Known system families now
+    // answer from the PROFILE device's stock set. Generic
+    // families resolve on every device, and anything unknown —
+    // above all a page's own webfonts, whose check() result
+    // pages legitimately wait on — falls through to the real
+    // check untouched. FontFaceSet.load() is deliberately NOT
+    // wrapped: it has loading side effects pages depend on.
+    if (!window.FontFaceSet || !document.fonts ||
+        !document.fonts.check) return;
+    var FP_FONT_SET = { $fpFonts };
+    var KNOWN_FONT_SET = { $knownFonts };
+    function familiesOf(font) {
+      var out = [];
+      var sawSyntax = false;
+      String(font).split(',').forEach(function (part) {
+        var p = part.trim();
+        if (!p) return;
+        var q = /"([^"]+)"|'([^']+)'/.exec(p);
+        if (q) { sawSyntax = true; out.push(q[1] || q[2]); return; }
+        var tokens = p.split(/\s+/);
+        for (var i = 0; i < tokens.length; i++) {
+          if (/^\d+(\.\d+)?(px|pt|pc|em|rem|ex|ch|vw|vh|%|cm|mm|in)(\/\S+)?$/i
+                .test(tokens[i]) ||
+              /^(xx-small|x-small|small|medium|large|x-large|xx-large|smaller|larger)$/i
+                .test(tokens[i])) {
+            sawSyntax = true;
+            if (i + 1 < tokens.length) {
+              out.push(tokens.slice(i + 1).join(' '));
+            }
+            return;
+          }
+        }
+        out.push(p);
+      });
+      return { families: out, sawSyntax: sawSyntax };
+    }
+    var origFontCheck = document.fonts.check.bind(document.fonts);
+    document.fonts.check = function (font, text) {
+      try {
+        var parsed = familiesOf(font);
+        if (parsed.sawSyntax) {
+          var sawKnown = false;
+          var allInProfile = true;
+          parsed.families.forEach(function (fam) {
+            var key = fam.toLowerCase();
+            if (KNOWN_FONT_SET[key]) {
+              sawKnown = true;
+              if (!FP_FONT_SET[key]) allInProfile = false;
+            }
+          });
+          if (sawKnown) return allInProfile;
+        }
+      } catch (e) {}
+      return origFontCheck(font, text);
+    };
   });
 
   section(function () {

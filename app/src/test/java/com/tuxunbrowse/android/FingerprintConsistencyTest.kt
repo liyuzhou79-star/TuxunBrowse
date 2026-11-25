@@ -2,6 +2,7 @@ package com.tuxunbrowse.android
 
 import com.tuxunbrowse.android.engine.FingerprintProfiles
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -155,6 +156,41 @@ class FingerprintConsistencyTest {
                         "unclassified GPU family: ${device.webGlRenderer}"
                     )
                 }
+            }
+        }
+    }
+
+    @Test
+    fun fontSetsFollowTheDeviceVendor() {
+        // v0.174.0: the font enumeration shelf belongs to the
+        // DEVICE vendor, not the host and not the GPU family
+        // (the Galaxy A54 pairs a Mali GPU with Samsung's shelf,
+        // so vendor is read off the model id, never the GPU).
+        // Galaxy devices carry SamsungOne and not Google Sans;
+        // Pixels the reverse; both carry the Android base set;
+        // and the known set the script intercepts with covers
+        // every device's whole shelf.
+        for (profile in FingerprintProfiles.all) {
+            for (device in profile.devices) {
+                assertTrue(device.fonts.contains("Roboto"))
+                if (device.id.startsWith("SM-")) {
+                    assertTrue(device.fonts.contains("SamsungOne"))
+                    assertFalse(device.fonts.contains("Google Sans"))
+                } else if (device.id.startsWith("Pixel")) {
+                    assertTrue(device.fonts.contains("Google Sans"))
+                    assertTrue(
+                        device.fonts.contains("Google Sans Text")
+                    )
+                    assertFalse(device.fonts.contains("SamsungOne"))
+                } else {
+                    throw AssertionError(
+                        "unclassified device: ${device.id}"
+                    )
+                }
+                assertTrue(
+                    FingerprintProfiles.KNOWN_FONT_FAMILIES
+                        .containsAll(device.fonts)
+                )
             }
         }
     }

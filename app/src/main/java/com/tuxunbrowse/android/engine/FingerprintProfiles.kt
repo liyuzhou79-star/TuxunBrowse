@@ -98,6 +98,18 @@ data class FpDevice(
      */
     val webGpuVendor: String,
     val webGpuArchitecture: String,
+    /**
+     * The stock font families this device ships (v0.174.0),
+     * at family-name granularity: what a page may learn through
+     * document.fonts.check() must name THIS device's shelf, not
+     * the host's. The sets are the vendors' public stock facts
+     * (the Android base set, plus SamsungOne on Galaxy devices
+     * and Google Sans / Google Sans Text on Pixels). The font
+     * FILES still render on the host — only the enumeration
+     * answer follows the profile; measurement stays blurred by
+     * the existing scale/jitter mitigation.
+     */
+    val fonts: List<String>,
     val seedDelta: Int
 )
 
@@ -110,12 +122,14 @@ data class FpDevice(
  * without ever breaking self-consistency.
  *
  * What a profile deliberately does NOT carry: an IP address (that
- * is the user's proxy's job — the mode's copy says so), a font
- * list (Android exposes no per-app font set to spoof; text
- * measurement is only blurred by the canvas/rect noise), and a
- * storage partition (the system WebView has ONE data directory,
- * so fingerprint tabs share cookies/storage with normal WebView
- * tabs — recorded honestly in the mode's copy and the checkpoint).
+ * is the user's proxy's job — the mode's copy says so), the font
+ * FILES themselves (the device carries the stock family NAME set
+ * for the enumeration surface since v0.174.0, but glyphs still
+ * render with the host's fonts; text measurement is blurred by
+ * the canvas/rect noise), and a storage partition (the system
+ * WebView has ONE data directory, so fingerprint tabs share
+ * cookies/storage with normal WebView tabs — recorded honestly
+ * in the mode's copy and the checkpoint).
  */
 data class FingerprintProfile(
     val regionId: String,
@@ -207,6 +221,40 @@ object FingerprintProfiles {
 
     const val PLATFORM: String = "Linux armv8l"
 
+    // Stock font family sets (v0.174.0). The base set is what
+    // every Android device in the library ships; each vendor
+    // adds its own UI families on top. Family names only — the
+    // enumeration surface (document.fonts.check) answers from
+    // these lists; see FpDevice.fonts.
+    private val BASE_FONTS = listOf(
+        "Roboto", "Roboto Condensed",
+        "Noto Sans", "Noto Serif",
+        "Noto Sans CJK JP", "Noto Sans CJK KR",
+        "Noto Sans CJK SC", "Noto Sans CJK TC",
+        "Noto Serif CJK JP", "Noto Serif CJK KR",
+        "Noto Serif CJK SC", "Noto Serif CJK TC",
+        "Droid Sans Mono"
+    )
+    private val SAMSUNG_FONTS = BASE_FONTS + listOf("SamsungOne")
+    private val GOOGLE_FONTS = BASE_FONTS + listOf(
+        "Google Sans", "Google Sans Text"
+    )
+
+    /**
+     * Every family name the injected script treats as a KNOWN
+     * system font (v0.174.0): the union of both vendors' stock
+     * sets plus other Android vendors' published UI font names
+     * that no device in the library ships. A fonts.check() probe
+     * naming a known family is answered from the picked device's
+     * own set (present → true, absent → false); a probe naming
+     * anything else (a page's webfont, an obscure family) falls
+     * through to the engine's real answer untouched.
+     */
+    val KNOWN_FONT_FAMILIES: List<String> =
+        (SAMSUNG_FONTS + GOOGLE_FONTS + listOf(
+            "MiSans", "HarmonyOS Sans", "OPPO Sans"
+        )).distinct()
+
     // GPU capability tables, shared by every device carrying that
     // GPU class (v0.145.0 values, moved here in v0.146.0).
     private val GL_ADRENO_750 = FpWebGlParams(
@@ -261,6 +309,7 @@ object FingerprintProfiles {
         webGlVendor = "Qualcomm", webGlRenderer = "Adreno (TM) 750",
         webGl = GL_ADRENO_750,
         webGpuVendor = "qualcomm", webGpuArchitecture = "adreno-7xx",
+        fonts = SAMSUNG_FONTS,
         seedDelta = delta
     )
 
@@ -271,6 +320,7 @@ object FingerprintProfiles {
         webGlVendor = "Qualcomm", webGlRenderer = "Adreno (TM) 740",
         webGl = GL_ADRENO_740,
         webGpuVendor = "qualcomm", webGpuArchitecture = "adreno-7xx",
+        fonts = SAMSUNG_FONTS,
         seedDelta = delta
     )
 
@@ -287,6 +337,7 @@ object FingerprintProfiles {
         webGlRenderer = "ANGLE (ARM, Mali-G715s MC10, OpenGL ES 3.2)",
         webGl = GL_MALI_G715,
         webGpuVendor = "arm", webGpuArchitecture = "valhall",
+        fonts = GOOGLE_FONTS,
         seedDelta = delta
     )
 
@@ -306,6 +357,7 @@ object FingerprintProfiles {
         webGlRenderer = "ANGLE (ARM, Mali-G715s MC10, OpenGL ES 3.2)",
         webGl = GL_MALI_G715,
         webGpuVendor = "arm", webGpuArchitecture = "valhall",
+        fonts = GOOGLE_FONTS,
         seedDelta = delta
     )
 
@@ -321,6 +373,7 @@ object FingerprintProfiles {
         // v0.146.0 checkpoint chapter, not diffed on hardware).
         webGl = GL_MALI_G715,
         webGpuVendor = "arm", webGpuArchitecture = "valhall",
+        fonts = GOOGLE_FONTS,
         seedDelta = delta
     )
 
@@ -333,6 +386,7 @@ object FingerprintProfiles {
         webGlRenderer = "ANGLE (ARM, Mali-G68, OpenGL ES 3.2)",
         webGl = GL_MALI_G68,
         webGpuVendor = "arm", webGpuArchitecture = "valhall",
+        fonts = SAMSUNG_FONTS,
         seedDelta = delta
     )
 

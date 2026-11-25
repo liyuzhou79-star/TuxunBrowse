@@ -189,6 +189,25 @@ class FingerprintScriptTest {
     }
 
     @Test
+    fun payloadCarriesTheFontShelf() {
+        // v0.174.0: document.fonts.check answers known system
+        // families from the picked device's stock shelf — the
+        // US default Galaxy carries SamsungOne in its profile
+        // set, the JP default Pixel carries Google Sans.
+        val us = FingerprintScript.payload(
+            FingerprintProfiles.resolve("US", null)
+        )
+        assertTrue(us.contains("FontFaceSet"))
+        assertTrue(us.contains("FP_FONT_SET"))
+        assertTrue(us.contains("'samsungone': 1"))
+        val jp = FingerprintScript.payload(
+            FingerprintProfiles.resolve("JP", null)
+        )
+        assertTrue(jp.contains("'google sans': 1"))
+        assertTrue(jp.contains("'google sans text': 1"))
+    }
+
+    @Test
     fun payloadCarriesLeakProofLiveWebRtc() {
         // v0.160.0: the WebRTC API stays present (a real Chrome
         // phone has it) with the leak paths closed — relay-only
