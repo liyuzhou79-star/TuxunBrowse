@@ -18,8 +18,11 @@ package com.tuxunbrowse.android.engine
  * (seeded, deterministic), WebGL unmasked vendor/renderer strings
  * AND the getParameter capability table for the profile's GPU,
  * AudioBuffer noise, ClientRects jitter, a fixed battery story,
- * and a hard WebRTC block (stricter than the opt-in normal-mode
- * switch: fingerprint mode never negotiates real ICE candidates).
+ * and a leak-proofed live WebRTC (v0.160.0: the API stays
+ * present like a real device's, connections are forced to
+ * relay-only ICE and candidate events are filtered, so no host
+ * or public address can surface; getUserMedia answers with a
+ * permission refusal instead of being absent).
  * WebGPU adapter identity joined in v0.159.0: requestAdapter's
  * info answers vendor/architecture from the profile's GPU
  * family, so the third graphics API tells the same story as
@@ -671,11 +674,93 @@ object FingerprintScript {
   });
 
   section(function () {
-    def(window, 'RTCPeerConnection', undefined);
-    def(window, 'webkitRTCPeerConnection', undefined);
-    def(window, 'RTCDataChannel', undefined);
+    // WebRTC (v0.160.0): until now the mode deleted
+    // RTCPeerConnection outright — but a real Chrome phone HAS
+    // the API, so its absence is itself a tell, at odds with
+    // the ordinary-device story every other section tells.
+    // The API now stays, fully real, with the leak paths
+    // closed instead:
+    //  - every connection is forced to iceTransportPolicy
+    //    'relay', so the engine only ever gathers TURN relay
+    //    candidates; host and srflx candidates — the ones
+    //    carrying the device's LAN address and the exit's
+    //    public address — are never produced at all;
+    //  - any candidate event that still surfaces is filtered
+    //    on both delivery paths (the onicecandidate property,
+    //    forwarded through the real prototype setter, and
+    //    addEventListener): host/srflx/prflx candidates are
+    //    dropped, so even an engine that ignored the policy
+    //    cannot leak through the event stream.
+    // getUserMedia likewise stays present but answers the way
+    // an ungranted page experiences a real device: a
+    // NotAllowedError rejection. (Fingerprint mode never
+    // grants camera or microphone — v0.144.0 policy,
+    // unchanged; only the SHAPE of the refusal changed.)
+    var OrigRTC = window.RTCPeerConnection;
+    if (OrigRTC) {
+      function candidateLeaks(candidate) {
+        if (!candidate) return false;
+        return /typ (host|srflx|prflx)\b/
+          .test(candidate.candidate || '');
+      }
+      function FpRTCPeerConnection(config) {
+        var merged = {};
+        if (config) {
+          for (var k in config) merged[k] = config[k];
+        }
+        merged.iceTransportPolicy = 'relay';
+        var pc = new OrigRTC(merged);
+        var origAdd = pc.addEventListener.bind(pc);
+        pc.addEventListener = function (type, listener, opts) {
+          if (type === 'icecandidate' &&
+              typeof listener === 'function') {
+            var wrappedListener = function (ev) {
+              if (ev && candidateLeaks(ev.candidate)) return;
+              return listener.apply(this, arguments);
+            };
+            return origAdd(type, wrappedListener, opts);
+          }
+          return origAdd(type, listener, opts);
+        };
+        var iceDesc = Object.getOwnPropertyDescriptor(
+          Object.getPrototypeOf(pc), 'onicecandidate');
+        if (iceDesc && iceDesc.set) {
+          var userHandler = null;
+          Object.defineProperty(pc, 'onicecandidate', {
+            configurable: true, enumerable: true,
+            get: function () { return userHandler; },
+            set: function (fn) {
+              userHandler = fn;
+              iceDesc.set.call(pc,
+                (typeof fn === 'function')
+                  ? function (ev) {
+                      if (ev && candidateLeaks(ev.candidate)) {
+                        return;
+                      }
+                      return fn.apply(this, arguments);
+                    }
+                  : fn);
+            }
+          });
+        }
+        return pc;
+      }
+      FpRTCPeerConnection.prototype = OrigRTC.prototype;
+      if (OrigRTC.generateCertificate) {
+        FpRTCPeerConnection.generateCertificate =
+          OrigRTC.generateCertificate.bind(OrigRTC);
+      }
+      def(window, 'RTCPeerConnection', FpRTCPeerConnection);
+      if (window.webkitRTCPeerConnection) {
+        def(window, 'webkitRTCPeerConnection',
+          FpRTCPeerConnection);
+      }
+    }
     if (navigator.mediaDevices) {
-      def(navigator.mediaDevices, 'getUserMedia', undefined);
+      def(navigator.mediaDevices, 'getUserMedia', function () {
+        return Promise.reject(new DOMException(
+          'Permission denied', 'NotAllowedError'));
+      });
     }
   });
 })();

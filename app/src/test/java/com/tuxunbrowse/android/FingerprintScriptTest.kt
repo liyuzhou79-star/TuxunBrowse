@@ -169,6 +169,26 @@ class FingerprintScriptTest {
     }
 
     @Test
+    fun payloadCarriesLeakProofLiveWebRtc() {
+        // v0.160.0: the WebRTC API stays present (a real Chrome
+        // phone has it) with the leak paths closed — relay-only
+        // ICE plus candidate filtering — and getUserMedia
+        // refuses like an ungranted device instead of being
+        // undefined.
+        val payload = FingerprintScript.payload(
+            FingerprintProfiles.resolve("US", null)
+        )
+        assertTrue(payload.contains("iceTransportPolicy"))
+        assertTrue(payload.contains("'relay'"))
+        assertTrue(payload.contains("typ (host|srflx|prflx)"))
+        assertTrue(payload.contains("NotAllowedError"))
+        assertFalse(
+            payload.contains("'RTCPeerConnection', undefined")
+        )
+        assertFalse(payload.contains("'getUserMedia', undefined"))
+    }
+
+    @Test
     fun chargingStoryMatchesTheProfile() {
         val sg = FingerprintScript.payload(
             FingerprintProfiles.resolve("SG", null)
