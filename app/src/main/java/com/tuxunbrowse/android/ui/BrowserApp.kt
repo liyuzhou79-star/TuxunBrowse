@@ -1682,7 +1682,19 @@ fun BrowserApp(
                 val idx = fpTabs.indexOf(tab)
                 val replacement = makeTab(
                     engine = Engine.WEBVIEW,
-                    incognito = true,
+                    // Fingerprint tabs are NOT incognito (v0.166.0
+                    // incognito audit): every other fingerprint
+                    // creation site (newFpTab, session restore,
+                    // profile switch) builds them with incognito =
+                    // false — the mode's disclosed model is a shared
+                    // cookie jar and its own tab archive, with only
+                    // history suppressed (via the fingerprint flag).
+                    // This branch used to pass true, so a tab whose
+                    // renderer died silently changed identity:
+                    // thumbnails stopped, its downloads suddenly
+                    // took the incognito reminder path, and the flag
+                    // flipped back on the next cold restore.
+                    incognito = false,
                     url = tab.url,
                     desktopMode = tab.desktopMode,
                     fingerprint = true
