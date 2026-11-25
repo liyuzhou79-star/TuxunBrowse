@@ -3,6 +3,8 @@ package com.tuxunbrowse.android
 import com.tuxunbrowse.android.engine.FingerprintProfiles
 import com.tuxunbrowse.android.engine.FingerprintScript
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -221,5 +223,49 @@ class FingerprintScriptTest {
         )
         assertTrue(us.contains("b.charging = false"))
         assertTrue(us.contains("b.chargingTime = Infinity"))
+    }
+
+    // v0.165.0 startup audit: the payload is memoised per
+    // resolved profile (it used to be re-assembled on the main
+    // thread at every page start). Same profile -> the very same
+    // string instance; a different profile -> its own payload;
+    // switching back reproduces the first profile's bytes exactly.
+    @Test
+    fun payloadIsMemoisedForTheSameProfile() {
+        val resolved = FingerprintProfiles.resolve("US", "America/New_York")
+        val first = FingerprintScript.payload(resolved)
+        val second = FingerprintScript.payload(
+            FingerprintProfiles.resolve("US", "America/New_York")
+        )
+        assertSame(first, second)
+    }
+
+    @Test
+    fun payloadCacheDoesNotMixProfiles() {
+        val us = FingerprintScript.payload(
+            FingerprintProfiles.resolve("US", "America/New_York")
+        )
+        val jp = FingerprintScript.payload(
+            FingerprintProfiles.resolve("JP", "Asia/Tokyo")
+        )
+        assertNotSame(us, jp)
+        assertTrue(jp.contains("Asia/Tokyo"))
+        assertFalse(jp.contains("America/New_York"))
+        assertTrue(us.contains("America/New_York"))
+        assertFalse(us.contains("Asia/Tokyo"))
+    }
+
+    @Test
+    fun payloadCacheRebuildAfterSwitchKeepsTheSameBytes() {
+        val first = FingerprintScript.payload(
+            FingerprintProfiles.resolve("US", "America/New_York")
+        )
+        FingerprintScript.payload(
+            FingerprintProfiles.resolve("JP", "Asia/Tokyo")
+        )
+        val rebuilt = FingerprintScript.payload(
+            FingerprintProfiles.resolve("US", "America/New_York")
+        )
+        assertEquals(first, rebuilt)
     }
 }

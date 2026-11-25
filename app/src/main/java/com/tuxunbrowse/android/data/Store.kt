@@ -1646,6 +1646,20 @@ class Store(context: Context) {
     fun loadFpTabs(): Pair<List<SavedTab>, Int> =
         parseSavedTabsJson(safeString(KEY_FP_TABS, null))
 
+    /**
+     * Whether a fingerprint session archive exists at all
+     * (v0.165.0 startup audit). The startup restore checks this
+     * single string read first: a user who never entered
+     * fingerprint mode has no archive, and their cold start then
+     * skips the restore's background round-trip entirely instead
+     * of paying it — and delaying startupDone, which the
+     * external-link and share consumers also wait on — only to
+     * parse an absent key into an empty list. When an archive
+     * DOES exist the restore runs exactly as before.
+     */
+    val hasFpTabsArchive: Boolean
+        get() = safeString(KEY_FP_TABS, null) != null
+
     // List reads all go through parseJsonObjectList (v0.83.0):
     // per-element tolerance, so one corrupt row can no longer
     // empty a whole list the way the old getJSONObject-based

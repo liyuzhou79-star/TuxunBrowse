@@ -299,6 +299,7 @@ import com.tuxunbrowse.android.engine.AdBlocker
 import com.tuxunbrowse.android.engine.BrowserTab
 import com.tuxunbrowse.android.engine.GeckoDownloadTracker
 import com.tuxunbrowse.android.engine.FingerprintProfiles
+import com.tuxunbrowse.android.engine.FingerprintScript
 import com.tuxunbrowse.android.engine.ResolvedFingerprint
 import com.tuxunbrowse.android.engine.GeckoHolder
 import com.tuxunbrowse.android.engine.GuardScript
@@ -709,6 +710,26 @@ fun BrowserApp(
                 kotlinx.coroutines.Dispatchers.Default
             ) {
                 GuardScript.payload(context.applicationContext)
+            }
+        }
+    }
+    // Fingerprint payload warm-up (v0.165.0 startup audit): the
+    // fingerprint payload is the largest of the three script
+    // payloads and, unlike the guard payload, had no warm-up at
+    // all — the first fingerprint tab paid the full assembly on
+    // the main thread at creation, and every page start paid it
+    // again until FingerprintScript grew its own cache (this
+    // version). Entering the mode is a deliberate tap with the
+    // shell already on screen, so build the (now cached) payload
+    // here on a background dispatcher; tab creation then only
+    // reads the finished string. Normal mode never runs this:
+    // the effect's key stays false and its body stays out.
+    LaunchedEffect(fingerprintMode) {
+        if (fingerprintMode) {
+            kotlinx.coroutines.withContext(
+                kotlinx.coroutines.Dispatchers.Default
+            ) {
+                FingerprintScript.payload(store.resolvedFingerprint())
             }
         }
     }
@@ -2235,16 +2256,33 @@ fun BrowserApp(
         // is a deliberate tap, and exitFingerprintMode already
         // promises the group survives leaving — a cold start
         // now keeps the same promise, no further.
-        if (fpTabs.isEmpty()) {
+        // Startup audit (v0.165.0): the restore is skipped
+        // entirely when no fingerprint archive exists — one
+        // string read on the store answers that. A user who
+        // never entered fingerprint mode used to pay a full
+        // background round-trip here on every cold start (parse
+        // of an absent key, empty result) and, because this sits
+        // before startupDone, that round-trip also delayed the
+        // external-link / share consumers gated on startupDone.
+        // With an archive present nothing changes.
+        if (fpTabs.isEmpty() && store.hasFpTabsArchive) {
             val (savedFp, savedFpActive) =
                 kotlinx.coroutines.withContext(
                     kotlinx.coroutines.Dispatchers.Default
                 ) {
                     store.loadFpTabs()
                 }
-            val usableFp = savedFp.filter {
-                it.url.startsWith("http") || it.url == HOME_URL
-            }
+            // The active index is mapped through the SAME filter
+            // that builds the restored list, via the shared
+            // restoredActiveIndex helper — the discipline the
+            // normal restore got in v0.109.0. The fp restore used
+            // to coerce the raw stored index onto the FILTERED
+            // list, so an unusable entry ahead of the active one
+            // (a non-http URL left by an odd navigation) shifted
+            // which tab came back active.
+            val usableFpTab: (SavedTab) -> Boolean =
+                { it.url.startsWith("http") || it.url == HOME_URL }
+            val usableFp = savedFp.filter(usableFpTab)
             usableFp.forEach { st ->
                 fpTabs.add(
                     makeTab(
@@ -2255,7 +2293,8 @@ fun BrowserApp(
             }
             if (fpTabs.isNotEmpty()) {
                 activeFpTabId = fpTabs[
-                    savedFpActive.coerceIn(0, fpTabs.lastIndex)
+                    restoredActiveIndex(savedFp, savedFpActive, usableFpTab)
+                        .coerceIn(0, fpTabs.lastIndex)
                 ].id
             }
         }

@@ -51,7 +51,36 @@ package com.tuxunbrowse.android.engine
  */
 object FingerprintScript {
 
+    // Single-entry memo (v0.165.0 startup audit): the payload is
+    // a large template assembly, and the tab layer used to re-run
+    // it on the main thread at EVERY page start (syncFingerprint-
+    // Script compares the fresh payload against the registered
+    // one) plus at every tab creation. The assembly is a pure
+    // function of the resolved profile, so the last built payload
+    // is kept and handed back while the profile is unchanged —
+    // the same per-process caching GuardScript has had since
+    // v0.91.0. A profile switch misses once, rebuilds, and the
+    // bytes are exactly what an uncached build would produce.
+    @Volatile
+    private var cachedFor: ResolvedFingerprint? = null
+
+    @Volatile
+    private var cachedPayload: String? = null
+
     fun payload(resolved: ResolvedFingerprint): String {
+        cachedPayload?.let { if (cachedFor == resolved) return it }
+        return synchronized(this) {
+            cachedPayload?.let {
+                if (cachedFor == resolved) return it
+            }
+            val built = buildPayload(resolved)
+            cachedFor = resolved
+            cachedPayload = built
+            built
+        }
+    }
+
+    private fun buildPayload(resolved: ResolvedFingerprint): String {
         val p = resolved.profile
         val d = resolved.device
         val tz = resolved.timezone
