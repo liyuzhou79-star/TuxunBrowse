@@ -119,8 +119,10 @@ object FpProxyControl {
     fun clear() {
         if (!isSupported()) return
         try {
-            ProxyController.getInstance()
-                .clearProxyOverride(Runnable {})
+            ProxyController.getInstance().clearProxyOverride(
+                { runnable -> runnable.run() },
+                Runnable {}
+            )
         } catch (t: Throwable) {
             // Best-effort, like apply.
         }
