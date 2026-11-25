@@ -3425,6 +3425,21 @@ fun BrowserApp(
         // so a failure can offer the one-off http fallback.
         val target =
             if (httpsUpgrade) upgradeToHttps(url, store.httpsFirstEnabled) else url
+        if (fingerprintMode) {
+            // Same routing as openUrlInNewTab (v0.153.0): while
+            // the mode is on, the only callers that can reach this
+            // gate are the outside ones (VIEW intents and kin) —
+            // the mode's screens offer no bookmark/history path —
+            // and their links belong in the mode's own tab group.
+            val active = activeFpTab()
+            if (active != null && active.isHome) {
+                active.load(target)
+            } else {
+                newFpTab(target)
+            }
+            screen = Screen.BROWSER
+            return
+        }
         val existing = activeTab()
         var tab = existing ?: newTab(store.mainEngine, false, target)
         // A tab created for this address loads target on its own;
@@ -3483,6 +3498,22 @@ fun BrowserApp(
         // passes httpsUpgrade = true; see openUrl for the rule.
         val target =
             if (httpsUpgrade) upgradeToHttps(url, store.httpsFirstEnabled) else url
+        if (fingerprintMode) {
+            // An outside link arriving while fingerprint mode is
+            // on (v0.153.0) lands where the user actually is: the
+            // mode's own tab group, wearing the profile — into the
+            // home tab if that is what is showing, else a new
+            // fingerprint tab. Before this it opened a NORMAL tab
+            // behind the shell and the tap looked like a no-op.
+            val active = activeFpTab()
+            if (active != null && active.isHome) {
+                active.load(target)
+            } else {
+                newFpTab(target)
+            }
+            screen = Screen.BROWSER
+            return
+        }
         val tab = newTab(store.mainEngine, false, target)
         if (target != url) tab.httpsUpgraded = true
         screen = Screen.BROWSER
