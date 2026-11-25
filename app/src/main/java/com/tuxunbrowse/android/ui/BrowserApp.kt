@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.WindowInsets
@@ -4106,6 +4107,14 @@ fun BrowserApp(
                     onSaveCustomProfile = { store.addCustomFingerprint(it) },
                     onDeleteCustomProfile = {
                         store.removeCustomFingerprint(it)
+                    },
+                    isBookmarked = activeFpTab()?.let { t ->
+                        bookmarks.any { it.url == t.url }
+                    } ?: false,
+                    onToggleBookmark = {
+                        activeFpTab()?.let {
+                            toggleBookmarkForTab(it)
+                        }
                     }
                 )
             } else {
@@ -4369,7 +4378,8 @@ fun BrowserApp(
                                 store.saveBookmarks(bookmarks)
                             }
                         },
-                        onOpenAllBookmarks = { screen = Screen.BOOKMARKS }
+                        onOpenAllBookmarks = { screen = Screen.BOOKMARKS },
+                        onEnterFingerprint = { enterFingerprintMode() }
                     )
                 }
             )
@@ -5662,7 +5672,8 @@ private fun HomeContent(
     onOpenBookmark: (Bookmark) -> Unit,
     onDeleteBookmark: (Bookmark) -> Unit,
     onTogglePinBookmark: (Bookmark) -> Unit,
-    onOpenAllBookmarks: () -> Unit
+    onOpenAllBookmarks: () -> Unit,
+    onEnterFingerprint: () -> Unit = {}
 ) {
     var query by remember { mutableStateOf("") }
     var pendingDelete by remember { mutableStateOf<Bookmark?>(null) }
@@ -5940,9 +5951,19 @@ private fun HomeContent(
                             style = MaterialTheme.typography.headlineMedium,
                             color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
+                        // The positioning line (v0.187.0): the
+                        // home page says what this browser IS —
+                        // a purpose-built open-source Android
+                        // fingerprint browser — not just what it
+                        // does not have.
                         Text(
-                            "打开就是网页——没有信息流，没有推送，没有广告。",
+                            "专门的开源 Android 指纹浏览器",
                             style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                        Text(
+                            "双内核 · GPLv3 开源 · 没有信息流，没有推送，没有广告。",
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
                     }
@@ -6115,6 +6136,69 @@ private fun HomeContent(
                 }
             )
         }
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            // Fingerprint mode entry card (v0.187.0): the
+            // product's signature feature gets a first-screen
+            // seat on its own home page — one tap enters the
+            // mode through the same path as the engine-switch
+            // dialog's fingerprint option.
+            ElevatedCard(
+                onClick = onEnterFingerprint,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                ListItem(
+                    headlineContent = { Text("指纹模式") },
+                    supportingContent = {
+                        Text(
+                            "四地区档案，参数互相自洽；带 IP 自查，" +
+                                "看看出口对不对得上。"
+                        )
+                    },
+                    leadingContent = {
+                        Icon(
+                            Icons.Filled.Fingerprint,
+                            contentDescription = null
+                        )
+                    },
+                    trailingContent = {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowForward,
+                            contentDescription = "进入指纹模式"
+                        )
+                    }
+                )
+            }
+        }
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            // Open-source entry (v0.187.0): the source lives on
+            // GitHub; the row opens the repository in this tab
+            // through the home page's own open path.
+            Card(modifier = Modifier.fillMaxWidth()) {
+                ListItem(
+                    headlineContent = { Text("GitHub 开源仓库") },
+                    supportingContent = {
+                        Text("github.com/liyuzhou79-star/TuxunBrowse")
+                    },
+                    leadingContent = {
+                        Icon(Icons.Filled.Code, contentDescription = null)
+                    },
+                    trailingContent = {
+                        Icon(
+                            Icons.Filled.OpenInNew,
+                            contentDescription = null
+                        )
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            onSearchUrl(
+                                "https://github.com/liyuzhou79-star/" +
+                                    "TuxunBrowse"
+                            )
+                        }
+                )
+            }
+        }
         // The bookmarks block only exists when there really are
         // bookmarks: no header, no grey empty-state card with a long
         // explanation. History is not shown on the home page at all —
@@ -6183,7 +6267,77 @@ private fun EnginePickerScreen(
 ) {
     var selected by remember { mutableStateOf(initial) }
     Scaffold(
-        topBar = { TopAppBar(title = { Text(title) }) }
+        bottomBar = {
+            // Bottom bar (v0.187.0, three-shell unification):
+            // the same 56dp surfaceContainer bar with evenly
+            // spread 48dp targets as the normal shell; the
+            // fingerprint set is the mode's own high-frequency
+            // actions — back / forward / reload / profile.
+            Surface(
+                modifier = Modifier
+                    .windowInsetsPadding(
+                        WindowInsets.navigationBars.only(
+                            WindowInsetsSides.Bottom
+                        )
+                    )
+                    .height(56.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                tonalElevation = 3.dp
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement =
+                        Arrangement.SpaceAround,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = { activeTab?.goBack() },
+                        enabled = activeTab?.canGoBack == true
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "后退"
+                        )
+                    }
+                    IconButton(
+                        onClick = { activeTab?.goForward() },
+                        enabled = activeTab?.canGoForward == true
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowForward,
+                            contentDescription = "前进"
+                        )
+                    }
+                    IconButton(onClick = {
+                        if (activeTab?.loading == true) {
+                            activeTab.stopLoading()
+                        } else {
+                            activeTab?.reload()
+                        }
+                    }) {
+                        Icon(
+                            if (activeTab?.loading == true) {
+                                Icons.Filled.Close
+                            } else {
+                                Icons.Filled.Refresh
+                            },
+                            contentDescription =
+                                if (activeTab?.loading == true) {
+                                    "停止加载"
+                                } else {
+                                    "刷新"
+                                }
+                        )
+                    }
+                    IconButton(onClick = { showPicker = true }) {
+                        Icon(
+                            Icons.Filled.Fingerprint,
+                            contentDescription = "切换档案"
+                        )
+                    }
+                }
+            }
+        }
     ) { padding ->
         LazyColumn(
             modifier = Modifier
@@ -7090,12 +7244,31 @@ private fun BrowserScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .height(56.dp)
                     .background(MaterialTheme.colorScheme.surface)
                     .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(horizontal = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(0.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // Unified toolbar row (v0.187.0): home, pill,
+                // engine switch, new tab, tab count, menu — the
+                // same order and the same numbers in every shell
+                // (see ToolbarSpec). The row's height is pinned
+                // at 56dp and every child is a 48dp target, so
+                // the pill and the buttons share one centre line
+                // by construction: before this version the row
+                // took its height from the pill's own intrinsic
+                // measurement while the buttons centred on
+                // themselves, and on the real device the pill
+                // read as sunk below the button line (user's
+                // screenshot, 2026-11-25 19:50).
+                IconButton(onClick = onGoHome) {
+                    Icon(
+                        Icons.Filled.Home,
+                        contentDescription = "主页"
+                    )
+                }
                 TextField(
                     value = addressValue,
                     onValueChange = { addressValue = it },
@@ -7208,6 +7381,92 @@ private fun BrowserScreen(
                             Icons.Filled.SwapHoriz,
                             contentDescription = "切换内核（现在是" +
                                 if (activeTab.engine == Engine.GECKO) "火狐）" else "系统 WebView）"
+                        )
+                    }
+                }
+                Box {
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .combinedClickable(
+                                onClick = onNewTab,
+                                onLongClick = {
+                                    showNewTabMenu = true
+                                }
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Filled.Add,
+                            contentDescription = "新建标签页"
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = showNewTabMenu,
+                        onDismissRequest = { showNewTabMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("新建标签页") },
+                            leadingIcon = {
+                                Icon(Icons.Filled.Add, contentDescription = null)
+                            },
+                            onClick = { showNewTabMenu = false; onNewTab() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("用火狐新建") },
+                            leadingIcon = {
+                                Icon(Icons.Filled.Language, contentDescription = null)
+                            },
+                            trailingIcon = if (mainEngine == Engine.GECKO) {
+                                {
+                                    Text(
+                                        "默认",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            } else {
+                                null
+                            },
+                            onClick = {
+                                showNewTabMenu = false
+                                onNewTabWithEngine(Engine.GECKO)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("用系统 WebView 新建") },
+                            leadingIcon = {
+                                Icon(Icons.Filled.Language, contentDescription = null)
+                            },
+                            trailingIcon = if (mainEngine == Engine.WEBVIEW) {
+                                {
+                                    Text(
+                                        "默认",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            } else {
+                                null
+                            },
+                            onClick = {
+                                showNewTabMenu = false
+                                onNewTabWithEngine(Engine.WEBVIEW)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("新建无痕标签页") },
+                            leadingIcon = {
+                                Icon(Icons.Filled.VisibilityOff, contentDescription = null)
+                            },
+                            onClick = {
+                                showNewTabMenu = false
+                                // NOT a shortcut around the
+                                // picker: the incognito
+                                // engine is still chosen in
+                                // the usual dialog (v0.2.0).
+                                showIncognitoPicker = true
+                            }
                         )
                     }
                 }
@@ -7484,16 +7743,15 @@ private fun BrowserScreen(
         },
         bottomBar = {
             if (!chromeHidden) {
-            // Chrome-style bottom toolbar (v0.180.0): five
-            // icon-only buttons spread evenly, no labels — the
-            // composition mirrors the current Chrome bottom
-            // bar's even icon spacing. Back / forward lead it
-            // (they left the top row in the same pass; both
-            // keep the canGo tint rule and 48dp targets), then
-            // new tab (its long-press menu rides along
-            // unchanged), incognito and settings — the two
-            // one-tap entries this bar already carried. The
-            // tab switcher moved to the top row's count button.
+            // Bottom toolbar (v0.180.0 shape, v0.187.0
+            // membership): icon-only buttons spread evenly on
+            // the same 56dp surface in every shell. Back /
+            // forward lead it (both keep the canGo tint rule
+            // and 48dp targets), then incognito and settings.
+            // New tab moved UP into the unified top row in
+            // v0.187.0 (its long-press menu rode along), and
+            // the tab switcher sits in the top row's count
+            // button — nothing is duplicated between the bars.
             // Container colour/elevation match the old
             // NavigationBar's (surfaceContainer, 3dp), and the
             // navigation-bar inset is padded outside the 56dp
@@ -7574,92 +7832,6 @@ private fun BrowserScreen(
                             }
                         )
                     }
-                    Box {
-                        Box(
-                            modifier = Modifier
-                                .size(48.dp)
-                                .combinedClickable(
-                                    onClick = onNewTab,
-                                    onLongClick = {
-                                        showNewTabMenu = true
-                                    }
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                Icons.Filled.Add,
-                                contentDescription = "新建标签页"
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = showNewTabMenu,
-                            onDismissRequest = { showNewTabMenu = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("新建标签页") },
-                                leadingIcon = {
-                                    Icon(Icons.Filled.Add, contentDescription = null)
-                                },
-                                onClick = { showNewTabMenu = false; onNewTab() }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("用火狐新建") },
-                                leadingIcon = {
-                                    Icon(Icons.Filled.Language, contentDescription = null)
-                                },
-                                trailingIcon = if (mainEngine == Engine.GECKO) {
-                                    {
-                                        Text(
-                                            "默认",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                } else {
-                                    null
-                                },
-                                onClick = {
-                                    showNewTabMenu = false
-                                    onNewTabWithEngine(Engine.GECKO)
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("用系统 WebView 新建") },
-                                leadingIcon = {
-                                    Icon(Icons.Filled.Language, contentDescription = null)
-                                },
-                                trailingIcon = if (mainEngine == Engine.WEBVIEW) {
-                                    {
-                                        Text(
-                                            "默认",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                } else {
-                                    null
-                                },
-                                onClick = {
-                                    showNewTabMenu = false
-                                    onNewTabWithEngine(Engine.WEBVIEW)
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("新建无痕标签页") },
-                                leadingIcon = {
-                                    Icon(Icons.Filled.VisibilityOff, contentDescription = null)
-                                },
-                                onClick = {
-                                    showNewTabMenu = false
-                                    // NOT a shortcut around the
-                                    // picker: the incognito
-                                    // engine is still chosen in
-                                    // the usual dialog (v0.2.0).
-                                    showIncognitoPicker = true
-                                }
-                            )
-                        }
-                    }
                     IconButton(
                         onClick = { showIncognitoPicker = true }
                     ) {
@@ -7684,6 +7856,38 @@ private fun BrowserScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
+            // Identity strip (v0.147.0's mode tint, kept as
+            // the mode's allowed difference in the unified
+            // layout): the tertiary colour lives on this slim
+            // strip now, so the toolbar row below can share
+            // the normal shell's exact geometry and surface.
+            Surface(
+                color = MaterialTheme.colorScheme.tertiaryContainer,
+                contentColor =
+                    MaterialTheme.colorScheme.onTertiaryContainer
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .windowInsetsPadding(WindowInsets.statusBars)
+                        .height(48.dp)
+                        .padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Fingerprint,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        "指纹模式",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                    TextButton(onClick = onExit) { Text("退出") }
+                }
+            }
             if (!chromeHidden) {
             // Loading progress bar (v0.171.0): the read of the tab's
             // progress state lives inside TabLoadProgressBar's own
@@ -13019,7 +13223,9 @@ private fun FingerprintShell(
     onSaveCustomProfile: (com.tuxunbrowse.android.engine.CustomFingerprint) -> Unit =
         {},
     onDeleteCustomProfile: (com.tuxunbrowse.android.engine.CustomFingerprint) -> Unit =
-        {}
+        {},
+    isBookmarked: Boolean = false,
+    onToggleBookmark: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val profile = resolved.profile
@@ -13033,6 +13239,7 @@ private fun FingerprintShell(
     }
     var showTabs by remember { mutableStateOf(false) }
     var showPicker by remember { mutableStateOf(false) }
+    var showFpMenu by remember { mutableStateOf(false) }
     var tzExpanded by remember { mutableStateOf(false) }
     var addressText by remember { mutableStateOf("") }
     var addressFocused by remember { mutableStateOf(false) }
@@ -13097,67 +13304,122 @@ private fun FingerprintShell(
                 .fillMaxSize()
                 .padding(padding)
         ) {
+            // Unified toolbar row (v0.187.0): the same
+            // order and numbers as the normal shell — home,
+            // pill, engine switch, new tab, tab count, menu —
+            // on a 56dp row with 48dp targets and the pill at
+            // weight(1f). The mode's allowed differences: the
+            // engine-switch seat is present but greyed (the
+            // mode is WebView-only; tapping it explains the
+            // conflict instead of switching), and the pill's
+            // leading icon is display-only (the site-info
+            // sheet is a normal-shell surface). Back / forward
+            // / reload live on the bottom bar below and in the
+            // menu, the same seats as the normal shell.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                    .height(56.dp)
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(horizontal = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(0.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(
-                    onClick = { activeTab?.goBack() },
-                    enabled = activeTab?.canGoBack == true
+                    onClick = { activeTab?.load(HOME_URL) }
                 ) {
                     Icon(
-                        Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "后退"
+                        Icons.Filled.Home,
+                        contentDescription = "指纹模式主页"
                     )
                 }
-                IconButton(
-                    onClick = { activeTab?.goForward() },
-                    enabled = activeTab?.canGoForward == true
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowForward,
-                        contentDescription = "前进"
-                    )
-                }
-                IconButton(onClick = {
-                    if (activeTab?.loading == true) {
-                        activeTab.stopLoading()
-                    } else {
-                        activeTab?.reload()
-                    }
-                }) {
-                    Icon(
-                        if (activeTab?.loading == true) {
-                            Icons.Filled.Close
-                        } else {
-                            Icons.Filled.Refresh
-                        },
-                        contentDescription =
-                            if (activeTab?.loading == true) {
-                                "停止加载"
-                            } else {
-                                "刷新"
-                            }
-                    )
-                }
-                OutlinedTextField(
+                TextField(
                     value = addressText,
                     onValueChange = { addressText = it },
                     modifier = Modifier
                         .weight(1f)
+                        .height(48.dp)
                         .onFocusChanged {
                             addressFocused = it.isFocused
                         },
                     singleLine = true,
-                    placeholder = { Text("搜索或输入网址") },
+                    shape = RoundedCornerShape(percent = 50),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor =
+                            MaterialTheme.colorScheme
+                                .surfaceContainerHigh,
+                        unfocusedContainerColor =
+                            MaterialTheme.colorScheme
+                                .surfaceContainerHigh,
+                        focusedIndicatorColor =
+                            androidx.compose.ui.graphics.Color
+                                .Transparent,
+                        unfocusedIndicatorColor =
+                            androidx.compose.ui.graphics.Color
+                                .Transparent,
+                        disabledIndicatorColor =
+                            androidx.compose.ui.graphics.Color
+                                .Transparent
+                    ),
+                    placeholder = {
+                        Text(
+                            "搜索或输入网址",
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    },
+                    leadingIcon = {
+                        Box(
+                            modifier = Modifier.size(40.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            when {
+                                activeTab == null ||
+                                    activeTab.isHome ->
+                                    Icon(
+                                        Icons.Filled.Search,
+                                        contentDescription = null
+                                    )
+                                activeTab.url.startsWith(
+                                    "https://"
+                                ) ->
+                                    Icon(
+                                        Icons.Filled.Lock,
+                                        contentDescription = null
+                                    )
+                                else ->
+                                    Icon(
+                                        Icons.Filled.Warning,
+                                        contentDescription = null
+                                    )
+                            }
+                        }
+                    },
+                    trailingIcon = {
+                        IconButton(
+                            onClick = onToggleBookmark,
+                            modifier = Modifier
+                                .expandedTouchTarget(40.dp, 48.dp)
+                        ) {
+                            Icon(
+                                if (isBookmarked) {
+                                    Icons.Filled.Star
+                                } else {
+                                    Icons.Filled.StarBorder
+                                },
+                                contentDescription =
+                                    if (isBookmarked) {
+                                        "已加入书签，点按取消书签"
+                                    } else {
+                                        "加入书签"
+                                    }
+                            )
+                        }
+                    },
                     // Same input spec as the normal shell's
                     // address bar (v0.138.0): a URL keyboard with
-                    // autocorrect off — the fingerprint shell was
-                    // built later and missed that audit, so its
-                    // field still let the keyboard "correct" a
-                    // domain into a dictionary word (v0.164.0).
+                    // autocorrect off, so the IME cannot
+                    // "correct" a domain into a dictionary word.
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Uri,
                         autoCorrectEnabled = false,
@@ -13167,20 +13429,154 @@ private fun FingerprintShell(
                         onGo = { submitAddress() }
                     )
                 )
-                BadgedBox(badge = {
-                    if (tabs.size > 1) {
-                        Badge { Text(tabs.size.toString()) }
-                    }
+                // Engine switch, greyed but tappable
+                // (v0.187.0, the fingerprint-conflict rule):
+                // the seat stays in the unified row, the action
+                // does not run — tapping explains that
+                // switching engines would break the profile's
+                // disguise and could leak the fingerprint.
+                IconButton(onClick = {
+                    android.widget.Toast.makeText(
+                        context,
+                        "与指纹模式冲突：指纹模式只用系统 WebView，" +
+                            "切换内核会让伪装失效，可能导致指纹泄漏",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
                 }) {
-                    IconButton(onClick = { showTabs = true }) {
-                        Icon(
-                            Icons.Filled.Tab,
-                            contentDescription = "标签页"
+                    Icon(
+                        Icons.Filled.SwapHoriz,
+                        contentDescription =
+                            "切换内核（指纹模式下不可用）",
+                        tint = MaterialTheme.colorScheme.onSurface
+                            .copy(alpha = 0.38f)
+                    )
+                }
+                IconButton(onClick = onNewTab) {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = "新建标签页"
+                    )
+                }
+                IconButton(
+                    onClick = { showTabs = true },
+                    modifier = Modifier.semantics {
+                        contentDescription =
+                            "标签页，共 ${tabs.size} 个，点按打开标签页列表"
+                    }
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(24.dp)
+                            .border(
+                                2.dp,
+                                MaterialTheme.colorScheme.onSurface,
+                                RoundedCornerShape(6.dp)
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "${tabs.size}",
+                            style = MaterialTheme.typography
+                                .labelMedium,
+                            maxLines = 1
                         )
                     }
                 }
-                IconButton(onClick = onNewTab) {
-                    Icon(Icons.Filled.Add, contentDescription = "新建标签页")
+                Box {
+                    IconButton(onClick = { showFpMenu = true }) {
+                        Icon(
+                            Icons.Filled.MoreVert,
+                            contentDescription = "菜单"
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = showFpMenu,
+                        onDismissRequest = { showFpMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("前进") },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.AutoMirrored.Filled
+                                        .ArrowForward,
+                                    contentDescription = null
+                                )
+                            },
+                            enabled = activeTab?.canGoForward == true,
+                            onClick = {
+                                showFpMenu = false
+                                activeTab?.goForward()
+                            }
+                        )
+                        if (activeTab?.loading == true) {
+                            DropdownMenuItem(
+                                text = { Text("停止加载") },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Filled.Close,
+                                        contentDescription = null
+                                    )
+                                },
+                                onClick = {
+                                    showFpMenu = false
+                                    activeTab?.stopLoading()
+                                }
+                            )
+                        } else {
+                            DropdownMenuItem(
+                                text = { Text("重新加载") },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Filled.Refresh,
+                                        contentDescription = null
+                                    )
+                                },
+                                onClick = {
+                                    showFpMenu = false
+                                    activeTab?.reload()
+                                }
+                            )
+                        }
+                        DropdownMenuItem(
+                            text = { Text("新建标签页") },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Filled.Add,
+                                    contentDescription = null
+                                )
+                            },
+                            onClick = {
+                                showFpMenu = false
+                                onNewTab()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("切换档案") },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Filled.Fingerprint,
+                                    contentDescription = null
+                                )
+                            },
+                            onClick = {
+                                showFpMenu = false
+                                showPicker = true
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("退出指纹模式") },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = null
+                                )
+                            },
+                            onClick = {
+                                showFpMenu = false
+                                onExit()
+                            }
+                        )
+                    }
                 }
             }
             // The always-on profile strip (v0.147.0): region,
