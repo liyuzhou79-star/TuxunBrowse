@@ -3545,7 +3545,7 @@ fun saveGeckoDownload(
             Toast.makeText(
                 context,
                 when {
-                    ok -> "已下载：$savedName（在系统下载文件夹）"
+                    ok -> "已下载：$savedName（在下载文件夹）"
                     wasCancelled -> "已取消下载：$fileName"
                     else -> "下载失败：$fileName"
                 },

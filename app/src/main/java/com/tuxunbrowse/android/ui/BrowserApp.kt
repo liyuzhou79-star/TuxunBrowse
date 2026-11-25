@@ -856,7 +856,7 @@ fun BrowserApp(
         if (!url.startsWith("http://") && !url.startsWith("https://")) {
             android.widget.Toast.makeText(
                 context,
-                "这个下载链接打不开：只支持 http 或 https 开头的网址",
+                "这个下载链接打不开：只支持 http/https 开头的网址",
                 android.widget.Toast.LENGTH_LONG
             ).show()
             return
@@ -873,7 +873,7 @@ fun BrowserApp(
             {
                 android.widget.Toast.makeText(
                     context,
-                    "无痕提醒：下载记录会留在系统下载管理里，关掉无痕标签也不会自动删掉",
+                    "无痕提醒：下载记录会留在系统下载管理里，关掉无痕标签也不删",
                     android.widget.Toast.LENGTH_LONG
                 ).show()
                 systemFallback()
@@ -918,7 +918,7 @@ fun BrowserApp(
             {
                 android.widget.Toast.makeText(
                     context,
-                    "无痕提醒：下载记录会留在系统下载管理里，关掉无痕标签也不会自动删掉",
+                    "无痕提醒：下载记录会留在系统下载管理里，关掉无痕标签也不删",
                     android.widget.Toast.LENGTH_LONG
                 ).show()
                 systemFallback(clean)
@@ -2441,7 +2441,7 @@ fun BrowserApp(
         }
         return "书签 +$addedBookmarks 条、历史 +$addedHistory 条" +
             (if (addedCompat > 0) "、兼容名单 +$addedCompat 个" else "") +
-            (if (addedDesktop > 0) "、桌面模式站点 +$addedDesktop 个" else "") +
+            (if (addedDesktop > 0) "、桌面版站点 +$addedDesktop 个" else "") +
             (if (addedFolders > 0) "、书签文件夹 +$addedFolders 个" else "") +
             (if (restoredBlocked) "、拦截统计已按备份恢复" else "")
     }
@@ -2503,8 +2503,8 @@ fun BrowserApp(
                                 ""
                             } +
                             if (backupToConfirm.desktopSites.isNotEmpty()) {
-                                "\n\n备份里的桌面模式站点 ${backupToConfirm.desktopSites.size} 个网站" +
-                                    "也会合并进来，现有的桌面模式站点不会被删掉。"
+                                "\n\n备份里的桌面版站点 ${backupToConfirm.desktopSites.size} 个网站" +
+                                    "也会合并进来，现有的桌面版站点不会被删掉。"
                             } else {
                                 ""
                             } +
@@ -3269,7 +3269,7 @@ fun BrowserApp(
         if (!isAllowedPageUrl(url)) {
             android.widget.Toast.makeText(
                 context,
-                "这个链接打不开：只支持打开 http 或 https 开头的网址",
+                "这个链接打不开：只支持 http/https 开头的网址",
                 android.widget.Toast.LENGTH_LONG
             ).show()
             return
@@ -3332,7 +3332,7 @@ fun BrowserApp(
         if (!isAllowedPageUrl(url)) {
             android.widget.Toast.makeText(
                 context,
-                "这个链接打不开：只支持打开 http 或 https 开头的网址",
+                "这个链接打不开：只支持 http/https 开头的网址",
                 android.widget.Toast.LENGTH_LONG
             ).show()
             return
@@ -3357,7 +3357,7 @@ fun BrowserApp(
             // words become a search and a bare host becomes a site.
             hasBlockedPageScheme(text) -> android.widget.Toast.makeText(
                 context,
-                "这个链接打不开：只支持打开 http 或 https 开头的网址",
+                "这个链接打不开：只支持 http/https 开头的网址",
                 android.widget.Toast.LENGTH_LONG
             ).show()
             else -> openUrlInNewTab(
@@ -3543,7 +3543,7 @@ fun BrowserApp(
                     if (hasBlockedPageScheme(text)) {
                         android.widget.Toast.makeText(
                             context,
-                            "这个链接打不开：只支持打开 http 或 https 开头的网址",
+                            "这个链接打不开：只支持 http/https 开头的网址",
                             android.widget.Toast.LENGTH_LONG
                         ).show()
                     } else {
@@ -3663,7 +3663,7 @@ fun BrowserApp(
                         ).show()
                         tab.engine == Engine.GECKO -> android.widget.Toast.makeText(
                             context,
-                            "阅读模式暂时只支持系统 WebView 标签，火狐标签可以先切换内核再开",
+                            "阅读模式只支持系统 WebView，火狐标签请先切换内核再开",
                             android.widget.Toast.LENGTH_LONG
                         ).show()
                         tab.readerActive -> tab.exitReaderMode()
@@ -3689,7 +3689,7 @@ fun BrowserApp(
                         ).show()
                         tab.engine == Engine.GECKO -> android.widget.Toast.makeText(
                             context,
-                            "火狐标签暂时不能打印，可以先切换到系统 WebView 再打印或存为 PDF",
+                            "火狐标签不能打印，请切换到系统 WebView 再试",
                             android.widget.Toast.LENGTH_LONG
                         ).show()
                         !tab.printPage(context) -> android.widget.Toast.makeText(
@@ -3707,7 +3707,7 @@ fun BrowserApp(
                         ).show()
                         tab.engine == Engine.GECKO -> android.widget.Toast.makeText(
                             context,
-                            "火狐标签暂不支持嗅探，请切换到系统 WebView 打开本页再试",
+                            "火狐标签不支持嗅探，请切换到系统 WebView 再试",
                             android.widget.Toast.LENGTH_LONG
                         ).show()
                         else -> {
@@ -3725,7 +3725,7 @@ fun BrowserApp(
                         ).show()
                         tab.engine == Engine.GECKO -> android.widget.Toast.makeText(
                             context,
-                            "火狐标签暂不支持网页截图，请切换到系统 WebView 打开本页再试",
+                            "火狐标签不支持网页截图，请切换到系统 WebView 再试",
                             android.widget.Toast.LENGTH_LONG
                         ).show()
                         else -> screenshotTab = tab
@@ -4292,7 +4292,7 @@ fun BrowserApp(
                                             if (ctxMenu.incognito) {
                                                 android.widget.Toast.makeText(
                                                     context,
-                                                    "无痕提醒：下载记录会留在系统下载管理里，关掉无痕标签也不会自动删掉",
+                                                    "无痕提醒：下载记录会留在系统下载管理里，关掉无痕标签也不删",
                                                     android.widget.Toast
                                                         .LENGTH_LONG
                                                 ).show()
@@ -5094,7 +5094,7 @@ private fun HomeContent(
         if (hasBlockedPageScheme(text)) {
             android.widget.Toast.makeText(
                 homeContext,
-                "这个链接打不开：只支持打开 http 或 https 开头的网址",
+                "这个链接打不开：只支持 http/https 开头的网址",
                 android.widget.Toast.LENGTH_LONG
             ).show()
             return false
@@ -8346,7 +8346,7 @@ private fun BookmarksScreen(
                 // bookmarks (v0.31.0, same rule as openUrl).
                 android.widget.Toast.makeText(
                     context,
-                    "这个链接打不开：只支持打开 http 或 https 开头的网址",
+                    "这个链接打不开：只支持 http/https 开头的网址",
                     android.widget.Toast.LENGTH_LONG
                 ).show()
             } else {
@@ -11005,7 +11005,7 @@ private fun DownloadsScreen(
                 item {
                     EmptyState(
                         Icons.Filled.Search,
-                        "没有找到包含『${downloadQuery.trim()}』的下载"
+                        "没有找到包含「${downloadQuery.trim()}」的下载"
                     )
                 }
             } else if (entries.isNotEmpty() && visibleEntries.isEmpty()) {
@@ -11901,7 +11901,7 @@ private fun SettingsScreen(
                             trailingContent = {
                                 Icon(
                                     Icons.Filled.ChevronRight,
-                                    contentDescription = "进入"
+                                    contentDescription = null
                                 )
                             }
                         )
@@ -12029,7 +12029,7 @@ private fun SettingsScreen(
                 }
             }
             item {
-                Text("桌面模式站点", style = MaterialTheme.typography.titleMedium)
+                Text("桌面版站点", style = MaterialTheme.typography.titleMedium)
                 Text(
                     "打开过「桌面版网站」的网站记在这里，下次打开自动用桌面版；已打开的标签不受名单变化影响。",
                     style = MaterialTheme.typography.bodyMedium
@@ -12051,7 +12051,7 @@ private fun SettingsScreen(
                                 onRemoveDesktopSite(site)
                                 desktopList = desktopList - site
                             }) {
-                                Icon(Icons.Filled.Delete, contentDescription = "删除桌面模式记忆")
+                                Icon(Icons.Filled.Delete, contentDescription = "删除桌面版记忆")
                             }
                         }
                     )
@@ -12059,7 +12059,7 @@ private fun SettingsScreen(
                 }
                 item {
                     TextButton(onClick = { showClearDesktopConfirm = true }) {
-                        Text("清空全部桌面模式站点")
+                        Text("清空全部桌面版站点")
                     }
                 }
             }
@@ -12500,7 +12500,7 @@ private fun SettingsScreen(
                             supportingContent = {
                                 Text(
                                     "通路不同：系统 WebView 的下载按设置里的下载方式来；" +
-                                        "火狐标签的下载由浏览器直接保存到系统下载文件夹"
+                                        "火狐标签的下载由浏览器直接保存到下载文件夹"
                                 )
                             }
                         )
@@ -13042,7 +13042,7 @@ private fun SettingsScreen(
     if (showClearDesktopConfirm) {
         AlertDialog(
             onDismissRequest = { showClearDesktopConfirm = false },
-            title = { Text("清空桌面模式站点？") },
+            title = { Text("清空桌面版站点？") },
             text = {
                 Text(
                     "会把记住的 ${desktopList.size} 个网站全部去掉，" +
