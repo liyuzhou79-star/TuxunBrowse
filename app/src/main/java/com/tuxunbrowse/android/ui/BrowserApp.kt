@@ -20,6 +20,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12036,9 +12037,6 @@ private fun ClearDataScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
-@Composable
-
 /**
  * Fingerprint mode's own shell (v0.144.0): a deliberately smaller
  * browser chrome than the normal one — a top bar that says
@@ -12508,6 +12506,8 @@ private fun FingerprintHome(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@Composable
 private fun SettingsScreen(
     store: Store,
     refreshTick: Int = 0,
