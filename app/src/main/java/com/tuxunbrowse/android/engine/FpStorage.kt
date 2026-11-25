@@ -213,6 +213,30 @@ object FpStorage {
     }
 
     /**
+     * The cookie header a fingerprint tab's system download
+     * may carry (v0.203.0), as a three-way answer the caller
+     * passes straight to startSystemDownload:
+     * - Multi-profile UNSUPPORTED: null. The tab itself lives
+     *   on the shared default jar, so the downloader's own
+     *   fallback to that jar reads exactly the session the tab
+     *   has — consistent, because there is only one jar.
+     * - Supported: the combination jar's cookie, or "" when
+     *   that jar has none for the URL. The empty string is an
+     *   explicit "no cookie": startSystemDownload only falls
+     *   back to the default jar on a null header, so a
+     *   fingerprint download can never borrow the NORMAL
+     *   persona's session just because its own jar happens to
+     *   have nothing for the URL (the pre-0.203 behaviour —
+     *   a cross-persona leak through the download path).
+     * Failing closed also covers a profile read error: no
+     * cookie beats the wrong persona's cookie.
+     */
+    fun downloadCookie(url: String, name: String): String? {
+        if (!isSupported()) return null
+        return cookieFor(url, name) ?: ""
+    }
+
+    /**
      * Wipe the cookies and site storage of EVERY storage
      * profile fingerprint mode owns (legacy jar included).
      * The settings clear-data flow calls this alongside the

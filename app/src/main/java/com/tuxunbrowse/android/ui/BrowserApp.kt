@@ -1041,6 +1041,11 @@ fun BrowserApp(
     // transition. When it fires, if the ACTIVE tab is sitting on the
     // app's load-error page, that tab reloads itself once — the user
     // no longer has to notice the network is back and tap retry.
+    // "Active" means the group on screen: since v0.203.0 the shot
+    // also reaches the fingerprint group's active tab while the
+    // fingerprint shell is up (before that the fingerprint shell,
+    // composed inside this same composition, was silently outside
+    // this effect's reach).
     // The same error state (tab id + failed URL) never auto-retries
     // twice: [autoReloadUsedKey] remembers the one shot, and it is
     // reset when the user reloads manually (see the onReloadPage
@@ -1094,7 +1099,21 @@ fun BrowserApp(
     }
     LaunchedEffect(networkRestoredTick) {
         if (networkRestoredTick == 0) return@LaunchedEffect
-        val tab = activeTab() ?: return@LaunchedEffect
+        // The shot goes to the group actually on screen (v0.203.0):
+        // until this version the effect only ever looked at the
+        // normal group, so a fingerprint tab sitting on its error
+        // page when the network came back never got the automatic
+        // reload the normal shell has had since v0.70.0. The
+        // fingerprint active tab is read straight from the group
+        // state here — activeFpTab() is declared further down and
+        // Kotlin local functions cannot be forward-referenced from
+        // a lambda. Tab ids come from one shared counter, so the
+        // one-shot key below cannot collide across groups.
+        val tab = (if (fingerprintMode) {
+            fpTabs.firstOrNull { it.id == activeFpTabId }
+        } else {
+            activeTab()
+        }) ?: return@LaunchedEffect
         val error = tab.loadError ?: return@LaunchedEffect
         val key = "${tab.id}|${error.failedUrl}"
         if (autoReloadUsedKey == key) return@LaunchedEffect
@@ -1510,7 +1529,7 @@ fun BrowserApp(
                         referer = created?.url,
                         cookieHeader = if (fingerprint) {
                             com.tuxunbrowse.android.engine
-                                .FpStorage.cookieFor(
+                                .FpStorage.downloadCookie(
                                     dlUrl,
                                     store.fingerprintStorageName()
                                 )
@@ -1538,7 +1557,7 @@ fun BrowserApp(
                         referer = created?.url,
                         cookieHeader = if (fingerprint) {
                             com.tuxunbrowse.android.engine
-                                .FpStorage.cookieFor(
+                                .FpStorage.downloadCookie(
                                     target,
                                     store.fingerprintStorageName()
                                 )
@@ -4235,6 +4254,13 @@ fun BrowserApp(
                         applyFingerprintProtection(it)
                     },
                     proxyConfig = store.fpProxy,
+                    onManualReload = {
+                        // Same reset the normal shell's reload
+                        // paths perform (v0.203.0): a manual retry
+                        // inside the fingerprint shell re-arms the
+                        // network-restore auto-reload shot.
+                        autoReloadUsedKey = null
+                    },
                     onProxyChange = { config ->
                         store.fpProxy = config
                         // The mode is open when this fires, so the
@@ -13515,7 +13541,11 @@ private fun FingerprintShell(
     proxyConfig: com.tuxunbrowse.android.engine.FpProxyConfig =
         com.tuxunbrowse.android.engine.FpProxyConfig(),
     onProxyChange: (com.tuxunbrowse.android.engine.FpProxyConfig) -> Unit =
-        {}
+        {},
+    // A manual reload anywhere in this shell (v0.203.0): the
+    // owner resets its network-restore auto-reload shot, the
+    // same contract the normal shell's reload paths honour.
+    onManualReload: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val shellScope = rememberCoroutineScope()
@@ -13766,6 +13796,7 @@ private fun FingerprintShell(
                         if (activeTab?.loading == true) {
                             activeTab.stopLoading()
                         } else {
+                            onManualReload()
                             activeTab?.reload()
                         }
                     }) {
@@ -14108,7 +14139,10 @@ private fun FingerprintShell(
                     ) {
                         LoadErrorContent(
                             error = tab.loadError!!,
-                            onReload = { tab.reload() },
+                            onReload = {
+                                onManualReload()
+                                tab.reload()
+                            },
                             onGoHome = { tab.load(HOME_URL) },
                             switchUnavailableNote =
                                 "指纹模式只用系统 WebView，不能换火狐内核打开；" +
@@ -14160,7 +14194,10 @@ private fun FingerprintShell(
                     ) {
                         PullToRefreshBox(
                             isRefreshing = fpRefreshActive,
-                            onRefresh = { tab.reload() },
+                            onRefresh = {
+                                onManualReload()
+                                tab.reload()
+                            },
                             modifier = Modifier.fillMaxSize()
                         ) {
                             key(tab.id) {
@@ -14252,7 +14289,11 @@ private fun FingerprintShell(
                 }
             } else {
                 FilledTonalIconButton(
-                    onClick = { showFpMenu = false; activeTab?.reload() }
+                    onClick = {
+                        showFpMenu = false
+                        onManualReload()
+                        activeTab?.reload()
+                    }
                 ) {
                     Icon(
                         Icons.Filled.Refresh,
@@ -15896,15 +15937,35 @@ private fun FingerprintHome(
                     style = MaterialTheme.typography.titleMedium
                 )
                 Text("当前：${proxyConfig.summary}")
-                Text(
-                    "代理按当前的「地区＋机型」组合保存，切换组合会换用" +
-                        "那个组合保存的代理。打开指纹模式期间生效，退出模式自动断开。" +
-                        "这期间普通模式的系统 WebView 标签也会走这个代理，" +
-                        "火狐标签不受影响。系统接口不支持带账号密码的代理。" +
-                        "设好后用上面的出口 IP 自查确认出口对不对。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                // The effectiveness sentence follows the live
+                // capability (v0.203.0), the same discipline as
+                // the storage sentence above: FpProxyControl
+                // silently no-ops where the host WebView lacks
+                // the proxy-override API, so on such a device
+                // the card must not claim the setting takes
+                // effect — it says the setting is kept but inert.
+                if (com.tuxunbrowse.android.engine
+                        .FpProxyControl.isSupported()
+                ) {
+                    Text(
+                        "代理按当前的「地区＋机型」组合保存，切换组合会换用" +
+                            "那个组合保存的代理。打开指纹模式期间生效，退出模式自动断开。" +
+                            "这期间普通模式的系统 WebView 标签也会走这个代理，" +
+                            "火狐标签不受影响。系统接口不支持带账号密码的代理。" +
+                            "设好后用上面的出口 IP 自查确认出口对不对。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    Text(
+                        "这台设备的系统 WebView 不支持代理覆盖，" +
+                            "代理设置可以保存，但不会生效，网页仍走直连。" +
+                            "代理按当前的「地区＋机型」组合保存，" +
+                            "换到支持的设备上会按组合自动启用。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {

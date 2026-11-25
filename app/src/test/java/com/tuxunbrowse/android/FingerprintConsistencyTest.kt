@@ -204,6 +204,58 @@ class FingerprintConsistencyTest {
     }
 
     @Test
+    fun hostChromeVersionParseBoundaries() {
+        // v0.203.0 (WebView version-matrix audit): the parse
+        // contract at the edges of the host range. The major is
+        // an unbounded digit run, so two-digit majors from old
+        // WebViews and any future three-digit majors parse the
+        // same way; a Version/ token in front (old stock-style
+        // UAs) does not hide the Chrome token from find(); and
+        // a Chrome token without the full four-part shape is
+        // NOT a version this parser may invent numbers for —
+        // it returns null and the caller keeps the table
+        // fallback.
+        val old = FingerprintProfiles.parseHostChrome(
+            "Mozilla/5.0 (Linux; Android 10; SM-G975F) " +
+                "AppleWebKit/537.36 (KHTML, like Gecko) " +
+                "Chrome/85.0.4183.127 Mobile Safari/537.36"
+        )
+        assertEquals("85", old?.major)
+        assertEquals("85.0.4183.127", old?.fullVersion)
+        val versionPrefixed = FingerprintProfiles.parseHostChrome(
+            "Mozilla/5.0 (Linux; U; Android 8.1.0; zh-cn) " +
+                "AppleWebKit/537.36 (KHTML, like Gecko) " +
+                "Version/4.0 Chrome/71.0.3578.99 Mobile " +
+                "Safari/537.36"
+        )
+        assertEquals("71", versionPrefixed?.major)
+        assertEquals("71.0.3578.99", versionPrefixed?.fullVersion)
+        val future = FingerprintProfiles.parseHostChrome(
+            "Mozilla/5.0 (Linux; Android 16) " +
+                "AppleWebKit/537.36 (KHTML, like Gecko) " +
+                "Chrome/200.0.1000.42 Mobile Safari/537.36"
+        )
+        assertEquals("200", future?.major)
+        assertNull(
+            FingerprintProfiles.parseHostChrome(
+                "Mozilla/5.0 (Linux; Android 14) " +
+                    "AppleWebKit/537.36 Chrome/120.0 Mobile"
+            )
+        )
+        assertNull(FingerprintProfiles.parseHostChrome(""))
+        // The rewrite carries a two-digit host major into the
+        // UA-CH fields unchanged (no padding, no truncation).
+        val rewritten = FingerprintProfiles.withHostChrome(
+            FingerprintProfiles.resolve("JP", null), old
+        )
+        assertEquals("85", rewritten.chromeMajor)
+        assertEquals("85.0.4183.127", rewritten.chromeFullVersion)
+        assertTrue(
+            rewritten.device.userAgent.contains("Chrome/85.0.4183.127")
+        )
+    }
+
+    @Test
     fun fontSetsFollowTheDeviceVendor() {
         // v0.174.0: the font enumeration shelf belongs to the
         // DEVICE vendor, not the host and not the GPU family

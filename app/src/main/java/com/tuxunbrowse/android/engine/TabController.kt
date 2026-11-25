@@ -3942,7 +3942,11 @@ fun startSystemDownload(
         // A caller downloading for a storage-bound fingerprint
         // tab passes that profile's cookie explicitly (v0.196.0);
         // everyone else reads the default profile's jar, as
-        // before.
+        // before. The fallback fires on a NULL header only: a
+        // fingerprint caller passes "" when its own jar has no
+        // cookie for the URL (FpStorage.downloadCookie,
+        // v0.203.0), and that empty header must NOT be replaced
+        // with the default jar's session.
         val cookie = cookieHeader
             ?: CookieManager.getInstance().getCookie(url)
         if (!cookie.isNullOrBlank()) request.addRequestHeader("Cookie", cookie)
