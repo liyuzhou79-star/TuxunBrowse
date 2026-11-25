@@ -1506,7 +1506,13 @@ fun BrowserApp(
                 ) {
                     startSystemDownload(
                         context, dlUrl, ua, cd, mt,
-                        referer = created?.url
+                        referer = created?.url,
+                        cookieHeader = if (fingerprint) {
+                            com.tuxunbrowse.android.engine
+                                .FpStorage.cookieFor(dlUrl)
+                        } else {
+                            null
+                        }
                     )
                 }
             },
@@ -1525,7 +1531,13 @@ fun BrowserApp(
                 ) {
                     startSystemDownload(
                         context, target, pageUserAgent(created), null, null,
-                        referer = created?.url
+                        referer = created?.url,
+                        cookieHeader = if (fingerprint) {
+                            com.tuxunbrowse.android.engine
+                                .FpStorage.cookieFor(target)
+                        } else {
+                            null
+                        }
                     )
                 }
                 android.widget.Toast.makeText(
@@ -4682,6 +4694,13 @@ fun BrowserApp(
                         // is the part the page promises first.
                     }
                     android.webkit.WebStorage.getInstance().deleteAllData()
+                    // Fingerprint mode's own storage jar goes too
+                    // (v0.196.0): this flow promises "clear
+                    // everything", and since the mode stopped
+                    // sharing the default jar its data would
+                    // otherwise survive a clear that claims to
+                    // have removed it.
+                    com.tuxunbrowse.android.engine.FpStorage.clearData()
                     // removeAllCookies is asynchronous: the page's
                     // "cleared" message must wait for the completion
                     // callback instead of reporting success the
@@ -14113,7 +14132,7 @@ private fun FingerprintShell(
             onClick = {
                 showFpMenu = false
                 fpConflictToast(
-                    "浏览资料和普通模式共用一份存储，清掉会连指纹标签的登录一起清掉"
+                    "这项会连普通模式的浏览资料一起清，模式里不能单独清"
                 )
             }
         )
@@ -14343,9 +14362,9 @@ private fun FingerprintShell(
                                         onClick = {
                                             fpSheetMenu = false
                                             fpConflictToast(
-                                                "浏览资料和普通模式共用" +
-                                                    "一份存储，清掉会连" +
-                                                    "指纹标签的登录一起清掉"
+                                                "这项会连普通模式的" +
+                                                    "浏览资料一起清，" +
+                                                    "模式里不能单独清"
                                             )
                                         },
                                         colors = MenuDefaults.itemColors(
@@ -15648,9 +15667,23 @@ private fun FingerprintHome(
         ) {
             Text("选择地区、机型与时区")
         }
+        // The storage sentence follows the live capability
+        // (v0.196.0): isolated where the host WebView offers
+        // the multi-profile API, shared where it does not —
+        // the copy never claims the better world on a device
+        // that is not in it.
+        val storageSentence = if (com.tuxunbrowse.android.engine
+                .FpStorage.isSupported()
+        ) {
+            "Cookie 和网站数据存在指纹模式自己的存储里，" +
+                "与普通模式分开；"
+        } else {
+            "这台设备的系统 WebView 不支持分开存储，" +
+                "Cookie 和网站数据与普通模式共用一份；"
+        }
         Text(
             "指纹模式只用系统 WebView，标签页不记历史；" +
-                "Cookie 和网站数据与普通模式共用同一个存储，无法分开；" +
+                storageSentence +
                 "网站能从请求里看出你在用本浏览器（应用标识头关不掉）。",
             style = MaterialTheme.typography.bodyMedium
         )

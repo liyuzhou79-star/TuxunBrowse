@@ -1201,6 +1201,15 @@ class BrowserTab(
     private var fingerprintScriptPayload: String? = null
 
     /**
+     * Whether this tab's WebView is bound to fingerprint mode's
+     * own storage profile (v0.196.0, see FpStorage). Only ever
+     * true for fingerprint tabs on a host WebView that offers
+     * the multi-profile API; cookie policy and download calls
+     * read it to pick the right cookie jar.
+     */
+    private var fpStorageBound: Boolean = false
+
+    /**
      * Lazy engine creation (v0.23.0): a tab starts out as data only
      * — url, title, engine choice and desktop-mode flag. Its engine
      * view (WebView or GeckoSession+GeckoView) is created the first
@@ -1821,6 +1830,15 @@ class BrowserTab(
     @Suppress("DEPRECATION")
     private fun createWebView(context: Context): WebView {
         val view = WebView(context)
+        // Fingerprint storage isolation (v0.196.0): the binding
+        // must be the view's first call after construction, so
+        // it happens here, before layout params or settings.
+        // Fingerprint tabs only; a failed or unsupported binding
+        // leaves the tab on the shared default storage, exactly
+        // the pre-isolation behaviour.
+        if (fingerprintProfileProvider() != null) {
+            fpStorageBound = FpStorage.bind(view)
+        }
         view.layoutParams = ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT
@@ -1909,9 +1927,18 @@ class BrowserTab(
         // the whole cookie policy is on the record, not on OEM
         // defaults. Zero behaviour change.
         try {
-            CookieManager.getInstance().setAcceptCookie(true)
-            CookieManager.getInstance()
-                .setAcceptThirdPartyCookies(view, true)
+            // A storage-bound fingerprint tab takes its cookie
+            // policy from its own profile's manager (v0.196.0);
+            // the global manager only governs the default
+            // profile and would say nothing about this jar.
+            val cookieManager = if (fpStorageBound) {
+                FpStorage.profileOrNull()?.cookieManager
+                    ?: CookieManager.getInstance()
+            } else {
+                CookieManager.getInstance()
+            }
+            cookieManager.setAcceptCookie(true)
+            cookieManager.setAcceptThirdPartyCookies(view, true)
         } catch (t: Throwable) {
             // Cookie policy is best-effort only; browsing must still work.
         }
@@ -2338,6 +2365,14 @@ class BrowserTab(
                 // new tab hits this same path again, so there is no
                 // separate nesting to handle.
                 val child = WebView(wv.context)
+                // A popup child of a fingerprint tab loads the
+                // target briefly before forwarding it; bind it to
+                // the same storage profile (v0.196.0) so that
+                // brief load's cookies land in the mode's jar,
+                // not the shared one.
+                if (fingerprintProfileProvider() != null) {
+                    FpStorage.bind(child)
+                }
                 var forwarded = false
                 fun forward(target: String?) {
                     if (forwarded) return
@@ -3857,7 +3892,8 @@ fun startSystemDownload(
     userAgent: String?,
     contentDisposition: String?,
     mimetype: String?,
-    referer: String? = null
+    referer: String? = null,
+    cookieHeader: String? = null
 ) {
     if (url.isNullOrBlank()) return
     try {
@@ -3879,7 +3915,12 @@ fun startSystemDownload(
             null
         }
         if (!ua.isNullOrBlank()) request.addRequestHeader("User-Agent", ua)
-        val cookie = CookieManager.getInstance().getCookie(url)
+        // A caller downloading for a storage-bound fingerprint
+        // tab passes that profile's cookie explicitly (v0.196.0);
+        // everyone else reads the default profile's jar, as
+        // before.
+        val cookie = cookieHeader
+            ?: CookieManager.getInstance().getCookie(url)
         if (!cookie.isNullOrBlank()) request.addRequestHeader("Cookie", cookie)
         if (!referer.isNullOrBlank() &&
             (referer.startsWith("http://") || referer.startsWith("https://"))

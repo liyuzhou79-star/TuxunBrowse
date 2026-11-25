@@ -122,14 +122,16 @@ data class FpDevice(
  * without ever breaking self-consistency.
  *
  * What a profile deliberately does NOT carry: an IP address (that
- * is the user's proxy's job — the mode's copy says so), the font
- * FILES themselves (the device carries the stock family NAME set
- * for the enumeration surface since v0.174.0, but glyphs still
- * render with the host's fonts; text measurement is blurred by
- * the canvas/rect noise), and a storage partition (the system
- * WebView has ONE data directory, so fingerprint tabs share
- * cookies/storage with normal WebView tabs — recorded honestly
- * in the mode's copy and the checkpoint).
+ * is the user's proxy's job — the mode's copy says so) and the
+ * font FILES themselves (the device carries the stock family
+ * NAME set for the enumeration surface since v0.174.0, but glyphs
+ * still render with the host's fonts; text measurement is
+ * blurred by the canvas/rect noise). Storage is not the
+ * profile's either, but the mode's: since v0.196.0 fingerprint
+ * tabs bind to a dedicated WebView storage profile (FpStorage)
+ * wherever the host WebView offers the multi-profile API, and
+ * share the default storage where it does not — the mode's
+ * home copy states which, per device.
  */
 data class FingerprintProfile(
     val regionId: String,
