@@ -12290,7 +12290,12 @@ private fun DownloadsScreen(
             if (uriText == null) {
                 // Pre-Android-10 records carry a plain file path in
                 // the app download folder instead of a MediaStore
-                // URI; there is no grantable content URI for it.
+                // URI. A file:// URI cannot leave the app on modern
+                // Android (FileUriExposedException), so the path is
+                // served through the app's FileProvider instead
+                // (v0.195.0) — before this, such a record could
+                // never be opened from this page on a current
+                // device and only ever met the failure toast.
                 val path = record.filePath
                 if (path == null || !java.io.File(path).exists()) {
                     android.widget.Toast.makeText(
@@ -12299,12 +12304,22 @@ private fun DownloadsScreen(
                     ).show()
                     return
                 }
+                val servedUri =
+                    androidx.core.content.FileProvider.getUriForFile(
+                        context,
+                        context.packageName + ".fileprovider",
+                        java.io.File(path)
+                    )
                 val intent = android.content.Intent(
                     android.content.Intent.ACTION_VIEW
                 )
                     .setDataAndType(
-                        android.net.Uri.fromFile(java.io.File(path)),
+                        servedUri,
                         record.mimeType ?: "*/*"
+                    )
+                    .addFlags(
+                        android.content.Intent
+                            .FLAG_GRANT_READ_URI_PERMISSION
                     )
                     .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                 context.startActivity(intent)

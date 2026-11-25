@@ -47,6 +47,22 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
+        <!-- Serves content URIs for files the app itself wrote
+             (v0.195.0): the downloads page opens legacy Gecko
+             download records that carry a plain file path, and a
+             file:// URI cannot leave the app on modern Android.
+             The provider only ever mints URIs for the app's own
+             download folders (see res/xml/file_paths.xml) and is
+             not exported; access is per-intent grants only. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>

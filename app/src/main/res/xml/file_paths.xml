@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Roots the FileProvider may serve (v0.195.0): only the
+     folders Gecko downloads land in — the app-specific external
+     Download directory, and the internal files root used as its
+     fallback. Nothing else in the app's storage is reachable
+     through this provider. -->
+<paths>
+    <external-files-path
+        name="external_downloads"
+        path="Download/" />
+    <files-path
+        name="internal_files"
+        path="." />
+</paths>
