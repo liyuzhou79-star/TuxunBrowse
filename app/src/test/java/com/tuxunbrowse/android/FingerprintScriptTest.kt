@@ -377,4 +377,38 @@ class FingerprintScriptTest {
         )
         assertEquals(first, rebuilt)
     }
+    @Test
+    fun platformContractIsTheAndroidChromeOne() {
+        // v0.192.0: the frozen platform string and the
+        // UA-CH architecture pair are the real Android
+        // Chrome answers; a report calling "Linux armv8l"
+        // a 32-bit tell is misreading a legacy constant.
+        assertEquals("Linux armv8l", FingerprintProfiles.PLATFORM)
+        assertEquals("Android", FingerprintProfiles.UA_PLATFORM)
+        assertEquals("arm", FingerprintProfiles.UA_ARCHITECTURE)
+        assertEquals("64", FingerprintProfiles.UA_BITNESS)
+        val payload = FingerprintScript.payload(
+            FingerprintProfiles.resolve("JP", "Asia/Tokyo")
+        )
+        // Platform is pinned on the prototype AND the
+        // instance; the UA-CH block reads the same
+        // single-sourced constants.
+        assertTrue(payload.contains("Linux armv8l"))
+        assertTrue(payload.contains("architecture: 'arm'"))
+        assertTrue(payload.contains("bitness: '64'"))
+        assertTrue(payload.contains("platform: 'Android'"))
+    }
+
+    @Test
+    fun screenGeometryFollowsPosture() {
+        // v0.192.0: the payload carries the dynamic
+        // posture-aware screen getters, not a static pair.
+        val payload = FingerprintScript.payload(
+            FingerprintProfiles.resolve("JP", "Asia/Tokyo")
+        )
+        assertTrue(payload.contains("fpLandscape"))
+        assertTrue(payload.contains("defDyn"))
+        assertTrue(payload.contains("412"))
+        assertTrue(payload.contains("915"))
+    }
 }

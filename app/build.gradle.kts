@@ -12,8 +12,8 @@ android {
         applicationId = "com.tuxunbrowse.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 192
-        versionName = "0.191.0"
+        versionCode = 193
+        versionName = "0.192.0"
         // GeckoView pushes the method count past 64k in debug builds.
         multiDexEnabled = true
     }

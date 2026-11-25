@@ -14869,6 +14869,24 @@ private fun fpSelfCheckProbe(expJson: String): String = """
         ? 'ok' : 'bad', EXP.uaModel);
   } catch (e) { row('机型（UA）', 'bad', '读取失败'); }
   try {
+    row('平台标识', navigator.platform === EXP.platform
+      ? 'ok' : 'bad', String(navigator.platform));
+  } catch (e) { row('平台标识', 'bad', '读取失败'); }
+  try {
+    var land = !!(screen.orientation &&
+      String(screen.orientation.type)
+        .indexOf('landscape') === 0);
+    var ew = land ? EXP.scrH : EXP.scrW;
+    var eh = land ? EXP.scrW : EXP.scrH;
+    var scrOk = screen.width === ew &&
+      screen.height === eh &&
+      screen.availWidth <= screen.width &&
+      screen.availHeight <= screen.height;
+    row('屏幕尺寸', scrOk ? 'ok' : 'bad',
+      screen.width + '×' + screen.height +
+      (land ? '（横屏）' : '（竖屏）'));
+  } catch (e) { row('屏幕尺寸', 'bad', '读取失败'); }
+  try {
     var c = document.createElement('canvas');
     var gl = c.getContext('webgl') ||
       c.getContext('experimental-webgl');
@@ -14929,8 +14947,51 @@ private fun fpSelfCheckProbe(expJson: String): String = """
       typeof RTCPeerConnection === 'function' ? 'ok' : 'bad',
       typeof RTCPeerConnection);
   } catch (e) { row('WebRTC 在场', 'bad', '读取失败'); }
-  function finish() {
-    FpSelfCheck.report(JSON.stringify(rows));
+  var gpuSettled = false;
+  var uaSettled = false;
+  function maybeReport() {
+    if (gpuSettled && uaSettled) {
+      FpSelfCheck.report(JSON.stringify(rows));
+    }
+  }
+  function finish() { gpuSettled = true; maybeReport(); }
+  try {
+    if (navigator.userAgentData &&
+        navigator.userAgentData
+          .getHighEntropyValues) {
+      navigator.userAgentData.getHighEntropyValues(
+        ['architecture', 'bitness', 'platform']
+      ).then(function (v) {
+        if (uaSettled) return;
+        uaSettled = true;
+        row('UA 架构位数',
+          (v.architecture === EXP.uaArch &&
+            v.bitness === EXP.uaBitness &&
+            v.platform === EXP.uaPlatform)
+            ? 'ok' : 'bad',
+          'architecture=' + v.architecture +
+          '，bitness=' + v.bitness +
+          '，platform=' + v.platform);
+        maybeReport();
+      }).catch(function () {
+        if (uaSettled) return;
+        uaSettled = true;
+        row('UA 架构位数', 'na', '查询失败');
+        maybeReport();
+      });
+      setTimeout(function () {
+        if (uaSettled) return;
+        uaSettled = true;
+        row('UA 架构位数', 'na', '查询超时');
+        maybeReport();
+      }, 3000);
+    } else {
+      row('UA 架构位数', 'na', '无 userAgentData');
+      uaSettled = true;
+    }
+  } catch (e) {
+    row('UA 架构位数', 'bad', '读取失败');
+    uaSettled = true;
   }
   if (navigator.gpu && navigator.gpu.requestAdapter) {
     var done = false;
@@ -15091,6 +15152,20 @@ private fun FingerprintHome(
             .put("gpuVendor", device.webGpuVendor)
             .put("fontIn", fontIn)
             .put("fontOut", fontOut)
+            .put("platform",
+                com.tuxunbrowse.android.engine
+                    .FingerprintProfiles.PLATFORM)
+            .put("uaArch",
+                com.tuxunbrowse.android.engine
+                    .FingerprintProfiles.UA_ARCHITECTURE)
+            .put("uaBitness",
+                com.tuxunbrowse.android.engine
+                    .FingerprintProfiles.UA_BITNESS)
+            .put("uaPlatform",
+                com.tuxunbrowse.android.engine
+                    .FingerprintProfiles.UA_PLATFORM)
+            .put("scrW", device.screenWidth)
+            .put("scrH", device.screenHeight)
             .put("webglOff", !protection.webglDisguise)
             .put("fontOff", !protection.fontSet)
             .toString()

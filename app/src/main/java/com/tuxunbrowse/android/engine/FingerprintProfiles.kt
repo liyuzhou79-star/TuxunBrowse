@@ -295,7 +295,25 @@ object FingerprintProfiles {
     private fun ua(model: String): String =
         "Mozilla/5.0 (Linux; Android 14; $model" + CHROME_TAIL
 
+    // navigator.platform (v0.192.0, verified): "Linux
+    // armv8l" is what real Android Chrome reports — on the
+    // Pixel 8 included. It is a frozen legacy string, NOT a
+    // 32-bit tell: the 64-bitness of the story lives in the
+    // UA-CH architecture hints below. (A FingerprintJS-style
+    // report flagging this string as a 32-bit feature is
+    // misreading it; "fixing" it to "Linux aarch64" would
+    // make the profile the odd one out among real phones.)
     const val PLATFORM: String = "Linux armv8l"
+
+    // UA Client Hints answers (v0.192.0): the low-entropy
+    // platform is "Android"; the high-entropy architecture
+    // pair is "arm"/"64" on every arm64 phone in the
+    // library. Single-sourced here so the injected script,
+    // the consistency rules and the self-check probe all
+    // read the same contract instead of three literals.
+    const val UA_PLATFORM: String = "Android"
+    const val UA_ARCHITECTURE: String = "arm"
+    const val UA_BITNESS: String = "64"
 
     // Stock font family sets (v0.174.0). The base set is what
     // every Android device in the library ships; each vendor
@@ -718,6 +736,21 @@ object FingerprintProfiles {
         }
         if (device.deviceMemory !in 2..16) {
             out += "Device memory outside the plausible band"
+        }
+        // Platform / UA-CH agreement (v0.192.0): the frozen
+        // navigator.platform string and the high-entropy
+        // architecture pair are constants of the Android
+        // Chrome story; pin them here so a future edit
+        // cannot drift one surface away from the others.
+        if (PLATFORM != "Linux armv8l") {
+            out += "navigator.platform is not the Android " +
+                "Chrome frozen value"
+        }
+        if (UA_PLATFORM != "Android" ||
+            UA_ARCHITECTURE != "arm" || UA_BITNESS != "64"
+        ) {
+            out += "UA-CH platform/architecture/bitness off " +
+                "the Android arm64 contract"
         }
         // Region-side agreements.
         if (profile.language !in profile.languageOptions) {

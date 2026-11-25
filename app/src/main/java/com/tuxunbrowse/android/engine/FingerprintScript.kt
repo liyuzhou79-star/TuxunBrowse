@@ -250,6 +250,12 @@ object FingerprintScript {
     // getter, so pin the same answers on the instance itself.
     def(navigator, 'language', LANG);
     def(navigator, 'languages', Object.freeze([$languages]));
+    // Platform joins the instance pinning (v0.192.0): the
+    // prototype def above already covers ordinary reads,
+    // but a detector that grabbed the instance early (or a
+    // realm where the prototype def was refused) should
+    // still meet the profile's answer, not the host's.
+    def(navigator, 'platform', ${jsStr(FingerprintProfiles.PLATFORM)});
     def(nav, 'hardwareConcurrency', ${d.hardwareConcurrency});
     def(nav, 'deviceMemory', ${d.deviceMemory});
     var brands = [
@@ -258,25 +264,25 @@ object FingerprintScript {
       { brand: 'Not=A?Brand', version: '24' }
     ];
     var uaData = {
-      brands: brands, mobile: true, platform: 'Android',
+      brands: brands, mobile: true, platform: '${FingerprintProfiles.UA_PLATFORM}',
       getHighEntropyValues: function (hints) {
         var all = {
-          architecture: 'arm', bitness: '64', brands: brands,
+          architecture: '${FingerprintProfiles.UA_ARCHITECTURE}', bitness: '${FingerprintProfiles.UA_BITNESS}', brands: brands,
           fullVersionList: [
             { brand: 'Chromium', version: '${resolved.chromeFullVersion}' },
             { brand: 'Google Chrome', version: '${resolved.chromeFullVersion}' },
             { brand: 'Not=A?Brand', version: '24.0.0.0' }
           ],
-          mobile: true, model: ${jsStr(d.uaModel)}, platform: 'Android',
+          mobile: true, model: ${jsStr(d.uaModel)}, platform: '${FingerprintProfiles.UA_PLATFORM}',
           platformVersion: '14.0.0', uaFullVersion: '${resolved.chromeFullVersion}',
           formFactors: ['Mobile'], wow64: false
         };
-        var out = { brands: brands, mobile: true, platform: 'Android' };
+        var out = { brands: brands, mobile: true, platform: '${FingerprintProfiles.UA_PLATFORM}' };
         (hints || []).forEach(function (h) { if (h in all) out[h] = all[h]; });
         return Promise.resolve(out);
       },
       toJSON: function () {
-        return { brands: brands, mobile: true, platform: 'Android' };
+        return { brands: brands, mobile: true, platform: '${FingerprintProfiles.UA_PLATFORM}' };
       }
     };
     fixFnAs(uaData.getHighEntropyValues,
@@ -287,10 +293,48 @@ object FingerprintScript {
 
   section(function () {
     var scr = window.Screen ? Screen.prototype : screen;
-    def(scr, 'width', ${d.screenWidth});
-    def(scr, 'height', ${d.screenHeight});
-    def(scr, 'availWidth', ${d.screenWidth});
-    def(scr, 'availHeight', ${d.screenHeight});
+    // Screen geometry follows posture (v0.192.0,
+    // borrowed-table item 7): the stored pair is the
+    // portrait shape; in landscape the pair swaps, in
+    // step with screen.orientation — which follows the
+    // host's real posture by design (v0.183.0). A static
+    // portrait pair sitting under a landscape
+    // orientation.type was a contradiction a cross-check
+    // could read at a glance (and in a floating window
+    // the mismatch is worse). The getters are shaped
+    // like the native ones, name and toString included.
+    var PW = ${d.screenWidth}, PH = ${d.screenHeight};
+    function fpLandscape() {
+      try {
+        if (screen.orientation && screen.orientation.type) {
+          return screen.orientation.type
+            .indexOf('landscape') === 0;
+        }
+      } catch (e) {}
+      try {
+        return window.innerWidth > window.innerHeight;
+      } catch (e) { return false; }
+    }
+    function defDyn(obj, prop, fn) {
+      try {
+        var getter = function () { return fn(); };
+        Object.defineProperty(getter, 'name',
+          { value: 'get ' + prop, configurable: true });
+        FP_TOSTRING.set(getter,
+          'function get ' + prop + '() { [native code] }');
+        Object.defineProperty(obj, prop, {
+          get: getter, configurable: true
+        });
+      } catch (e) {}
+    }
+    defDyn(scr, 'width',
+      function () { return fpLandscape() ? PH : PW; });
+    defDyn(scr, 'height',
+      function () { return fpLandscape() ? PW : PH; });
+    defDyn(scr, 'availWidth',
+      function () { return fpLandscape() ? PH : PW; });
+    defDyn(scr, 'availHeight',
+      function () { return fpLandscape() ? PW : PH; });
     // Colour depth (v0.150.0): every Android Chrome reports 24;
     // pinning it keeps the answer the profile's even on a host
     // panel pipeline that reports otherwise.
