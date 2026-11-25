@@ -20,6 +20,8 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -12392,7 +12394,15 @@ private fun FingerprintShell(
                         },
                     singleLine = true,
                     placeholder = { Text("搜索或输入网址") },
+                    // Same input spec as the normal shell's
+                    // address bar (v0.138.0): a URL keyboard with
+                    // autocorrect off — the fingerprint shell was
+                    // built later and missed that audit, so its
+                    // field still let the keyboard "correct" a
+                    // domain into a dictionary word (v0.164.0).
                     keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Uri,
+                        autoCorrectEnabled = false,
                         imeAction = ImeAction.Go
                     ),
                     keyboardActions = KeyboardActions(
@@ -12897,6 +12907,7 @@ private suspend fun fetchExitIpFrom(
  * switching. No bookmarks, no history — the mode keeps nothing
  * of either.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun FingerprintHome(
     resolved: ResolvedFingerprint,
@@ -12966,7 +12977,13 @@ private fun FingerprintHome(
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
             placeholder = { Text("搜索或输入网址") },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+            // URL keyboard, no autocorrect — same spec as the
+            // shell's address field above (v0.164.0).
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Uri,
+                autoCorrectEnabled = false,
+                imeAction = ImeAction.Go
+            ),
             keyboardActions = KeyboardActions(onGo = {
                 if (query.isNotBlank()) onSearch(query)
             })
@@ -13041,16 +13058,22 @@ private fun FingerprintHome(
             "快捷切换地区",
             style = MaterialTheme.typography.titleMedium
         )
-        Row(
+        // FlowRow, not an equal-weight Row (v0.164.0): four
+        // weighted chips squeezed 「台湾地区」 into a quarter
+        // of the width, and at large system font sizes the
+        // label clipped instead of wrapping. Chips now take
+        // their natural width and wrap to a second line when
+        // they no longer fit — same single row at normal sizes.
+        FlowRow(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             for (candidate in FingerprintProfiles.all) {
                 FilterChip(
                     selected = candidate.regionId == profile.regionId,
                     onClick = { onQuickRegion(candidate) },
-                    label = { Text(candidate.regionLabel) },
-                    modifier = Modifier.weight(1f)
+                    label = { Text(candidate.regionLabel) }
                 )
             }
         }
