@@ -4564,11 +4564,6 @@ fun BrowserApp(
                             context, "先打开一个网页再截图",
                             android.widget.Toast.LENGTH_SHORT
                         ).show()
-                        tab.engine == Engine.GECKO -> android.widget.Toast.makeText(
-                            context,
-                            "火狐标签不支持网页截图，请切换到系统 WebView 再试",
-                            android.widget.Toast.LENGTH_LONG
-                        ).show()
                         else -> screenshotTab = tab
                     }
                 },
@@ -5837,8 +5832,8 @@ fun BrowserApp(
         )
     }
 
-    // Page screenshot (WebView tabs only — Gecko tabs are told
-    // honestly at the menu entry that it is not supported there):
+    // Page screenshot (both engines since v0.214.0 — the Gecko
+    // side goes through capturePixels, so the capture is async):
     // captures the visible screen, then saves or shares it.
     val shotTab = screenshotTab
     if (shotTab != null) {
@@ -5849,18 +5844,19 @@ fun BrowserApp(
         }
         fun runShot(share: Boolean) {
             screenshotTab = null
-            val bmp = shotTab.captureVisibleBitmap()
-            when {
-                bmp == null -> shotToast("截图失败，请重试")
-                share -> sharePageScreenshot(context, bmp)
-                else -> savePageScreenshot(context, bmp) { where ->
-                    shotToast(
-                        if (where != null) {
-                            "截图已保存到$where"
-                        } else {
-                            "保存失败，请重试"
-                        }
-                    )
+            shotTab.captureVisibleBitmapAsync { bmp ->
+                when {
+                    bmp == null -> shotToast("截图失败，请重试")
+                    share -> sharePageScreenshot(context, bmp)
+                    else -> savePageScreenshot(context, bmp) { where ->
+                        shotToast(
+                            if (where != null) {
+                                "截图已保存到$where"
+                            } else {
+                                "保存失败，请重试"
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -8681,27 +8677,21 @@ private fun BrowserScreen(
                         )
                     }
                     item {
-                        if (siteTab.engine == Engine.WEBVIEW) {
-                            ListItem(
-                                headlineContent = { Text("本页已拦截") },
-                                supportingContent = {
-                                    Text("这个页面已拦下 ${siteTab.blockedCount} 个广告/跟踪请求。")
-                                },
-                                leadingContent = {
-                                    Icon(Icons.Filled.VisibilityOff, contentDescription = null)
-                                }
-                            )
-                        } else {
-                            ListItem(
-                                headlineContent = { Text("本页已拦截") },
-                                supportingContent = {
-                                    Text("火狐用内核自带的反跟踪拦截，没有个数统计，所以这里不显示数字。")
-                                },
-                                leadingContent = {
-                                    Icon(Icons.Filled.VisibilityOff, contentDescription = null)
-                                }
-                            )
-                        }
+                        ListItem(
+                            headlineContent = { Text("本页已拦截") },
+                            supportingContent = {
+                                Text(
+                                    if (siteTab.engine == Engine.WEBVIEW) {
+                                        "这个页面已拦下 ${siteTab.blockedCount} 个广告/跟踪请求。"
+                                    } else {
+                                        "这个页面火狐内核自带的反跟踪已拦下 ${siteTab.blockedCount} 个跟踪内容。"
+                                    }
+                                )
+                            },
+                            leadingContent = {
+                                Icon(Icons.Filled.VisibilityOff, contentDescription = null)
+                            }
+                        )
                     }
                     if (siteTab.engine == Engine.WEBVIEW &&
                         (siteTab.certIssuedTo.isNotBlank() || siteTab.certIssuedBy.isNotBlank())
@@ -17303,7 +17293,7 @@ private fun SettingsScreen(
             item {
                 Text(
                     "内置名单共 ${AdBlocker.blockedHostCount} 个域名；" +
-                        "单页拦截数可在网站信息里看，火狐标签不统计。",
+                        "单页拦截数可在网站信息里看，两个内核都统计。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -17314,7 +17304,7 @@ private fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        "累计已拦截 $totalBlocked 个（系统 WebView 标签统计）",
+                        "累计已拦截 $totalBlocked 个",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f)
@@ -17644,10 +17634,7 @@ private fun SettingsScreen(
                             )
                         )
                         ListItem(headlineContent = { Text("资源嗅探") })
-                        ListItem(headlineContent = { Text("网页截图") })
-                        ListItem(headlineContent = { Text("标签预览图") })
                         ListItem(headlineContent = { Text("阅读模式与排版设置") })
-                        ListItem(headlineContent = { Text("本页拦截计数") })
                         ListItem(headlineContent = { Text("广告位隐藏") })
                         ListItem(headlineContent = { Text("打印 / 存为 PDF") })
                         ListItem(headlineContent = { Text("内置净化脚本") })
@@ -17707,6 +17694,17 @@ private fun SettingsScreen(
                             }
                         )
                         ListItem(headlineContent = { Text("页内查找（含计数）") })
+                        ListItem(headlineContent = { Text("网页截图（当前屏幕）") })
+                        ListItem(headlineContent = { Text("标签预览图") })
+                        ListItem(
+                            headlineContent = { Text("本页拦截计数") },
+                            supportingContent = {
+                                Text(
+                                    "数法不同：系统 WebView 数应用名单拦下的，" +
+                                        "火狐数内核反跟踪拦下的"
+                                )
+                            }
+                        )
                         ListItem(
                             headlineContent = { Text("网页提示框") },
                             supportingContent = {

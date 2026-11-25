@@ -1492,16 +1492,62 @@ class BrowserTab(
     }
 
     /**
-     * Capture the WebView's current visible content as a small
+     * Capture the tab's current visible content as a small
      * thumbnail for the tab grid, scaled to 360 px wide. Called only
      * when a page finishes loading and when the tab is switched away
      * from — never during scrolling or animations, so it cannot
-     * become a per-frame cost. WebView only; Gecko tabs have no
-     * screenshot API and simply keep no thumbnail.
+     * become a per-frame cost.
      */
     fun captureThumbnail() {
-        val view = webView ?: return
-        doCaptureThumbnail(view)
+        val view = webView
+        if (view != null) {
+            doCaptureThumbnail(view)
+            return
+        }
+        // Gecko path (v0.214.0 old-conclusion review): the v0.10-era
+        // note "Gecko tabs have no screenshot API" does not hold —
+        // GeckoView.capturePixels() exists in the pinned GeckoView
+        // 132 AAR and returns a GeckoResult<Bitmap> of the currently
+        // composited frame. Same incognito guard as the WebView
+        // choke point: a private page's preview is a leak in any
+        // engine.
+        if (incognito) return
+        captureGeckoThumbnail(geckoView ?: return)
+    }
+
+    private fun captureGeckoThumbnail(view: GeckoView) {
+        try {
+            view.capturePixels().accept(
+                { bmp ->
+                    // The tab may have been destroyed or its view
+                    // replaced while the capture was in flight.
+                    if (bmp != null && geckoView === view) {
+                        try {
+                            if (bmp.width > 0 && bmp.height > 0) {
+                                val targetW = 360
+                                val scale = targetW.toFloat() / bmp.width
+                                val targetH =
+                                    (bmp.height * scale).toInt()
+                                        .coerceAtLeast(1)
+                                thumbnail = Bitmap.createScaledBitmap(
+                                    bmp, targetW, targetH, true
+                                )
+                                ThumbnailCache.onThumbnailSet(this)
+                            }
+                        } catch (t: Throwable) {
+                            // Best-effort decoration, exactly like
+                            // the WebView path.
+                        }
+                    }
+                },
+                {
+                    // A failed capture is no thumbnail, never an
+                    // error the user hears about.
+                }
+            )
+        } catch (t: Throwable) {
+            // Best-effort decoration, exactly like the WebView path.
+        }
     }
 
     /**
@@ -1513,9 +1559,16 @@ class BrowserTab(
      * tab's view has been replaced or destroyed in the meantime.
      */
     fun captureThumbnailDeferred() {
-        val view = webView ?: return
-        view.postDelayed({
-            if (webView === view) doCaptureThumbnail(view)
+        val wv = webView
+        if (wv != null) {
+            wv.postDelayed({
+                if (webView === wv) doCaptureThumbnail(wv)
+            }, 260)
+            return
+        }
+        val gv = geckoView ?: return
+        gv.postDelayed({
+            if (geckoView === gv) captureThumbnail()
         }, 260)
     }
 
@@ -1565,6 +1618,34 @@ class BrowserTab(
             bmp
         } catch (t: Throwable) {
             null
+        }
+    }
+
+    /**
+     * Async twin of [captureVisibleBitmap] for the screenshot
+     * dialog (v0.214.0): the WebView side answers synchronously,
+     * the Gecko side's only capture API (capturePixels) is async
+     * by nature. The callback always fires exactly once — a failed
+     * or stale capture answers null, which the dialog already
+     * turns into its failure toast.
+     */
+    fun captureVisibleBitmapAsync(onResult: (Bitmap?) -> Unit) {
+        if (webView != null) {
+            onResult(captureVisibleBitmap())
+            return
+        }
+        val gv = geckoView
+        if (gv == null) {
+            onResult(null)
+            return
+        }
+        try {
+            gv.capturePixels().accept(
+                { bmp -> onResult(if (geckoView === gv) bmp else null) },
+                { onResult(null) }
+            )
+        } catch (t: Throwable) {
+            onResult(null)
         }
     }
 
@@ -3121,6 +3202,10 @@ class BrowserTab(
                 // The load is over either way (v0.139.0).
                 loading = false
                 progress = 100
+                // One thumbnail capture per finished load, the same
+                // point the WebView side uses in onPageFinished
+                // (v0.214.0: Gecko captures exist — capturePixels).
+                if (success) captureThumbnail()
                 // HTTPS-first marker (v0.77.0): cleared on a
                 // successful stop with no error state, kept when
                 // the load failed (onLoadError set loadError), so
@@ -3128,6 +3213,32 @@ class BrowserTab(
                 if (success && loadError == null) httpsUpgraded = false
             }
         }
+        // Blocked-content counter (v0.214.0 old-conclusion review):
+        // the v0.19-era note "Gecko blocking has no count" does not
+        // hold — GeckoSession.setContentBlockingDelegate exists in
+        // the pinned GeckoView 132 AAR, and ContentBlocking.Delegate
+        // reports each blocking decision with isBlocking(). Count
+        // the blocked ones into the same per-page counter and the
+        // same lifetime-total hook the WebView interceptor feeds, so
+        // the site-info sheet and the settings total cover both
+        // engines. The two counts are not the same ruler — WebView
+        // counts this app's list hits, Gecko counts the engine's own
+        // anti-tracking blocks — and the UI copy says so instead of
+        // pretending otherwise. Threading: the counter is snapshot
+        // state and the store's total is lock-guarded, so a direct
+        // write is safe from whichever thread delivers this.
+        session.contentBlockingDelegate =
+            object : ContentBlocking.Delegate {
+                override fun onContentBlocked(
+                    s: GeckoSession,
+                    event: ContentBlocking.BlockEvent
+                ) {
+                    if (event.isBlocking) {
+                        blockedCount++
+                        onBlockedRequest()
+                    }
+                }
+            }
         // GeckoView 132 reports page titles on ContentDelegate, not on
         // NavigationDelegate (where older versions had them).
         session.contentDelegate = object : GeckoSession.ContentDelegate {
