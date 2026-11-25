@@ -124,7 +124,18 @@ object FingerprintScript {
     def(scr, 'height', ${d.screenHeight});
     def(scr, 'availWidth', ${d.screenWidth});
     def(scr, 'availHeight', ${d.screenHeight});
+    // Colour depth (v0.150.0): every Android Chrome reports 24;
+    // pinning it keeps the answer the profile's even on a host
+    // panel pipeline that reports otherwise.
+    def(scr, 'colorDepth', 24);
+    def(scr, 'pixelDepth', 24);
     def(window, 'devicePixelRatio', ${d.devicePixelRatio});
+    // Touch points (v0.150.0, behaviour surface): Android Chrome
+    // reports 5 on the profile devices and on phones generally.
+    // The host value would usually agree — but "usually" is how
+    // a surface leaks, so it is pinned like everything else.
+    var nav2 = window.Navigator ? Navigator.prototype : navigator;
+    def(nav2, 'maxTouchPoints', 5);
   });
 
   var OrigDTF = Intl.DateTimeFormat;

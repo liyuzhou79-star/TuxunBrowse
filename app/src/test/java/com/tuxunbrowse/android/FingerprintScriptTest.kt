@@ -33,6 +33,9 @@ class FingerprintScriptTest {
         assertTrue(payload.contains("0x9246"))
         // v0.149.0: the framebuffer readback carries noise too.
         assertTrue(payload.contains("readPixels"))
+        // v0.150.0: colour depth and touch points are pinned too.
+        assertTrue(payload.contains("colorDepth"))
+        assertTrue(payload.contains("maxTouchPoints"))
         assertTrue(payload.contains("getChannelData"))
         assertTrue(payload.contains("getBoundingClientRect"))
         assertTrue(payload.contains("getBattery"))
