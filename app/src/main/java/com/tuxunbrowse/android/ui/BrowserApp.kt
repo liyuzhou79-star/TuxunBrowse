@@ -3736,6 +3736,7 @@ fun BrowserApp(
                     val tab = activeTab() ?: return@BrowserScreen
                     switchTabEngine(tab, engine, rememberSite)
                 },
+                onEnterFingerprintMode = { enterFingerprintMode() },
                 onToggleSiteCompat = { toggleSiteCompat() },
                 onClearSiteData = { host -> clearSiteData(host) },
                 activeDesktopMode = current?.desktopMode ?: false,
@@ -5952,6 +5953,7 @@ private fun BrowserScreen(
     onEngineFallbackSwitch: () -> Unit = {},
     onEngineFallbackRetry: () -> Unit = {},
     onSwitchEngine: (Engine, Boolean) -> Unit,
+    onEnterFingerprintMode: () -> Unit = {},
     onToggleSiteCompat: () -> Unit = {},
     onClearSiteData: (String) -> Boolean = { true },
     activeDesktopMode: Boolean,
@@ -8407,6 +8409,32 @@ private fun BrowserScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { picked = engine }
+                        )
+                    }
+                    item {
+                        // Fingerprint mode rides along in this
+                        // picker (v0.145.0, user-directed): not a
+                        // third engine — a separate mode with its
+                        // own shell and tab group, entered from
+                        // here as well as from 设置 → 隐私与数据.
+                        HorizontalDivider()
+                        ListItem(
+                            headlineContent = { Text("指纹模式") },
+                            supportingContent = {
+                                Text("用预制档案浏览，网站看到的是档案设备的信息")
+                            },
+                            leadingContent = {
+                                Icon(
+                                    Icons.Filled.Fingerprint,
+                                    contentDescription = null
+                                )
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showEngineSwitch = false
+                                    onEnterFingerprintMode()
+                                }
                         )
                     }
                     if (currentHost != null && picked == Engine.WEBVIEW &&

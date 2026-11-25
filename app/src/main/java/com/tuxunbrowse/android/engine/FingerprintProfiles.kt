@@ -5,10 +5,10 @@ package com.tuxunbrowse.android.engine
  * The zone drives the linked parameters the mode promises: the
  * geolocation city and coordinates, and (through the zone id) the
  * Intl/Date offset math in the injected script. [zoneName] is the
- * English long name used when the script synthesises Date strings;
- * it is the standard-time name — daylight time reuses the same
- * string with the daylight offset, a simplification recorded in
- * the v0.144.0 checkpoint chapter.
+ * English long standard-time name used when the script synthesises
+ * Date strings; [zoneDaylightName] is the daylight counterpart the
+ * script switches to when the date's offset is the daylight one
+ * (v0.145.0 — v0.144.0 always used the standard name).
  */
 data class FpTimezone(
     val id: String,
@@ -16,7 +16,48 @@ data class FpTimezone(
     val city: String,
     val latitude: Double,
     val longitude: Double,
-    val zoneName: String
+    val zoneName: String,
+    /** Daylight-time long name (v0.145.0); null where the zone has no DST. */
+    val zoneDaylightName: String? = null
+)
+
+/**
+ * One speech-synthesis voice the profile claims (v0.145.0).
+ * Android Chrome's voice list comes from the device TTS engine,
+ * so a profile whose pages can enumerate voices but whose list
+ * names another region's engine gives itself away; the names
+ * below follow the Google TTS naming style for each region.
+ */
+data class FpVoice(
+    val name: String,
+    val lang: String,
+    val isDefault: Boolean = false
+)
+
+/**
+ * The WebGL capability numbers the profile's GPU reports through
+ * getParameter (v0.145.0) — not just the vendor/renderer strings.
+ * Values follow the public ANGLE/driver conventions for each GPU
+ * class; they are pinned for self-consistency by the profile
+ * tests, but have NOT been diffed against a physical unit of each
+ * device (recorded honestly in the v0.145.0 checkpoint chapter).
+ * Point/line minimums are always 1 on mobile GPUs, so only the
+ * maximums are carried.
+ */
+data class FpWebGlParams(
+    val maxTextureSize: Int,
+    val maxCubeMapTextureSize: Int,
+    val maxRenderbufferSize: Int,
+    val maxViewportDim: Int,
+    val aliasedPointSizeMax: Float,
+    val aliasedLineWidthMax: Float,
+    val maxVertexAttribs: Int,
+    val maxTextureImageUnits: Int,
+    val maxVertexTextureImageUnits: Int,
+    val maxCombinedTextureImageUnits: Int,
+    val maxFragmentUniformVectors: Int,
+    val maxVertexUniformVectors: Int,
+    val maxVaryingVectors: Int
 )
 
 /**
@@ -54,10 +95,21 @@ data class FingerprintProfile(
     val deviceMemory: Int,
     val webGlVendor: String,
     val webGlRenderer: String,
+    /** getParameter capability table for the GPU (v0.145.0). */
+    val webGl: FpWebGlParams,
     val noiseSeed: Int,
     val batteryLevel: Double,
     val batteryCharging: Boolean,
     val dateFormatSample: String,
+    /** Speech-synthesis voices the region's TTS engine lists (v0.145.0). */
+    val voices: List<FpVoice>,
+    /** Widest color gamut matchMedia reports: "srgb" or "p3" (v0.145.0). */
+    val colorGamut: String,
+    /** Whether matchMedia (dynamic-range: high) matches (v0.145.0). */
+    val dynamicRangeHigh: Boolean,
+    /** navigator.connection story (v0.145.0): a healthy 4g link. */
+    val connectionRtt: Int,
+    val connectionDownlink: Double,
     val timezones: List<FpTimezone>
 ) {
     /** The zone [id] in this region, or the region's first zone. */
@@ -93,26 +145,49 @@ object FingerprintProfiles {
         deviceMemory = 8,
         webGlVendor = "Qualcomm",
         webGlRenderer = "Adreno (TM) 750",
+        webGl = FpWebGlParams(
+            maxTextureSize = 16384, maxCubeMapTextureSize = 16384,
+            maxRenderbufferSize = 16384, maxViewportDim = 16384,
+            aliasedPointSizeMax = 1024f, aliasedLineWidthMax = 8f,
+            maxVertexAttribs = 32, maxTextureImageUnits = 32,
+            maxVertexTextureImageUnits = 16,
+            maxCombinedTextureImageUnits = 96,
+            maxFragmentUniformVectors = 224, maxVertexUniformVectors = 256,
+            maxVaryingVectors = 31
+        ),
         noiseSeed = 1401,
         batteryLevel = 0.82,
         batteryCharging = false,
         dateFormatSample = "11/25/2025",
+        voices = listOf(
+            FpVoice("English (United States)", "en-US", isDefault = true),
+            FpVoice("English (United Kingdom)", "en-GB"),
+            FpVoice("Español (Estados Unidos)", "es-US")
+        ),
+        colorGamut = "p3",
+        dynamicRangeHigh = true,
+        connectionRtt = 50,
+        connectionDownlink = 10.0,
         timezones = listOf(
             FpTimezone(
                 "America/New_York", "东部时间", "纽约",
-                40.7128, -74.0060, "Eastern Standard Time"
+                40.7128, -74.0060, "Eastern Standard Time",
+                "Eastern Daylight Time"
             ),
             FpTimezone(
                 "America/Chicago", "中部时间", "芝加哥",
-                41.8781, -87.6298, "Central Standard Time"
+                41.8781, -87.6298, "Central Standard Time",
+                "Central Daylight Time"
             ),
             FpTimezone(
                 "America/Denver", "山地时间", "丹佛",
-                39.7392, -104.9903, "Mountain Standard Time"
+                39.7392, -104.9903, "Mountain Standard Time",
+                "Mountain Daylight Time"
             ),
             FpTimezone(
                 "America/Los_Angeles", "太平洋时间", "洛杉矶",
-                34.0522, -118.2437, "Pacific Standard Time"
+                34.0522, -118.2437, "Pacific Standard Time",
+                "Pacific Daylight Time"
             )
         )
     )
@@ -133,10 +208,29 @@ object FingerprintProfiles {
         deviceMemory = 8,
         webGlVendor = "ARM",
         webGlRenderer = "ANGLE (ARM, Mali-G715s MC10, OpenGL ES 3.2)",
+        webGl = FpWebGlParams(
+            maxTextureSize = 16384, maxCubeMapTextureSize = 16384,
+            maxRenderbufferSize = 16384, maxViewportDim = 16384,
+            aliasedPointSizeMax = 511f, aliasedLineWidthMax = 1f,
+            maxVertexAttribs = 16, maxTextureImageUnits = 32,
+            maxVertexTextureImageUnits = 16,
+            maxCombinedTextureImageUnits = 64,
+            maxFragmentUniformVectors = 224, maxVertexUniformVectors = 256,
+            maxVaryingVectors = 16
+        ),
         noiseSeed = 1402,
         batteryLevel = 0.67,
         batteryCharging = false,
         dateFormatSample = "2025/11/25",
+        voices = listOf(
+            FpVoice("日本語", "ja-JP", isDefault = true),
+            FpVoice("English (United States)", "en-US"),
+            FpVoice("中文 (普通话)", "zh-CN")
+        ),
+        colorGamut = "p3",
+        dynamicRangeHigh = true,
+        connectionRtt = 45,
+        connectionDownlink = 10.0,
         timezones = listOf(
             FpTimezone(
                 "Asia/Tokyo", "日本时间", "东京",
@@ -161,10 +255,30 @@ object FingerprintProfiles {
         deviceMemory = 8,
         webGlVendor = "Qualcomm",
         webGlRenderer = "Adreno (TM) 740",
+        webGl = FpWebGlParams(
+            maxTextureSize = 16384, maxCubeMapTextureSize = 16384,
+            maxRenderbufferSize = 16384, maxViewportDim = 16384,
+            aliasedPointSizeMax = 1024f, aliasedLineWidthMax = 8f,
+            maxVertexAttribs = 32, maxTextureImageUnits = 32,
+            maxVertexTextureImageUnits = 16,
+            maxCombinedTextureImageUnits = 96,
+            maxFragmentUniformVectors = 224, maxVertexUniformVectors = 256,
+            maxVaryingVectors = 31
+        ),
         noiseSeed = 1403,
         batteryLevel = 0.91,
         batteryCharging = true,
         dateFormatSample = "25/11/2025",
+        voices = listOf(
+            FpVoice("English (United States)", "en-US", isDefault = true),
+            FpVoice("中文 (普通话)", "zh-CN"),
+            FpVoice("Bahasa Melayu", "ms-MY"),
+            FpVoice("Tamil", "ta-IN")
+        ),
+        colorGamut = "p3",
+        dynamicRangeHigh = true,
+        connectionRtt = 35,
+        connectionDownlink = 10.0,
         timezones = listOf(
             FpTimezone(
                 "Asia/Singapore", "新加坡时间", "新加坡",
@@ -189,10 +303,29 @@ object FingerprintProfiles {
         deviceMemory = 8,
         webGlVendor = "ARM",
         webGlRenderer = "ANGLE (ARM, Mali-G68, OpenGL ES 3.2)",
+        webGl = FpWebGlParams(
+            maxTextureSize = 16384, maxCubeMapTextureSize = 16384,
+            maxRenderbufferSize = 16384, maxViewportDim = 16384,
+            aliasedPointSizeMax = 511f, aliasedLineWidthMax = 1f,
+            maxVertexAttribs = 16, maxTextureImageUnits = 16,
+            maxVertexTextureImageUnits = 16,
+            maxCombinedTextureImageUnits = 48,
+            maxFragmentUniformVectors = 224, maxVertexUniformVectors = 256,
+            maxVaryingVectors = 16
+        ),
         noiseSeed = 1404,
         batteryLevel = 0.74,
         batteryCharging = false,
         dateFormatSample = "2025/11/25",
+        voices = listOf(
+            FpVoice("中文 (台灣)", "zh-TW", isDefault = true),
+            FpVoice("English (United States)", "en-US"),
+            FpVoice("中文 (普通话)", "zh-CN")
+        ),
+        colorGamut = "p3",
+        dynamicRangeHigh = true,
+        connectionRtt = 50,
+        connectionDownlink = 9.2,
         timezones = listOf(
             FpTimezone(
                 "Asia/Taipei", "台北时间", "台北",

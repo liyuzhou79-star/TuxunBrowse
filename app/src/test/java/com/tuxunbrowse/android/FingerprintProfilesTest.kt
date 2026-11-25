@@ -71,6 +71,73 @@ class FingerprintProfilesTest {
     }
 
     @Test
+    fun languageListsCarryRealisticFallbacks() {
+        // v0.145.0: a lone navigator.languages entry is a tell —
+        // real devices list fallbacks behind the primary language.
+        for (profile in FingerprintProfiles.all) {
+            assertTrue(
+                "${profile.regionId} languages too thin",
+                profile.languages.size >= 2
+            )
+        }
+        assertEquals(
+            listOf("ja-JP", "ja", "en-US", "en"),
+            FingerprintProfiles.JAPAN.languages
+        )
+        assertEquals(
+            listOf("zh-TW", "zh", "en-US", "en"),
+            FingerprintProfiles.TAIWAN.languages
+        )
+    }
+
+    @Test
+    fun voicesAndPanelAndNetworkStoriesAgreeWithTheProfile() {
+        // v0.145.0 additions: voices, WebGL caps, panel, network.
+        for (profile in FingerprintProfiles.all) {
+            assertTrue(profile.voices.isNotEmpty())
+            assertEquals(
+                "${profile.regionId} needs exactly one default voice",
+                1, profile.voices.count { it.isDefault }
+            )
+            val defaultVoice = profile.voices.first { it.isDefault }
+            assertEquals(
+                profile.language.substringBefore('-'),
+                defaultVoice.lang.substringBefore('-')
+            )
+            assertTrue(profile.webGl.maxTextureSize in setOf(8192, 16384))
+            assertTrue(profile.webGl.maxViewportDim >= 8192)
+            assertTrue(profile.webGl.aliasedPointSizeMax > 1f)
+            assertTrue(profile.webGl.aliasedLineWidthMax >= 1f)
+            assertTrue(profile.webGl.maxVertexAttribs in 16..32)
+            assertTrue(profile.webGl.maxTextureImageUnits in 16..32)
+            assertTrue(profile.colorGamut in setOf("srgb", "p3"))
+            assertTrue(profile.connectionRtt in 1..300)
+            assertTrue(profile.connectionDownlink in 1.0..50.0)
+        }
+        // Adreno GPUs draw wide lines; Mali GPUs only width 1 —
+        // the renderer string and the caps must tell one story.
+        assertTrue(FingerprintProfiles.UNITED_STATES.webGl.aliasedLineWidthMax > 1f)
+        assertEquals(1f, FingerprintProfiles.JAPAN.webGl.aliasedLineWidthMax)
+        assertEquals(1f, FingerprintProfiles.TAIWAN.webGl.aliasedLineWidthMax)
+    }
+
+    @Test
+    fun daylightNamesExistOnlyWhereTheZoneObservesDst() {
+        for (zone in FingerprintProfiles.UNITED_STATES.timezones) {
+            assertTrue(zone.zoneDaylightName!!.contains("Daylight"))
+        }
+        for (profile in listOf(
+            FingerprintProfiles.JAPAN,
+            FingerprintProfiles.SINGAPORE,
+            FingerprintProfiles.TAIWAN
+        )) {
+            for (zone in profile.timezones) {
+                assertEquals(null, zone.zoneDaylightName)
+            }
+        }
+    }
+
+    @Test
     fun resolveFallsBackToFirstRegionAndZone() {
         val unknown = FingerprintProfiles.resolve("XX", "Nowhere/Place")
         assertEquals(

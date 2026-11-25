@@ -12,20 +12,34 @@ package com.tuxunbrowse.android.engine
  * platform, language/languages, hardwareConcurrency, deviceMemory,
  * userAgentData with the profile's model), screen geometry and
  * devicePixelRatio, the time zone (Intl default zone + default
- * locale, Date.getTimezoneOffset, synthesised Date strings and
- * locale date formatting), geolocation answers at the zone's city,
- * canvas readback noise (seeded, deterministic), WebGL unmasked
- * vendor/renderer strings, AudioBuffer noise, ClientRects jitter,
- * a fixed battery story, and a hard WebRTC block (stricter than the
- * opt-in normal-mode switch: fingerprint mode never negotiates
- * real ICE candidates).
+ * locale, Date.getTimezoneOffset, synthesised Date strings with a
+ * daylight-aware zone name, and locale date formatting),
+ * geolocation answers at the zone's city, canvas readback noise
+ * (seeded, deterministic), WebGL unmasked vendor/renderer strings
+ * AND the getParameter capability table for the profile's GPU,
+ * AudioBuffer noise, ClientRects jitter, a fixed battery story,
+ * and a hard WebRTC block (stricter than the opt-in normal-mode
+ * switch: fingerprint mode never negotiates real ICE candidates).
+ *
+ * v0.145.0 additions, same profile-driven rule: the region's
+ * speech-synthesis voice list, matchMedia color-gamut /
+ * dynamic-range answers per the device's panel, a navigator
+ * .connection story, a sanitised mediaDevices.enumerateDevices
+ * list (empty labels, no real device names), and a per-profile
+ * fixed scale on canvas measureText widths so font metrics no
+ * longer report the host device's raw values. The noise seed is
+ * the profile's own constant, so one profile presents the SAME
+ * fingerprint across sessions — a real fingerprint browser's
+ * profile is stable, and per-visit churn would itself be a tell.
  *
  * NOT covered, on purpose and recorded in the checkpoint: the HTTP
  * Accept-Language header (the WebView offers no per-request header
  * rewrite; the JS-visible language is the profile's), the device's
- * real font set (only blurred through the canvas/rect noise), and
- * anything on the Gecko engine (no per-session surface — see the
- * checkpoint's Gecko findings; fingerprint tabs are WebView-only).
+ * real font set (measureText scaling and rect jitter only shift
+ * the measurements off the raw values — a mitigation, not a font
+ * swap), WebGL readPixels-level noise, and anything on the Gecko
+ * engine (no per-session surface — see the checkpoint's Gecko
+ * findings; fingerprint tabs are WebView-only).
  */
 object FingerprintScript {
 
@@ -33,6 +47,11 @@ object FingerprintScript {
         val p = resolved.profile
         val tz = resolved.timezone
         val languages = p.languages.joinToString(",") { jsStr(it) }
+        val voices = p.voices.joinToString(",") { v ->
+            "{ name: ${jsStr(v.name)}, lang: ${jsStr(v.lang)}," +
+                " isDefault: ${v.isDefault} }"
+        }
+        val daylight = tz.zoneDaylightName?.let { jsStr(it) } ?: "null"
         return """
 (function () {
   'use strict';
@@ -40,6 +59,7 @@ object FingerprintScript {
   var LANG = ${jsStr(p.language)};
   var TZ = ${jsStr(tz.id)};
   var ZONE_NAME = ${jsStr(tz.zoneName)};
+  var DAYLIGHT_NAME = $daylight;
   function hash(x) {
     x = (x ^ 61) ^ (x >>> 16); x = x + (x << 3); x = x ^ (x >>> 4);
     x = x * 0x27d4eb2d; x = x ^ (x >>> 15); return x >>> 0;
@@ -59,6 +79,11 @@ object FingerprintScript {
     def(nav, 'platform', ${jsStr(p.platform)});
     def(nav, 'language', LANG);
     def(nav, 'languages', Object.freeze([$languages]));
+    // Belt and braces (v0.145.0): some detectors read the values
+    // off the navigator instance in ways that bypass the prototype
+    // getter, so pin the same answers on the instance itself.
+    def(navigator, 'language', LANG);
+    def(navigator, 'languages', Object.freeze([$languages]));
     def(nav, 'hardwareConcurrency', ${p.hardwareConcurrency});
     def(nav, 'deviceMemory', ${p.deviceMemory});
     var brands = [
@@ -78,7 +103,7 @@ object FingerprintScript {
           ],
           mobile: true, model: ${jsStr(p.uaModel)}, platform: 'Android',
           platformVersion: '14.0.0', uaFullVersion: '131.0.6778.104',
-          wow64: false
+          formFactors: ['Mobile'], wow64: false
         };
         var out = { brands: brands, mobile: true, platform: 'Android' };
         (hints || []).forEach(function (h) { if (h in all) out[h] = all[h]; });
@@ -164,10 +189,21 @@ object FingerprintScript {
       var off = tzOffsetMinutes(this);
       var sign = off < 0 ? '-' : '+';
       var abs = Math.abs(off);
+      // Daylight-aware zone name (v0.145.0): the standard offset
+      // is the smaller (more negative, for the northern-hemisphere
+      // zones in the profiles) of the January/July offsets; a date
+      // whose offset sits above it is in daylight time and takes
+      // the daylight name. Zones without DST keep the one name.
+      var name = ZONE_NAME;
+      if (DAYLIGHT_NAME) {
+        var jan = tzOffsetMinutes(new Date(Date.UTC(+map.year, 0, 1)));
+        var jul = tzOffsetMinutes(new Date(Date.UTC(+map.year, 6, 1)));
+        if (off > Math.min(jan, jul)) name = DAYLIGHT_NAME;
+      }
       return map.weekday + ' ' + map.month + ' ' + map.day + ' ' +
         map.year + ' ' + pad2(+map.hour) + ':' + map.minute + ':' +
         map.second + ' GMT' + sign + pad2(Math.floor(abs / 60)) +
-        pad2(abs % 60) + ' (' + ZONE_NAME + ')';
+        pad2(abs % 60) + ' (' + name + ')';
     };
   });
 
@@ -219,6 +255,29 @@ object FingerprintScript {
       cx.putImageData(cx.getImageData(0, 0, t.width, t.height), 0, 0);
       return t;
     }
+    // Font metrics (v0.145.0): measureText reports the HOST
+    // device's real font widths, identical across profiles — the
+    // leak the v0.144.0 real-device report showed. Scale widths
+    // by a fixed per-profile factor (seed-derived, in the
+    // ±0.44% band real devices differ by) so the numbers move off
+    // the raw values while staying stable for the profile. This
+    // is a mitigation, not a font swap: the glyphs themselves are
+    // still the host's, recorded in the checkpoint.
+    if (CanvasRenderingContext2D.prototype.measureText) {
+      var scale = 1 + ((hash(SEED * 97 + 13) % 89) - 44) / 10000;
+      var origMT = CanvasRenderingContext2D.prototype.measureText;
+      CanvasRenderingContext2D.prototype.measureText = function () {
+        var m = origMT.apply(this, arguments);
+        try {
+          var w = m.width * scale;
+          return new Proxy(m, {
+            get: function (t, prop) {
+              return prop === 'width' ? w : t[prop];
+            }
+          });
+        } catch (e) { return m; }
+      };
+    }
     var origTDU = HTMLCanvasElement.prototype.toDataURL;
     HTMLCanvasElement.prototype.toDataURL = function () {
       try {
@@ -240,6 +299,27 @@ object FingerprintScript {
   });
 
   section(function () {
+    // The profile GPU's capability table (v0.145.0): a renderer
+    // string that disagrees with MAX_TEXTURE_SIZE & friends is a
+    // cross-check failure, so the commonly probed parameters
+    // answer from the profile too. Arrays are copied per call —
+    // real drivers hand out a fresh typed array each time.
+    var GLP = {
+      3379: ${p.webGl.maxTextureSize},
+      34076: ${p.webGl.maxCubeMapTextureSize},
+      34024: ${p.webGl.maxRenderbufferSize},
+      3386: new Int32Array([${p.webGl.maxViewportDim}, ${p.webGl.maxViewportDim}]),
+      33901: new Float32Array([1, ${p.webGl.aliasedPointSizeMax}]),
+      33902: new Float32Array([1, ${p.webGl.aliasedLineWidthMax}]),
+      34921: ${p.webGl.maxVertexAttribs},
+      34930: ${p.webGl.maxTextureImageUnits},
+      35660: ${p.webGl.maxVertexTextureImageUnits},
+      35661: ${p.webGl.maxCombinedTextureImageUnits},
+      35803: ${p.webGl.maxFragmentUniformVectors},
+      35801: ${p.webGl.maxVertexUniformVectors},
+      35802: ${p.webGl.maxVaryingVectors},
+      34047: 16
+    };
     [window.WebGLRenderingContext, window.WebGL2RenderingContext]
       .forEach(function (ctor) {
         if (!ctor || !ctor.prototype.getParameter) return;
@@ -247,9 +327,116 @@ object FingerprintScript {
         ctor.prototype.getParameter = function (param) {
           if (param === 0x9245) return ${jsStr(p.webGlVendor)};
           if (param === 0x9246) return ${jsStr(p.webGlRenderer)};
+          if (Object.prototype.hasOwnProperty.call(GLP, param)) {
+            var v = GLP[param];
+            return (v && v.slice) ? v.slice() : v;
+          }
           return orig.apply(this, arguments);
         };
       });
+  });
+
+  section(function () {
+    // Speech-synthesis voices (v0.145.0): the list comes from
+    // the device TTS engine, so it must name the PROFILE region's
+    // engine, not the host's. Voice objects are built on the real
+    // SpeechSynthesisVoice prototype so instanceof checks hold.
+    if (!window.speechSynthesis || !window.SpeechSynthesisVoice) return;
+    var defs = [$voices];
+    var list = defs.map(function (d) {
+      var v = Object.create(SpeechSynthesisVoice.prototype);
+      def(v, 'name', d.name);
+      def(v, 'voiceURI', d.name);
+      def(v, 'lang', d.lang);
+      def(v, 'localService', true);
+      def(v, 'default', d.isDefault);
+      return v;
+    });
+    speechSynthesis.getVoices = function () { return list.slice(); };
+    setTimeout(function () {
+      try {
+        var evt = new Event('voiceschanged');
+        speechSynthesis.dispatchEvent(evt);
+        if (typeof speechSynthesis.onvoiceschanged === 'function') {
+          speechSynthesis.onvoiceschanged(evt);
+        }
+      } catch (e) {}
+    }, 50);
+  });
+
+  section(function () {
+    // Panel story (v0.145.0): color-gamut and dynamic-range
+    // media queries answer for the PROFILE device's screen.
+    // Only whole single-feature queries are intercepted — the
+    // shape detectors probe with; compound queries fall through
+    // to the real matchMedia untouched.
+    if (!window.matchMedia) return;
+    var GAMUT = ${jsStr(p.colorGamut)};
+    var HDR = ${p.dynamicRangeHigh};
+    var order = { srgb: 0, p3: 1, rec2020: 2 };
+    var origMM = window.matchMedia.bind(window);
+    function fakeMQL(query, matches) {
+      return {
+        matches: matches, media: query, onchange: null,
+        addListener: function () {}, removeListener: function () {},
+        addEventListener: function () {},
+        removeEventListener: function () {},
+        dispatchEvent: function () { return false; }
+      };
+    }
+    window.matchMedia = function (query) {
+      var q = String(query).replace(/\s+/g, '');
+      var g = /^\(color-gamut:(srgb|p3|rec2020)\)$/.exec(q);
+      if (g) return fakeMQL(query, order[g[1]] <= order[GAMUT]);
+      var d = /^\(dynamic-range:(standard|high)\)$/.exec(q);
+      if (d) return fakeMQL(query, d[1] === 'high' ? HDR : !HDR);
+      return origMM(query);
+    };
+  });
+
+  section(function () {
+    // Network story (v0.145.0): a healthy 4g link in the
+    // profile's region, on the real NetworkInformation
+    // prototype, instead of whatever radio the host is on.
+    var proto = window.NetworkInformation
+      ? NetworkInformation.prototype : null;
+    var conn = proto ? Object.create(proto) : {};
+    def(conn, 'effectiveType', '4g');
+    def(conn, 'downlink', ${p.connectionDownlink});
+    def(conn, 'rtt', ${p.connectionRtt});
+    def(conn, 'saveData', false);
+    def(conn, 'type', 'wifi');
+    def(navigator, 'connection', conn);
+  });
+
+  section(function () {
+    // Media devices (v0.145.0): without a permission grant real
+    // Chrome reports empty labels, so the profile does the same
+    // — the important part is that no HOST device name can leak
+    // through a granted page either. One mic, one camera, one
+    // speaker, generic ids, on the real MediaDeviceInfo
+    // prototype.
+    if (!navigator.mediaDevices ||
+        !navigator.mediaDevices.enumerateDevices) return;
+    function device(kind, id, group) {
+      var d = window.MediaDeviceInfo
+        ? Object.create(MediaDeviceInfo.prototype) : {};
+      def(d, 'deviceId', id);
+      def(d, 'kind', kind);
+      def(d, 'label', '');
+      def(d, 'groupId', group);
+      d.toJSON = function () {
+        return { deviceId: id, kind: kind, label: '', groupId: group };
+      };
+      return d;
+    }
+    navigator.mediaDevices.enumerateDevices = function () {
+      return Promise.resolve([
+        device('audioinput', 'default', 'fp-audio'),
+        device('videoinput', '', 'fp-video'),
+        device('audiooutput', 'default', 'fp-audio')
+      ]);
+    };
   });
 
   section(function () {

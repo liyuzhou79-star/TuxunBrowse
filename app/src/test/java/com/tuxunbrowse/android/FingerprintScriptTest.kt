@@ -2,6 +2,7 @@ package com.tuxunbrowse.android
 
 import com.tuxunbrowse.android.engine.FingerprintProfiles
 import com.tuxunbrowse.android.engine.FingerprintScript
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -59,6 +60,58 @@ class FingerprintScriptTest {
         assertTrue(payload.contains("ja-JP"))
         assertTrue(payload.contains("Mali-G715s"))
         assertTrue(payload.contains("35.6762"))
+    }
+
+    @Test
+    fun payloadIsStableForTheSameProfile() {
+        // v0.145.0: a real fingerprint browser's profile presents
+        // the SAME fingerprint across sessions — the payload is a
+        // pure function of the profile (seed is the profile's own
+        // constant) and must contain no per-build randomness.
+        val resolved = FingerprintProfiles.resolve("JP", null)
+        assertEquals(
+            FingerprintScript.payload(resolved),
+            FingerprintScript.payload(resolved)
+        )
+        assertFalse(
+            FingerprintScript.payload(resolved).contains("Math.random")
+        )
+    }
+
+    @Test
+    fun payloadCarriesTheV1450Surfaces() {
+        val payload = FingerprintScript.payload(
+            FingerprintProfiles.resolve("JP", null)
+        )
+        // Voice list names the region's engine.
+        assertTrue(payload.contains("getVoices"))
+        assertTrue(payload.contains("日本語"))
+        // WebGL capability table, not only the strings.
+        assertTrue(payload.contains("3379"))
+        assertTrue(payload.contains("16384"))
+        // Panel, network and device-list stories.
+        assertTrue(payload.contains("matchMedia"))
+        assertTrue(payload.contains("color-gamut"))
+        assertTrue(payload.contains("connection"))
+        assertTrue(payload.contains("enumerateDevices"))
+        // Font-metric scaling and UA-CH form factors.
+        assertTrue(payload.contains("measureText"))
+        assertTrue(payload.contains("formFactors"))
+        // Japan observes no DST: no daylight name in the payload.
+        assertTrue(payload.contains("DAYLIGHT_NAME = null"))
+    }
+
+    @Test
+    fun payloadCarriesDaylightNamesForTheStates() {
+        val payload = FingerprintScript.payload(
+            FingerprintProfiles.resolve("US", "America/New_York")
+        )
+        assertTrue(payload.contains("Eastern Daylight Time"))
+        // Taiwan's smaller GPU carries its own combined-unit cap.
+        val tw = FingerprintScript.payload(
+            FingerprintProfiles.resolve("TW", null)
+        )
+        assertTrue(tw.contains("35661: 48"))
     }
 
     @Test
