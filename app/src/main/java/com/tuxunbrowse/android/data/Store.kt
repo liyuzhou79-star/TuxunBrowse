@@ -1198,6 +1198,29 @@ class Store(context: Context) {
         get() = safeBoolean(KEY_WEBRTC_OFF, false)
         set(value) = prefs.edit().putBoolean(KEY_WEBRTC_OFF, value).apply()
 
+    /**
+     * Fingerprint mode's chosen region id (v0.144.0), one of
+     * FingerprintProfiles' ids ("US"/"JP"/"SG"/"TW"); unknown or
+     * unset resolves to the first profile. Deliberately NOT part
+     * of the backup slice in this version — the backup key set is
+     * pinned by audit tests and the profile is two taps to re-pick.
+     */
+    var fingerprintRegionId: String
+        get() = safeString(KEY_FP_REGION, null) ?: ""
+        set(value) = prefs.edit().putString(KEY_FP_REGION, value).apply()
+
+    /** Fingerprint mode's chosen IANA time zone id inside the region. */
+    var fingerprintTimezoneId: String
+        get() = safeString(KEY_FP_TIMEZONE, null) ?: ""
+        set(value) = prefs.edit().putString(KEY_FP_TIMEZONE, value).apply()
+
+    /** The live fingerprint profile + zone the mode runs with. */
+    fun resolvedFingerprint():
+        com.tuxunbrowse.android.engine.ResolvedFingerprint =
+        com.tuxunbrowse.android.engine.FingerprintProfiles.resolve(
+            fingerprintRegionId, fingerprintTimezoneId
+        )
+
     /** Web page text size in percent: 85 / 100 / 115 / 130. */
     var textZoomPercent: Int
         get() = safeInt(KEY_TEXT_ZOOM, 100)
@@ -1539,6 +1562,8 @@ class Store(context: Context) {
         private const val KEY_DNT = "dnt"
         private const val KEY_GPC = "gpc"
         private const val KEY_WEBRTC_OFF = "webrtc_off"
+        private const val KEY_FP_REGION = "fp_region"
+        private const val KEY_FP_TIMEZONE = "fp_timezone"
         private const val KEY_COMPAT_SITES = "compat_sites"
         private const val KEY_DESKTOP_SITES = "desktop_sites"
         private const val KEY_BOOKMARKS = "bookmarks"

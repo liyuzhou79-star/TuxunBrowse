@@ -882,6 +882,16 @@ class BrowserTab(
     // storage and only ever reduce what a page can learn.
     private val privacySignalsProvider: () -> PrivacySignals =
         { PrivacySignals() },
+    // The fingerprint profile this tab presents (v0.144.0, see
+    // FingerprintProfiles / FingerprintScript): non-null only for
+    // tabs inside fingerprint mode, resolved live from the Store
+    // so a profile switch re-reads at the next page start. Also
+    // drives the WebView's native user-agent string at creation.
+    // WebView tabs only — GeckoView 132 has no per-session
+    // language / time-zone / canvas surface and fingerprint mode
+    // never creates Gecko tabs (checkpoint has the API findings).
+    private val fingerprintProfileProvider:
+        () -> ResolvedFingerprint? = { null },
     // Whether the STRICT tracking-protection level is in force
     // (v0.92.0): widens this tab's WebView request interception to
     // AdBlocker's strict host list. Gecko tabs ignore it — their
@@ -1120,6 +1130,15 @@ class BrowserTab(
      */
     private var privacyScriptHandler: ScriptHandler? = null
     private var privacyScriptPayload: String? = null
+
+    /**
+     * Fingerprint script state (v0.144.0): the live document-start
+     * handler and the exact payload it was registered with, so a
+     * profile switch at page start means remove + re-register.
+     * Null when this is not a fingerprint tab.
+     */
+    private var fingerprintScriptHandler: ScriptHandler? = null
+    private var fingerprintScriptPayload: String? = null
 
     /**
      * Lazy engine creation (v0.23.0): a tab starts out as data only
@@ -1530,6 +1549,7 @@ class BrowserTab(
         // The guard-script handler belongs to the WebView below.
         removeGuardScriptHandler()
         removePrivacyScriptHandler()
+        removeFingerprintScriptHandler()
         exitFullscreen()
         popupChild?.let {
             try {
@@ -1607,6 +1627,7 @@ class BrowserTab(
         // destroyed; a woken tab re-registers at creation.
         removeGuardScriptHandler()
         removePrivacyScriptHandler()
+        removeFingerprintScriptHandler()
         customViewCallback = null
         popupChild?.let {
             try {
@@ -1872,6 +1893,14 @@ class BrowserTab(
         if (desktopMode) {
             view.settings.userAgentString = DESKTOP_USER_AGENT
         }
+        // Fingerprint mode (v0.144.0): the profile's UA is the
+        // tab's native UA too, so HTTP headers and navigator
+        // reads tell the same story. Fingerprint tabs are never
+        // desktop-mode tabs; if both somehow applied, the
+        // profile wins by coming last.
+        fingerprintProfileProvider()?.let { resolved ->
+            view.settings.userAgentString = resolved.profile.userAgent
+        }
         view.setOnLongClickListener { v ->
             val wv = v as WebView
             val hit = wv.hitTestResult
@@ -2031,6 +2060,9 @@ class BrowserTab(
                 // navigations the page started itself, which never
                 // pass through the app's load().
                 loading = true
+                // Fingerprint profile (v0.144.0): reconcile
+                // first, before the other two scripts.
+                syncFingerprintScript(wv)
                 // Page-guard script (v0.91.0): reconcile the
                 // injection channels with the user's switch.
                 syncGuardScript(wv)
@@ -2358,6 +2390,10 @@ class BrowserTab(
             }
         )
         webView = view
+        // Fingerprint profile (v0.144.0): registered FIRST, so
+        // the profile surface is in place before the guard or
+        // privacy scripts wrap anything on the page.
+        registerFingerprintScriptHandler(view)
         // Page-guard script (v0.91.0): the document-start handler
         // must be registered BEFORE the first loadUrl, or the
         // first page would miss the earliest channel.
@@ -2539,6 +2575,77 @@ class BrowserTab(
                 // idempotent (configurable defineProperty, plain
                 // reassignment of the WebRTC stub), which the
                 // v0.94.0 coexistence audit verified.
+                try {
+                    wv.evaluateJavascript(payload, null)
+                } catch (t: Throwable) {
+                    // Best-effort only.
+                }
+            }
+        } else {
+            try {
+                wv.evaluateJavascript(payload, null)
+            } catch (t: Throwable) {
+                // Best-effort only.
+            }
+        }
+    }
+
+    /** Register the fingerprint document-start handler. */
+    private fun registerFingerprintScriptHandler(view: WebView) {
+        val resolved = fingerprintProfileProvider() ?: return
+        val payload = FingerprintScript.payload(resolved)
+        if (!guardDocumentStartSupported()) return
+        if (fingerprintScriptHandler != null &&
+            fingerprintScriptPayload == payload
+        ) {
+            return
+        }
+        removeFingerprintScriptHandler()
+        fingerprintScriptHandler = try {
+            WebViewCompat.addDocumentStartJavaScript(
+                view, payload, setOf("*")
+            )
+        } catch (t: Throwable) {
+            null
+        }
+        fingerprintScriptPayload =
+            if (fingerprintScriptHandler != null) payload else null
+    }
+
+    /** Drop the fingerprint handler, if one is registered. */
+    private fun removeFingerprintScriptHandler() {
+        try {
+            fingerprintScriptHandler?.remove()
+        } catch (t: Throwable) {
+            // The WebView may already be gone; nothing to clean up.
+        }
+        fingerprintScriptHandler = null
+        fingerprintScriptPayload = null
+    }
+
+    /**
+     * Reconcile the fingerprint script with the live profile at
+     * every page start (v0.144.0), mirroring syncPrivacyScript:
+     * a non-fingerprint tab drops the handler; a changed payload
+     * re-registers and is also evaluated once for the page that
+     * just started (a registration made now only binds from the
+     * next load); without the document-start channel the payload
+     * goes through evaluateJavascript. The payload's snippets are
+     * idempotent (configurable defineProperty, plain reassignment),
+     * so a double run on one page is harmless.
+     */
+    private fun syncFingerprintScript(wv: WebView) {
+        val resolved = fingerprintProfileProvider()
+        if (resolved == null) {
+            removeFingerprintScriptHandler()
+            return
+        }
+        val payload = FingerprintScript.payload(resolved)
+        if (guardDocumentStartSupported()) {
+            if (fingerprintScriptHandler == null ||
+                fingerprintScriptPayload != payload
+            ) {
+                registerFingerprintScriptHandler(wv)
                 try {
                     wv.evaluateJavascript(payload, null)
                 } catch (t: Throwable) {

@@ -69,6 +69,9 @@ import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.FindInPage
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.Image
@@ -91,6 +94,7 @@ import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -106,6 +110,8 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
@@ -147,6 +153,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
@@ -286,6 +293,8 @@ import com.tuxunbrowse.android.engine.ALIVE_ENGINE_LIMIT
 import com.tuxunbrowse.android.engine.AdBlocker
 import com.tuxunbrowse.android.engine.BrowserTab
 import com.tuxunbrowse.android.engine.GeckoDownloadTracker
+import com.tuxunbrowse.android.engine.FingerprintProfiles
+import com.tuxunbrowse.android.engine.ResolvedFingerprint
 import com.tuxunbrowse.android.engine.GeckoHolder
 import com.tuxunbrowse.android.engine.GuardScript
 import com.tuxunbrowse.android.engine.SniffKind
@@ -561,6 +570,14 @@ fun BrowserApp(
     }
     val tabs = remember { mutableStateListOf<BrowserTab>() }
     var activeTabId by remember { mutableStateOf(-1) }
+    // Fingerprint mode (v0.144.0): its own tab group, apart from
+    // `tabs` — the normal shell, tab persistence and the engine
+    // sleep pass never see these tabs. Fingerprint tabs are always
+    // WebView tabs (GeckoView 132 has no per-session fingerprint
+    // surface; see the checkpoint) and never record history.
+    val fpTabs = remember { mutableStateListOf<BrowserTab>() }
+    var activeFpTabId by remember { mutableStateOf(-1) }
+    var fingerprintMode by remember { mutableStateOf(false) }
     // Startup loading split (v0.28.0 audit): the big JSON lists
     // (and, since v0.79.0, the bookmark folder names) start out
     // EMPTY here and are filled in by the startup effect
@@ -1250,7 +1267,8 @@ fun BrowserApp(
         engine: Engine,
         incognito: Boolean,
         url: String,
-        desktopMode: Boolean = false
+        desktopMode: Boolean = false,
+        fingerprint: Boolean = false
     ): BrowserTab {
         // The render-process-gone callback needs to know which tab died,
         // but the tab does not exist yet while it is being constructed —
@@ -1261,7 +1279,7 @@ fun BrowserApp(
             incognito = incognito,
             startUrl = url,
             desktopMode = desktopMode,
-            onVisit = { t, u -> recordVisit(t, u) },
+            onVisit = { t, u -> if (!fingerprint) recordVisit(t, u) },
             shouldUseWebView = { target ->
                 // A pending one-time bypass for exactly this URL (the
                 // load-error page's other-engine action, v0.52.0) wins
@@ -1396,7 +1414,9 @@ fun BrowserApp(
             },
             isAdHideSlotsEnabled = { store.adBlockEnabled },
             onBlockedRequest = { store.noteBlocked() },
-            guardScriptProvider = { store.guardScriptEnabled },
+            guardScriptProvider = {
+                !fingerprint && store.guardScriptEnabled
+            },
             privacySignalsProvider = {
                 PrivacySignals(
                     doNotTrack = store.doNotTrackEnabled,
@@ -1404,6 +1424,9 @@ fun BrowserApp(
                         store.globalPrivacyControlEnabled,
                     webRtcDisabled = store.webRtcDisabled
                 )
+            },
+            fingerprintProfileProvider = {
+                if (fingerprint) store.resolvedFingerprint() else null
             },
             trackingStrictProvider = {
                 store.trackingProtectionLevel ==
@@ -1798,6 +1821,69 @@ fun BrowserApp(
             newTab(store.mainEngine, false)
         } else if (activeTabId == tab.id) {
             activeTabId = tabs[minOf(idx, tabs.size - 1)].id
+        }
+    }
+
+    /** The fingerprint tab currently shown in fingerprint mode. */
+    fun activeFpTab(): BrowserTab? =
+        fpTabs.firstOrNull { it.id == activeFpTabId }
+
+    /** Open a fingerprint tab (always WebView, never history). */
+    fun newFpTab(url: String = HOME_URL): BrowserTab {
+        val tab = makeTab(Engine.WEBVIEW, false, url, fingerprint = true)
+        fpTabs.add(tab)
+        activeFpTabId = tab.id
+        return tab
+    }
+
+    /** Close a fingerprint tab; the group never sits empty. */
+    fun closeFpTab(tab: BrowserTab) {
+        val idx = fpTabs.indexOf(tab)
+        denyClipboardPermissionsForTab(tab.id)
+        releaseTransientUiForRemovedTab(tab.id)
+        tab.destroy()
+        fpTabs.remove(tab)
+        if (fpTabs.isEmpty()) {
+            newFpTab()
+        } else if (activeFpTabId == tab.id) {
+            activeFpTabId = fpTabs[minOf(idx, fpTabs.size - 1)].id
+        }
+    }
+
+    /** Enter fingerprint mode (from 设置 → 隐私与数据 → 指纹模式). */
+    fun enterFingerprintMode() {
+        if (fpTabs.isEmpty()) newFpTab()
+        fingerprintMode = true
+        screen = Screen.BROWSER
+    }
+
+    /** Leave fingerprint mode; its tabs stay as they are. */
+    fun exitFingerprintMode() {
+        fingerprintMode = false
+    }
+
+    /**
+     * Switch the active fingerprint profile (v0.144.0): store the
+     * choice and rebuild every fingerprint tab on it, keeping
+     * URLs. A live tab's native UA and document-start handler are
+     * creation-time state, so a rebuild is the only way to swap
+     * profiles without a half-applied tab; per-tab history stacks
+     * reset, which the mode never promised to keep.
+     */
+    fun applyFingerprintProfile(regionId: String, timezoneId: String) {
+        store.fingerprintRegionId = regionId
+        store.fingerprintTimezoneId = timezoneId
+        if (fpTabs.isEmpty()) return
+        val urls = fpTabs.map { it.url }
+        val activeIdx = fpTabs.indexOfFirst { it.id == activeFpTabId }
+        fpTabs.toList().forEach { old ->
+            denyClipboardPermissionsForTab(old.id)
+            old.destroy()
+        }
+        fpTabs.clear()
+        urls.forEach { newFpTab(it) }
+        if (activeIdx in fpTabs.indices) {
+            activeFpTabId = fpTabs[activeIdx].id
         }
     }
 
@@ -3509,6 +3595,21 @@ fun BrowserApp(
 
         Screen.BROWSER -> {
             val current = activeTab()
+            if (fingerprintMode) {
+                FingerprintShell(
+                    tabs = fpTabs,
+                    activeTab = activeFpTab(),
+                    resolved = store.resolvedFingerprint(),
+                    searchEngine = searchEngineState,
+                    onSelectTab = { activeFpTabId = it.id },
+                    onCloseTab = { closeFpTab(it) },
+                    onNewTab = { newFpTab() },
+                    onExit = { exitFingerprintMode() },
+                    onProfileChange = { regionId, tzId ->
+                        applyFingerprintProfile(regionId, tzId)
+                    }
+                )
+            } else {
             BrowserScreen(
                 tabs = tabs,
                 activeTab = current,
@@ -3772,6 +3873,7 @@ fun BrowserApp(
                     )
                 }
             )
+            }
         }
 
         Screen.BOOKMARKS -> BookmarksScreen(
@@ -3942,6 +4044,7 @@ fun BrowserApp(
             bookmarkCount = bookmarks.size,
             historyCount = history.size,
             onOpenReleaseUrl = { url -> openUrl(url) },
+            onEnterFingerprintMode = { enterFingerprintMode() },
             onBack = { screen = Screen.BROWSER },
             onClearHistoryRange = { range -> clearHistoryRange(range) },
             historyClearCounts = historyClearCounts(),
@@ -11935,12 +12038,483 @@ private fun ClearDataScreen(
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
+
+/**
+ * Fingerprint mode's own shell (v0.144.0): a deliberately smaller
+ * browser chrome than the normal one — a top bar that says
+ * 指纹模式 out loud, one address row with back / forward /
+ * reload / tabs / new-tab, a profile strip that opens the
+ * region & time-zone picker from inside the mode, and nothing
+ * else. Fingerprint tabs are a separate group (see fpTabs in
+ * BrowserApp): they never record history, always run on the
+ * system WebView, and present the picked profile. Exiting returns
+ * to the normal shell; the fingerprint tabs stay as they are.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FingerprintShell(
+    tabs: List<BrowserTab>,
+    activeTab: BrowserTab?,
+    resolved: ResolvedFingerprint,
+    searchEngine: SearchEngine,
+    onSelectTab: (BrowserTab) -> Unit,
+    onCloseTab: (BrowserTab) -> Unit,
+    onNewTab: () -> Unit,
+    onExit: () -> Unit,
+    onProfileChange: (String, String) -> Unit
+) {
+    val context = LocalContext.current
+    val profile = resolved.profile
+    val zone = resolved.timezone
+    var showTabs by remember { mutableStateOf(false) }
+    var showPicker by remember { mutableStateOf(false) }
+    var tzExpanded by remember { mutableStateOf(false) }
+    var addressText by remember { mutableStateOf("") }
+    var addressFocused by remember { mutableStateOf(false) }
+    LaunchedEffect(activeTab?.id, activeTab?.url, addressFocused) {
+        if (!addressFocused) {
+            addressText = if (activeTab == null || activeTab.isHome) {
+                ""
+            } else {
+                activeTab.url
+            }
+        }
+    }
+    fun submitAddress() {
+        val tab = activeTab ?: return
+        val text = addressText.trim()
+        if (text.isEmpty()) return
+        if (hasBlockedPageScheme(text)) {
+            android.widget.Toast.makeText(
+                context, "这个链接打不开：只支持 http/https 开头的网址",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        tab.load(resolveInput(text, searchEngine))
+    }
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.Fingerprint,
+                            contentDescription = null
+                        )
+                        Text("指纹模式")
+                    }
+                },
+                actions = {
+                    TextButton(onClick = onExit) { Text("退出") }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = { activeTab?.goBack() },
+                    enabled = activeTab?.canGoBack == true
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "后退"
+                    )
+                }
+                IconButton(
+                    onClick = { activeTab?.goForward() },
+                    enabled = activeTab?.canGoForward == true
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = "前进"
+                    )
+                }
+                IconButton(onClick = {
+                    if (activeTab?.loading == true) {
+                        activeTab.stopLoading()
+                    } else {
+                        activeTab?.reload()
+                    }
+                }) {
+                    Icon(
+                        if (activeTab?.loading == true) {
+                            Icons.Filled.Close
+                        } else {
+                            Icons.Filled.Refresh
+                        },
+                        contentDescription =
+                            if (activeTab?.loading == true) {
+                                "停止加载"
+                            } else {
+                                "刷新"
+                            }
+                    )
+                }
+                OutlinedTextField(
+                    value = addressText,
+                    onValueChange = { addressText = it },
+                    modifier = Modifier
+                        .weight(1f)
+                        .onFocusChanged {
+                            addressFocused = it.isFocused
+                        },
+                    singleLine = true,
+                    placeholder = { Text("搜索或输入网址") },
+                    keyboardOptions = KeyboardOptions(
+                        imeAction = ImeAction.Go
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onGo = { submitAddress() }
+                    )
+                )
+                BadgedBox(badge = {
+                    if (tabs.size > 1) {
+                        Badge { Text(tabs.size.toString()) }
+                    }
+                }) {
+                    IconButton(onClick = { showTabs = true }) {
+                        Icon(
+                            Icons.Filled.Tab,
+                            contentDescription = "标签页"
+                        )
+                    }
+                }
+                IconButton(onClick = onNewTab) {
+                    Icon(Icons.Filled.Add, contentDescription = "新建标签页")
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                AssistChip(
+                    onClick = { showPicker = true },
+                    label = {
+                        Text(
+                            "${profile.regionLabel} · ${zone.city} · " +
+                                profile.deviceModel,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Filled.Public,
+                            contentDescription = null
+                        )
+                    }
+                )
+            }
+            if (activeTab?.loading == true) {
+                LinearProgressIndicator(
+                    progress = {
+                        (activeTab.progress / 100f)
+                            .coerceIn(0f, 1f)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            val tab = activeTab
+            if (tab == null || tab.isHome) {
+                FingerprintHome(
+                    resolved = resolved,
+                    searchEngine = searchEngine,
+                    onOpenPicker = { showPicker = true },
+                    onSearch = { text ->
+                        activeTab?.load(resolveInput(text, searchEngine))
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                )
+            } else {
+                key(tab.id) {
+                    TabContent(
+                        tab = tab,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                    )
+                }
+            }
+        }
+    }
+    if (showTabs) {
+        ModalBottomSheet(onDismissRequest = { showTabs = false }) {
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(bottom = 24.dp)
+            ) {
+                item {
+                    ListItem(
+                        headlineContent = { Text("指纹模式 · 标签页") },
+                        trailingContent = {
+                            TextButton(onClick = {
+                                showTabs = false
+                                onNewTab()
+                            }) { Text("新建") }
+                        }
+                    )
+                }
+                items(tabs, key = { it.id }) { tab ->
+                    ListItem(
+                        headlineContent = {
+                            Text(
+                                tab.title.ifBlank { "新标签页" },
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        },
+                        supportingContent = {
+                            Text(
+                                if (tab.isHome) "指纹模式首页" else tab.url,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        },
+                        modifier = Modifier.clickable {
+                            showTabs = false
+                            onSelectTab(tab)
+                        },
+                        trailingContent = {
+                            IconButton(onClick = { onCloseTab(tab) }) {
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = "关闭标签页"
+                                )
+                            }
+                        }
+                    )
+                }
+            }
+        }
+    }
+    if (showPicker) {
+        ModalBottomSheet(onDismissRequest = { showPicker = false }) {
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(
+                    start = 16.dp, end = 16.dp, bottom = 24.dp
+                ),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                item {
+                    Text(
+                        "选择地区",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                }
+                items(FingerprintProfiles.all) { candidate ->
+                    ElevatedCard(
+                        onClick = {
+                            onProfileChange(
+                                candidate.regionId,
+                                candidate.timezones.first().id
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        ListItem(
+                            headlineContent = {
+                                Text(candidate.regionLabel)
+                            },
+                            supportingContent = {
+                                Text(
+                                    "${candidate.deviceModel} · " +
+                                        candidate.language
+                                )
+                            },
+                            trailingContent = {
+                                RadioButton(
+                                    selected = candidate.regionId ==
+                                        profile.regionId,
+                                    onClick = null
+                                )
+                            }
+                        )
+                    }
+                }
+                item {
+                    Text(
+                        "时区",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                }
+                item {
+                    ListItem(
+                        headlineContent = {
+                            Text("${zone.label} · ${zone.city}")
+                        },
+                        supportingContent = { Text(zone.id) },
+                        trailingContent = {
+                            IconButton(onClick = {
+                                tzExpanded = !tzExpanded
+                            }) {
+                                Icon(
+                                    if (tzExpanded) {
+                                        Icons.Filled.ExpandLess
+                                    } else {
+                                        Icons.Filled.ExpandMore
+                                    },
+                                    contentDescription =
+                                        if (tzExpanded) {
+                                            "收起时区列表"
+                                        } else {
+                                            "展开时区列表"
+                                        }
+                                )
+                            }
+                        }
+                    )
+                }
+                if (tzExpanded) {
+                    items(profile.timezones) { candidate ->
+                        ElevatedCard(
+                            onClick = {
+                                onProfileChange(
+                                    profile.regionId, candidate.id
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            ListItem(
+                                headlineContent = {
+                                    Text(
+                                        "${candidate.label} · " +
+                                            candidate.city
+                                    )
+                                },
+                                supportingContent = {
+                                    Text(candidate.id)
+                                },
+                                trailingContent = {
+                                    RadioButton(
+                                        selected = candidate.id == zone.id,
+                                        onClick = null
+                                    )
+                                }
+                            )
+                        }
+                    }
+                }
+                item {
+                    Text(
+                        "跟时区联动",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                }
+                item {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement =
+                                Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text("定位：${zone.city}（${zone.latitude}，${zone.longitude}）")
+                            Text("语言：${profile.language}")
+                            Text("日期格式：${profile.dateFormatSample}")
+                            Text("设备：${profile.deviceModel}")
+                        }
+                    }
+                }
+                item {
+                    Text(
+                        "切换地区或时区后，已打开的指纹标签会按新档案重开当前网页。",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Fingerprint mode's home (v0.144.0): the active profile at a
+ * glance plus a search box. No bookmarks, no history — the mode
+ * keeps nothing of either.
+ */
+@Composable
+private fun FingerprintHome(
+    resolved: ResolvedFingerprint,
+    searchEngine: SearchEngine,
+    onOpenPicker: () -> Unit,
+    onSearch: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val profile = resolved.profile
+    val zone = resolved.timezone
+    var query by remember { mutableStateOf("") }
+    Column(
+        modifier = modifier
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            placeholder = { Text("搜索或输入网址") },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+            keyboardActions = KeyboardActions(onGo = {
+                if (query.isNotBlank()) onSearch(query)
+            })
+        )
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    "当前档案",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text("地区：${profile.regionLabel}")
+                Text("设备：${profile.deviceModel}")
+                Text("语言：${profile.language}")
+                Text("时区：${zone.label} · ${zone.city}")
+                Text("定位：${zone.latitude}，${zone.longitude}")
+                Text("日期格式：${profile.dateFormatSample}")
+            }
+        }
+        Button(
+            onClick = onOpenPicker,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("选择地区与时区")
+        }
+        Text(
+            "指纹模式只用系统 WebView，标签页不记历史；" +
+                "Cookie 和网站数据与普通模式共用同一个存储，无法分开。",
+            style = MaterialTheme.typography.bodyMedium
+        )
+    }
+}
+
 private fun SettingsScreen(
     store: Store,
     refreshTick: Int = 0,
     bookmarkCount: Int = 0,
     historyCount: Int = 0,
     onOpenReleaseUrl: (String) -> Unit = {},
+    onEnterFingerprintMode: () -> Unit = {},
     onBack: () -> Unit,
     onClearHistoryRange: (HistoryClearRange) -> Unit = {},
     historyClearCounts: Map<HistoryClearRange, Int> = emptyMap(),
@@ -12861,6 +13435,7 @@ private fun SettingsScreen(
                         ListItem(headlineContent = { Text("内置净化脚本") })
                         ListItem(headlineContent = { Text("不要追踪") })
                         ListItem(headlineContent = { Text("停用 WebRTC") })
+                        ListItem(headlineContent = { Text("指纹模式") })
                         ListItem(headlineContent = { Text("网页深色模式") })
                         HorizontalDivider()
                         Text(
@@ -13055,6 +13630,37 @@ private fun SettingsScreen(
                         )
                     }
                 )
+            }
+            item {
+                Text("指纹模式", style = MaterialTheme.typography.titleMedium)
+            }
+            item {
+                ElevatedCard(
+                    onClick = onEnterFingerprintMode,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    ListItem(
+                        headlineContent = { Text("指纹模式") },
+                        supportingContent = {
+                            Text(
+                                "按所选地区的设备、语言、时区和定位浏览网页；" +
+                                    "只对系统 WebView 有效，IP 归属地由你的网络决定。"
+                            )
+                        },
+                        leadingContent = {
+                            Icon(
+                                Icons.Filled.Fingerprint,
+                                contentDescription = null
+                            )
+                        },
+                        trailingContent = {
+                            Icon(
+                                Icons.Filled.ChevronRight,
+                                contentDescription = null
+                            )
+                        }
+                    )
+                }
             }
             item {
                 Text("隐私", style = MaterialTheme.typography.titleMedium)
