@@ -245,6 +245,21 @@ class FingerprintScriptTest {
     }
 
     @Test
+    fun payloadCarriesAudioStaticsAndShaderPrecision() {
+        // v0.181.0: the AudioContext constructor story
+        // (48000 by construction, maxChannelCount pinned 2)
+        // and the shader-precision pins must ride along.
+        val payload = FingerprintScript.payload(
+            FingerprintProfiles.resolve("JP", null)
+        )
+        assertTrue(payload.contains("FpAudioContext"))
+        assertTrue(payload.contains("sampleRate: 48000"))
+        assertTrue(payload.contains("'maxChannelCount'"))
+        assertTrue(payload.contains("getShaderPrecisionFormat"))
+        assertTrue(payload.contains("Reflect.construct"))
+    }
+
+    @Test
     fun payloadCarriesTheFontShelf() {
         // v0.174.0: document.fonts.check answers known system
         // families from the picked device's stock shelf — the

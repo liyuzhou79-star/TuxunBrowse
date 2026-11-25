@@ -663,6 +663,49 @@ object FingerprintScript {
               return r;
             }, origRead));
         }
+        // Shader precision (v0.181.0): pin ONLY the entries
+        // public data agrees on for BOTH GPU families in the
+        // profile library — vertex float {127,127,23} and int
+        // {31,30,0} at every level; fragment HIGH float/int
+        // the same; fragment medium/low float precision = 10
+        // (fp16) with the range left as the host's own.
+        // Fragment medium/low INT genuinely differs between
+        // Adreno and Mali and no per-family values could be
+        // verified from public sources, so those pass through
+        // untouched rather than being pinned to an invented
+        // number. Pinned answers are built on the real
+        // object's prototype so instanceof/shape checks hold.
+        var origSPF = ctor.prototype.getShaderPrecisionFormat;
+        if (origSPF) {
+          setMethod(ctor.prototype, 'getShaderPrecisionFormat',
+            fixFn(function (shaderType, precisionType) {
+              var real = origSPF.apply(this, arguments);
+              var pin = null;
+              var isFloat = precisionType >= 0x8DF0 &&
+                precisionType <= 0x8DF2;
+              var isHigh = precisionType === 0x8DF2 ||
+                precisionType === 0x8DF5;
+              if (shaderType === 0x8B31) {
+                pin = isFloat
+                  ? { rangeMin: 127, rangeMax: 127, precision: 23 }
+                  : { rangeMin: 31, rangeMax: 30, precision: 0 };
+              } else if (shaderType === 0x8B30 && isHigh) {
+                pin = isFloat
+                  ? { rangeMin: 127, rangeMax: 127, precision: 23 }
+                  : { rangeMin: 31, rangeMax: 30, precision: 0 };
+              } else if (shaderType === 0x8B30 && isFloat) {
+                pin = { rangeMin: real.rangeMin,
+                  rangeMax: real.rangeMax, precision: 10 };
+              }
+              if (!pin) return real;
+              var fmt = Object.create(
+                Object.getPrototypeOf(real) || Object.prototype);
+              fmt.rangeMin = pin.rangeMin;
+              fmt.rangeMax = pin.rangeMax;
+              fmt.precision = pin.precision;
+              return fmt;
+            }, origSPF));
+        }
       });
   });
 
@@ -832,6 +875,64 @@ object FingerprintScript {
           device('audiooutput', 'default', 'fp-audio')
         ]);
       }, origEnumDevices));
+  });
+
+  // AudioContext static parameters (v0.181.0): the section
+  // after this one shapes sample VALUES; this one aligns the
+  // static story. sampleRate: the profile devices' platform
+  // rate is 48000, so when a page constructs a context
+  // WITHOUT asking for a rate we pass 48000 explicitly — the
+  // context really runs at the profile rate, nothing is
+  // faked; an explicit ask is honoured as asked.
+  // destination.maxChannelCount: Android Chrome reports 2,
+  // pinned per constructed context. baseLatency /
+  // outputLatency are deliberately NOT pinned: on a real
+  // device they follow the audio route (speaker, Bluetooth,
+  // USB), so any fixed value would contradict the route the
+  // user actually hears.
+  section(function () {
+    var OrigAC = window.AudioContext ||
+      window.webkitAudioContext;
+    if (!OrigAC) return;
+    function FpAudioContext(options) {
+      var opts = (options && typeof options === 'object')
+        ? options : {};
+      if (opts.sampleRate === undefined) {
+        opts = Object.assign({}, opts, { sampleRate: 48000 });
+      }
+      var ctx = Reflect.construct(OrigAC, [opts],
+        FpAudioContext);
+      try {
+        Object.defineProperty(ctx.destination,
+          'maxChannelCount', {
+            value: 2, writable: false, enumerable: true,
+            configurable: true
+          });
+      } catch (e) {}
+      return ctx;
+    }
+    FpAudioContext.prototype = OrigAC.prototype;
+    fixFn(FpAudioContext, OrigAC);
+    function installAC(name) {
+      try {
+        Object.defineProperty(window, name, {
+          value: FpAudioContext, writable: true,
+          enumerable: false, configurable: true
+        });
+      } catch (e) {
+        def(window, name, FpAudioContext);
+      }
+    }
+    installAC('AudioContext');
+    if (window.webkitAudioContext &&
+        window.webkitAudioContext === OrigAC) {
+      try {
+        Object.defineProperty(window, 'webkitAudioContext', {
+          value: FpAudioContext, writable: true,
+          enumerable: false, configurable: true
+        });
+      } catch (e) {}
+    }
   });
 
   section(function () {
