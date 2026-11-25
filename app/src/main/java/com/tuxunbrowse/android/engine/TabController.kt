@@ -1752,6 +1752,16 @@ class BrowserTab(
         view.settings.setSupportMultipleWindows(false)
         view.settings.databaseEnabled = false
         view.settings.savePassword = false
+        // Form-data saving pinned off (v0.133.0 web-capability audit):
+        // unlike the four switches above this one was still riding the
+        // platform default, which is ON — the WebView could keep a
+        // legacy store of typed form values even though the app has no
+        // password/form vault and the clear-data page already wipes
+        // that store (v0.129.0). Pinning it off aligns the save side
+        // with the clear side; the setter is deprecated because the
+        // system Autofill Framework is the modern path, which this
+        // does not touch.
+        view.settings.saveFormData = false
         // Media autoplay gate (v0.123.0 fullscreen audit): also a
         // platform default pinned for the record — media playback
         // requires a user gesture (the default true), so pages
@@ -3846,6 +3856,27 @@ fun specialLinkScheme(url: String): String? {
 }
 
 fun isSpecialLinkUrl(url: String): Boolean = specialLinkScheme(url) != null
+
+/**
+ * Normalize a web page's file-picker accept hint into a MIME type the
+ * system document picker can actually launch with. Pages may declare
+ * accept as a real MIME type ("image/png", "image/*"), as a bare
+ * extension (".pdf"), or as a comma list; the engines hand those raw
+ * strings through (WebView FileChooserParams.acceptTypes, Gecko
+ * FilePrompt.mimeTypes). An extension or a list is NOT a valid intent
+ * type — the picker either finds nothing to show or fails to launch,
+ * and the request would be answered as a silent cancel. Anything that
+ * is not a single "type/subtype" shape therefore falls back to the
+ * pick-anything type; a valid single MIME type passes through trimmed.
+ */
+fun normalizePickerMime(raw: String?): String {
+    val candidate = raw?.trim().orEmpty()
+    if (candidate.isEmpty() || ',' in candidate) return "*/*"
+    val slash = candidate.indexOf('/')
+    if (slash <= 0 || slash == candidate.length - 1) return "*/*"
+    if (candidate.any { it.isWhitespace() }) return "*/*"
+    return candidate
+}
 
 /**
  * One query parameter of a special link, URL-decoded. These links are

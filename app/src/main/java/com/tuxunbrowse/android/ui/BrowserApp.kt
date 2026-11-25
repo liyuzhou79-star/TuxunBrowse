@@ -291,6 +291,7 @@ import com.tuxunbrowse.android.engine.SniffKind
 import com.tuxunbrowse.android.engine.SniffedResource
 import com.tuxunbrowse.android.engine.TabLoadError
 import com.tuxunbrowse.android.engine.ThumbnailCache
+import com.tuxunbrowse.android.engine.normalizePickerMime
 import com.tuxunbrowse.android.engine.EngineFallbackAction
 import com.tuxunbrowse.android.engine.engineFallbackActions
 import com.tuxunbrowse.android.engine.engineFallbackReason
@@ -2651,11 +2652,35 @@ fun BrowserApp(
         pendingFileAnswer?.invoke(uris)
         pendingFileAnswer = null
     }
-    fun launchFilePicker(mime: String, answer: (List<android.net.Uri>) -> Unit) {
+    // Single-choice variant (v0.133.0): a page whose file input does
+    // not allow multiple files must not be handed several — the two
+    // engines say so in their request (WebView FileChooserParams.mode,
+    // Gecko FilePrompt.type), and the picker now honours it instead of
+    // always opening the multiple-documents contract.
+    val fileChooserSingleLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        pendingFileAnswer?.invoke(listOfNotNull(uri))
+        pendingFileAnswer = null
+    }
+    fun launchFilePicker(
+        mime: String,
+        multiple: Boolean,
+        answer: (List<android.net.Uri>) -> Unit
+    ) {
         pendingFileAnswer?.invoke(emptyList())
         pendingFileAnswer = answer
+        // The page's accept hint is not necessarily a launchable MIME
+        // type (it can be a bare extension like ".pdf"); normalize it
+        // or the system picker cannot open at all and the request
+        // would end as a silent cancel (normalizePickerMime).
+        val launchMime = normalizePickerMime(mime)
         try {
-            fileChooserLauncher.launch(arrayOf(mime))
+            if (multiple) {
+                fileChooserLauncher.launch(arrayOf(launchMime))
+            } else {
+                fileChooserSingleLauncher.launch(arrayOf(launchMime))
+            }
         } catch (t: Throwable) {
             pendingFileAnswer = null
             answer(emptyList())
@@ -2663,7 +2688,9 @@ fun BrowserApp(
     }
     fileChooserHandler = { params, callback ->
         val mime = params.acceptTypes?.firstOrNull { it.isNotBlank() } ?: "*/*"
-        launchFilePicker(mime) { uris ->
+        val multiple = params.mode ==
+            android.webkit.WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE
+        launchFilePicker(mime, multiple) { uris ->
             callback.onReceiveValue(
                 if (uris.isEmpty()) null else uris.toTypedArray()
             )
@@ -2671,7 +2698,9 @@ fun BrowserApp(
     }
     geckoFileChooserHandler = { prompt, respond ->
         val mime = prompt.mimeTypes?.firstOrNull { it.isNotBlank() } ?: "*/*"
-        launchFilePicker(mime, respond)
+        val multiple = prompt.type ==
+            GeckoSession.PromptDelegate.FilePrompt.Type.MULTIPLE
+        launchFilePicker(mime, multiple, respond)
     }
 
     // Gecko JavaScript dialogs: one at a time. A second prompt arriving
@@ -12453,6 +12482,15 @@ private fun SettingsScreen(
                         ListItem(
                             headlineContent = {
                                 Text("文件上传、相机和麦克风、网站登录（基础认证）")
+                            }
+                        )
+                        ListItem(
+                            headlineContent = { Text("网页提示框") },
+                            supportingContent = {
+                                Text(
+                                    "网页的提醒、确认和输入框：火狐用应用内弹窗显示，" +
+                                        "系统 WebView 用系统对话框显示"
+                                )
                             }
                         )
                         ListItem(headlineContent = { Text("不出售或分享资料信号") })
