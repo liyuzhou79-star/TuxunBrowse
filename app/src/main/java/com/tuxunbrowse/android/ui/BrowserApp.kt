@@ -12768,8 +12768,6 @@ private fun ClearDataScreen(
  * system WebView, and present the picked profile. Exiting returns
  * to the normal shell; the fingerprint tabs stay as they are.
  */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
 /**
  * Edge-swipe web navigation (v0.179.0, both shells): a drag
  * that STARTS within 24dp of the left edge and travels 64dp
@@ -12867,6 +12865,8 @@ private fun EdgeSwipeNavigation(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
 private fun FingerprintShell(
     tabs: List<BrowserTab>,
     activeTab: BrowserTab?,
