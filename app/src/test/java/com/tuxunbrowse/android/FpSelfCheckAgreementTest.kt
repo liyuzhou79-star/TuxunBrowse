@@ -110,4 +110,53 @@ class FpSelfCheckAgreementTest {
             script.contains("p.voices.joinToString")
         )
     }
+
+    /**
+     * Off-state agreement (v0.205.0 audit): a protection
+     * switch turned off must read as 已关闭 (off) in the
+     * self-check, never as an anomaly — and ONLY the rows
+     * whose surfaces a switch actually gates may have an off
+     * state. The payload gates exactly two probed surfaces
+     * by switch (WebGL/WebGPU via webglDisguise, the font
+     * shelf via fontSet); the v0.201.0 rows （网络信息 /
+     * 设备列表 / 语音列表） are ungated in the payload — no
+     * FP_OPT flag exists for them — so their rows must not
+     * grow an off state either, or the page would claim a
+     * switch exists that does not. 请求头语言 stays
+     * permanently 'na' by design.
+     */
+    @Test
+    fun offStateExistsExactlyOnTheSwitchGatedRows() {
+        val app = browserAppSource()
+        val probe = app.substringAfter("private fun fpSelfCheckProbe")
+            .substringBefore("The tab-count box")
+        // Four rows are off-aware: WebGL 厂商 / WebGL 型号 /
+        // WebGPU 厂商 (webglOff) and 字体清单 (fontOff).
+        assertEquals(
+            "exactly the switch-gated rows may report 'off'",
+            4, probe.split("? 'off'").size - 1
+        )
+        assertEquals(
+            setOf("webglOff", "fontOff"),
+            Regex("""EXP\.(\w+Off)""").findAll(probe)
+                .map { it.groupValues[1] }.toSet()
+        )
+        // The EXP builder writes both flags, from the same
+        // protection state the payload was built with.
+        val builder = app.substringAfter("fun runSelfCheck")
+            .substringBefore("val probe = fpSelfCheckProbe")
+        assertTrue(builder.contains(".put(\"webglOff\", !protection.webglDisguise)"))
+        assertTrue(builder.contains(".put(\"fontOff\", !protection.fontSet)"))
+        // The ungated v0.201.0 rows are all present and none
+        // of them references an off flag (checked above by
+        // the identifier set); the header-language row is
+        // the permanent 'na'.
+        for (name in listOf("网络信息", "设备列表", "语音列表")) {
+            assertTrue(
+                "ungated row $name must exist",
+                probe.contains("row('$name'")
+            )
+        }
+        assertTrue(probe.contains("row('请求头语言', 'na'"))
+    }
 }

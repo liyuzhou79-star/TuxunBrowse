@@ -1370,6 +1370,70 @@ class Store(private val context: Context) {
     }
 
     /**
+     * The download-origin side table (v0.205.0, see
+     * DownloadOrigins): DownloadManager id → the fingerprint
+     * combination a download was started from, so a retry from
+     * the downloads screen can take its cookie from the SAME
+     * persona's jar instead of the default one. Device-local
+     * bookkeeping — system download ids are meaningless on
+     * another device — so, like the fp_* keys, it stays out of
+     * backups.
+     */
+    fun downloadOrigins():
+        Map<Long, com.tuxunbrowse.android.engine.DownloadOrigin> =
+        com.tuxunbrowse.android.engine.DownloadOrigins
+            .decode(safeString(KEY_DOWNLOAD_ORIGINS, null))
+
+    /** One record's origin; null is the normal persona. */
+    fun downloadOrigin(id: Long):
+        com.tuxunbrowse.android.engine.DownloadOrigin? =
+        downloadOrigins()[id]
+
+    fun recordDownloadOrigin(
+        id: Long,
+        origin: com.tuxunbrowse.android.engine.DownloadOrigin
+    ) {
+        val next = com.tuxunbrowse.android.engine.DownloadOrigins
+            .cap(downloadOrigins() + (id to origin))
+        prefs.edit()
+            .putString(
+                KEY_DOWNLOAD_ORIGINS,
+                com.tuxunbrowse.android.engine.DownloadOrigins
+                    .encode(next)
+            )
+            .apply()
+    }
+
+    fun removeDownloadOrigins(ids: Collection<Long>) {
+        if (ids.isEmpty()) return
+        val current = downloadOrigins()
+        val next = current.filterKeys { it !in ids }
+        if (next.size == current.size) return
+        prefs.edit()
+            .putString(
+                KEY_DOWNLOAD_ORIGINS,
+                com.tuxunbrowse.android.engine.DownloadOrigins
+                    .encode(next)
+            )
+            .apply()
+    }
+
+    /** Forget origins whose records the system no longer lists. */
+    fun pruneDownloadOrigins(liveIds: Set<Long>) {
+        val current = downloadOrigins()
+        val next = com.tuxunbrowse.android.engine.DownloadOrigins
+            .prune(current, liveIds)
+        if (next.size == current.size) return
+        prefs.edit()
+            .putString(
+                KEY_DOWNLOAD_ORIGINS,
+                com.tuxunbrowse.android.engine.DownloadOrigins
+                    .encode(next)
+            )
+            .apply()
+    }
+
+    /**
      * The WebView storage profile name for the live
      * combination (v0.198.0). The first call after the
      * per-combination upgrade also settles the legacy jar's
@@ -1919,6 +1983,7 @@ class Store(private val context: Context) {
         private const val KEY_HISTORY_RETENTION = "history_retention"
         private const val KEY_SPEED_DIALS = "speed_dials"
         private const val KEY_TOTAL_BLOCKED = "total_blocked"
+        private const val KEY_DOWNLOAD_ORIGINS = "download_origins"
         private const val KEY_WV_INCOGNITO_DIRTY = "wv_incognito_dirty"
         private const val BLOCKED_FLUSH_EVERY = 20
         private const val BLOCKED_FLUSH_MS = 5_000L

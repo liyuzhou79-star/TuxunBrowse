@@ -922,6 +922,33 @@ fun BrowserApp(
         tab?.webView?.settings?.userAgentString
 
     /**
+     * Record a just-enqueued system download's fingerprint
+     * origin (v0.205.0): when a fingerprint tab's download
+     * really reached the system downloader (the fallback ran
+     * and returned an id — a TuxunDown share never does), the
+     * record is tied to the combination live at this moment,
+     * so a retry from the downloads screen takes its cookie
+     * from that combination's jar (see DownloadOrigins).
+     * Normal tabs record nothing: absence IS the normal
+     * origin.
+     */
+    fun recordDownloadOriginIfFingerprint(
+        fingerprint: Boolean,
+        downloadId: Long?
+    ) {
+        if (!fingerprint || downloadId == null) return
+        val resolved = store.resolvedFingerprint()
+        store.recordDownloadOrigin(
+            downloadId,
+            com.tuxunbrowse.android.engine.DownloadOrigin(
+                storageName = store.fingerprintStorageName(),
+                comboLabel = resolved.profile.regionLabel +
+                    " · " + resolved.device.deviceModel
+            )
+        )
+    }
+
+    /**
      * The one dispatch point for URL-type downloads (WebView download
      * listener, sniffer items). Gecko tab downloads never come here —
      * the app saves those itself. [systemFallback] is the caller's
@@ -1520,11 +1547,12 @@ fun BrowserApp(
                 created?.let { geckoNewSessionHandler(it, session, uri) }
             },
             onUrlDownload = { dlUrl, ua, cd, mt ->
+                var enqueuedId: Long? = null
                 downloadWithMode(
                     dlUrl, null,
                     fromIncognito = created?.incognito == true
                 ) {
-                    startSystemDownload(
+                    enqueuedId = startSystemDownload(
                         context, dlUrl, ua, cd, mt,
                         referer = created?.url,
                         cookieHeader = if (fingerprint) {
@@ -1538,6 +1566,9 @@ fun BrowserApp(
                         }
                     )
                 }
+                recordDownloadOriginIfFingerprint(
+                    fingerprint, enqueuedId
+                )
             },
             onDirectDownload = { target ->
                 // A tapped direct file link, intercepted by either
@@ -1548,11 +1579,12 @@ fun BrowserApp(
                 // one (pageUserAgent), and the Referer is the
                 // page the tap happened on (the tab has not moved).
                 val fileName = resolveDownloadFileName(target, null, null)
+                var enqueuedId: Long? = null
                 downloadWithMode(
                     target, fileName,
                     fromIncognito = created?.incognito == true
                 ) {
-                    startSystemDownload(
+                    enqueuedId = startSystemDownload(
                         context, target, pageUserAgent(created), null, null,
                         referer = created?.url,
                         cookieHeader = if (fingerprint) {
@@ -1566,6 +1598,9 @@ fun BrowserApp(
                         }
                     )
                 }
+                recordDownloadOriginIfFingerprint(
+                    fingerprint, enqueuedId
+                )
                 android.widget.Toast.makeText(
                     context, "已开始下载 $fileName",
                     android.widget.Toast.LENGTH_SHORT
@@ -11780,7 +11815,14 @@ private data class DownloadEntry(
     val statusText: String,
     val sizeText: String,
     val mediaType: String?,
-    val sourceUrl: String?
+    val sourceUrl: String?,
+    /**
+     * The fingerprint origin this record was started from
+     * (v0.205.0, DownloadOrigins side table); null is a normal
+     * download. A retry reads its cookie from the origin
+     * combination's jar, and the row names the combination.
+     */
+    val origin: com.tuxunbrowse.android.engine.DownloadOrigin? = null
 )
 
 /** Plain-language text for a pending/paused download's reason code. */
@@ -11824,6 +11866,15 @@ private fun readDownloadEntries(
     val manager = context.getSystemService(
         android.content.Context.DOWNLOAD_SERVICE
     ) as android.app.DownloadManager
+    // Origin side table (v0.205.0): attached here so the full
+    // load and the in-progress poll map rows identically,
+    // retry included. A failed read just leaves rows origin-
+    // less — the pre-0.205 behaviour.
+    val origins = try {
+        Store(context).downloadOrigins()
+    } catch (t: Throwable) {
+        emptyMap()
+    }
     val loaded = mutableListOf<DownloadEntry>()
     try {
         val cursor = manager.query(query)
@@ -11863,15 +11914,17 @@ private fun readDownloadEntries(
                 } else {
                     "${done / 1024} KB"
                 }
+                val rowId = c.getLong(idIdx)
                 loaded.add(
                     DownloadEntry(
-                        id = c.getLong(idIdx),
+                        id = rowId,
                         title = c.getString(titleIdx) ?: "未命名文件",
                         status = status,
                         statusText = statusText,
                         sizeText = sizeText,
                         mediaType = c.getString(typeIdx),
-                        sourceUrl = c.getString(uriIdx)
+                        sourceUrl = c.getString(uriIdx),
+                        origin = origins[rowId]
                     )
                 )
             }
@@ -11900,9 +11953,22 @@ private fun DownloadsScreen(
         entries = kotlinx.coroutines.withContext(
             kotlinx.coroutines.Dispatchers.IO
         ) {
-            readDownloadEntries(
+            val loaded = readDownloadEntries(
                 context, android.app.DownloadManager.Query()
             )
+            // Origin hygiene (v0.205.0): this load is the full
+            // unfiltered list, so origins pointing at records
+            // the system no longer lists (deleted on the system
+            // side, or before this screen existed) are dropped
+            // here — the only place the whole truth is visible.
+            try {
+                Store(context).pruneDownloadOrigins(
+                    loaded.map { it.id }.toSet()
+                )
+            } catch (t: Throwable) {
+                // Hygiene is best-effort; the list still shows.
+            }
+            loaded
         }
     }
 
@@ -12101,6 +12167,11 @@ private fun DownloadsScreen(
                     } catch (t: Throwable) {
                         // Best-effort; the list refresh below shows the truth.
                     }
+                    // The origin side table forgets with the
+                    // record (v0.205.0).
+                    geckoStore.removeDownloadOrigins(
+                        listOf(toDeleteEntry.id)
+                    )
                     pendingDeleteEntry = null
                     refreshTick++
                 }) { Text("删除") }
@@ -12302,7 +12373,12 @@ private fun DownloadsScreen(
                                     val manager = context.getSystemService(
                                         android.content.Context.DOWNLOAD_SERVICE
                                     ) as android.app.DownloadManager
-                                    manager.remove(*targetIds.toLongArray())
+                                    val n = manager.remove(*targetIds.toLongArray())
+                                    // The origin side table
+                                    // forgets with the records
+                                    // (v0.205.0).
+                                    geckoStore.removeDownloadOrigins(targetIds)
+                                    n
                                 } catch (t: Throwable) {
                                     -1
                                 }
@@ -12607,10 +12683,29 @@ private fun DownloadsScreen(
         // failed record is kept (existing behaviour): the retry is
         // a new record next to it, and the user can delete the old
         // one with the delete button.
-        startSystemDownload(
+        // Persona (v0.205.0): a record born in fingerprint mode
+        // retries with ITS combination's cookie, read fresh from
+        // that jar through the same three-way contract the first
+        // download used — never the default jar's session, even
+        // when the mode has since switched combinations or been
+        // exited. A normal record passes no header and keeps the
+        // default-jar behaviour it always had. The new record
+        // inherits the origin, so a second retry still knows.
+        val origin = entry.origin?.takeIf {
+            com.tuxunbrowse.android.engine.DownloadOrigins
+                .usesFingerprintJar(it)
+        }
+        val newId = startSystemDownload(
             context, source, retryUserAgent, null, entry.mediaType,
-            referer = retryReferer
+            referer = retryReferer,
+            cookieHeader = origin?.let {
+                com.tuxunbrowse.android.engine.FpStorage
+                    .downloadCookie(source, it.storageName)
+            }
         )
+        if (origin != null && newId != null) {
+            geckoStore.recordDownloadOrigin(newId, origin)
+        }
         refreshTick++
     }
 
@@ -12815,6 +12910,20 @@ private fun DownloadsScreen(
                         val parts = mutableListOf(entry.statusText, entry.sizeText)
                         if (!entry.mediaType.isNullOrBlank()) {
                             parts.add(entry.mediaType)
+                        }
+                        // Fingerprint-born records say so
+                        // (v0.205.0): the combination named here
+                        // is the one a retry takes its cookie
+                        // from — the attribution is visible, not
+                        // just internal bookkeeping.
+                        entry.origin?.let { origin ->
+                            parts.add(
+                                if (origin.comboLabel.isNotBlank()) {
+                                    "指纹下载 · ${origin.comboLabel}"
+                                } else {
+                                    "指纹下载"
+                                }
+                            )
                         }
                         if (entry.status ==
                             android.app.DownloadManager.STATUS_SUCCESSFUL

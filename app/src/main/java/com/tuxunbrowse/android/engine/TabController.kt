@@ -3918,8 +3918,8 @@ fun startSystemDownload(
     mimetype: String?,
     referer: String? = null,
     cookieHeader: String? = null
-) {
-    if (url.isNullOrBlank()) return
+): Long? {
+    if (url.isNullOrBlank()) return null
     try {
         val uri = Uri.parse(url)
         // Name decided by the shared resolver: RFC 5987 filename*
@@ -3956,10 +3956,17 @@ fun startSystemDownload(
             request.addRequestHeader("Referer", referer)
         }
         val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-        manager.enqueue(request)
+        // The enqueued id goes back to the caller (v0.205.0):
+        // a fingerprint caller records it in the download-
+        // origin side table so a later retry can find the
+        // persona this record belongs to. Callers that do not
+        // care simply ignore the return value, as before.
+        val downloadId = manager.enqueue(request)
         Toast.makeText(context, "已交给系统下载：$fileName", Toast.LENGTH_LONG).show()
+        return downloadId
     } catch (t: Throwable) {
         Toast.makeText(context, "下载启动失败，请换一个链接重试", Toast.LENGTH_LONG).show()
+        return null
     }
 }
 
