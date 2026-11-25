@@ -331,7 +331,6 @@ class FingerprintConsistencyTest {
             }
         }
     }
-}
 
     // ---- Protection switches (v0.190.0) ----
 
@@ -396,3 +395,4 @@ class FingerprintConsistencyTest {
         assertTrue(noSensors.contains("var FP_OPT_SENSORS = false;"))
         assertTrue(noSensors.contains("var FP_OPT_CANVAS = true;"))
     }
+}
