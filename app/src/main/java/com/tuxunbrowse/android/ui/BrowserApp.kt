@@ -12773,17 +12773,28 @@ private data class IpCheckResult(
 )
 
 /**
- * Ask ipapi.co where this device's traffic currently exits
- * (v0.147.0). One plain HTTPS GET, no account, no key; null on
- * any failure. This is the ONE network call fingerprint mode
- * makes about itself, and it only runs when the user taps the
- * self-check button on the mode's home — the home says so.
+ * Ask a geo-IP service where this device's traffic currently
+ * exits (v0.147.0; fallback source v0.154.0). One plain HTTPS
+ * GET, no account, no key; null only when every source fails or
+ * answers without a country. This is the ONE network call
+ * fingerprint mode makes about itself, and it only runs when
+ * the user taps the self-check button — the home says so,
+ * including which services may be asked.
  */
-private suspend fun fetchExitIp(): IpCheckResult? =
+private suspend fun fetchExitIp(): IpCheckResult? {
+    fetchExitIpFrom("https://ipapi.co/json/")?.let { return it }
+    // ipapi.co is not reachable from every network the app runs
+    // on; ip.sb's free geo endpoint answers the same four fields
+    // under the same names. A source that answers without a
+    // country counts as failed — no verdict is ever guessed.
+    return fetchExitIpFrom("https://api.ip.sb/geoip")
+}
+
+private suspend fun fetchExitIpFrom(url: String): IpCheckResult? =
     withContext(Dispatchers.IO) {
         var conn: java.net.HttpURLConnection? = null
         try {
-            conn = java.net.URL("https://ipapi.co/json/")
+            conn = java.net.URL(url)
                 .openConnection() as java.net.HttpURLConnection
             conn.connectTimeout = 8000
             conn.readTimeout = 8000
@@ -12932,7 +12943,7 @@ private fun FingerprintHome(
                 } else {
                     Text(
                         "查一下当前网络的出口 IP 在哪，和档案对不对得上。" +
-                            "点按钮会向 ipapi.co 发送一次查询请求。"
+                            "点按钮会向 ipapi.co 查询，查不到时改问 api.ip.sb。"
                     )
                 }
                 OutlinedButton(
