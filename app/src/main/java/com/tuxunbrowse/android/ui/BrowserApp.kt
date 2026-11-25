@@ -319,6 +319,8 @@ import com.tuxunbrowse.android.engine.PrivacySignals
 import com.tuxunbrowse.android.engine.EngineSleepCandidate
 import com.tuxunbrowse.android.engine.TabContent
 import com.tuxunbrowse.android.engine.selectSleepVictims
+import com.tuxunbrowse.android.engine.NewTabGroup
+import com.tuxunbrowse.android.engine.newTabGroupForSource
 import com.tuxunbrowse.android.engine.shouldReleaseTransientUiForTab
 import com.tuxunbrowse.android.engine.trimAliveLimit
 import com.tuxunbrowse.android.engine.savePageScreenshot
@@ -495,7 +497,14 @@ private data class PageContextMenuState(
     val linkUrl: String?,
     val imageUrl: String?,
     val engine: Engine,
-    val incognito: Boolean
+    val incognito: Boolean,
+    // The SOURCE tab's id (v0.172.0): "open in new tab" decides
+    // its landing group from this id (see newTabGroupForSource) —
+    // a long-press inside a fingerprint tab must open its new
+    // tab inside the fingerprint group, not the normal one.
+    // Until this version the state carried no tab identity at
+    // all, so the group decision could not even be made.
+    val tabId: Int = -1
 )
 
 /**
@@ -1257,6 +1266,14 @@ fun BrowserApp(
         BrowserTab, GeckoSession, String
     ) -> Unit = { _, _, _ -> }
 
+    // Open a page-requested new window inside the FINGERPRINT
+    // group (v0.172.0): wired up right after newFpTab is declared
+    // below (local functions cannot be forward-referenced, so the
+    // new-window handlers above reach the fingerprint group
+    // through this holder, exactly like
+    // pendingEngineAnswersCleanup below).
+    var newWindowInFpGroupHandler: (String) -> Unit = {}
+
     // Clipboard-read permission plumbing (v0.45.0). Every path that
     // is not an explicit user "allow" answers deny — dismiss,
     // tab switch, tab close/recreate/sleep, engine dismiss — so the
@@ -1378,7 +1395,8 @@ fun BrowserApp(
                     linkUrl = link,
                     imageUrl = image,
                     engine = src?.engine ?: engine,
-                    incognito = src?.incognito ?: incognito
+                    incognito = src?.incognito ?: incognito,
+                    tabId = src?.id ?: -1
                 )
             },
             onGeckoSelectionShow = { menu ->
@@ -1706,13 +1724,30 @@ fun BrowserApp(
     // (same engine, same incognito flag as the page's tab) through the
     // usual tab-creation path and switch to it.
     newWindowHandler = { source, target ->
-        // The new window inherits the opener tab's desktop mode
-        // verbatim (the pre-v0.56.0 behaviour); the per-site list
-        // does not override a live value.
-        newTab(
-            source.engine, source.incognito, target, source.desktopMode,
-            applyDesktopMemory = false
-        )
+        // The landing group follows the SOURCE tab (v0.172.0
+        // new-tab routing audit): a new window asked for by a
+        // fingerprint tab opens inside the fingerprint group,
+        // wearing the profile — until this version every new
+        // window landed in the normal group whatever tab asked.
+        // (The WebView side of this path is dormant today —
+        // supportMultipleWindows stays off per the v0.113.0
+        // record — so this is the routing the handler will use
+        // if that gate is ever opened, and the rule is pinned
+        // now rather than rediscovered then.)
+        if (newTabGroupForSource(
+                source.id, fpTabs.map { it.id }.toSet()
+            ) == NewTabGroup.FINGERPRINT
+        ) {
+            newWindowInFpGroupHandler(target)
+        } else {
+            // The new window inherits the opener tab's desktop mode
+            // verbatim (the pre-v0.56.0 behaviour); the per-site list
+            // does not override a live value.
+            newTab(
+                source.engine, source.incognito, target, source.desktopMode,
+                applyDesktopMemory = false
+            )
+        }
         screen = Screen.BROWSER
     }
 
@@ -1721,11 +1756,30 @@ fun BrowserApp(
     // attachAdoptedGeckoSession wires the new tab's delegates into the
     // session synchronously, before Gecko starts loading the page.
     geckoNewSessionHandler = { source, session, uri ->
-        val tab = makeTab(source.engine, source.incognito, uri, source.desktopMode)
-        tab.attachAdoptedGeckoSession(session, context)
-        tabs.add(tab)
-        activeTabId = tab.id
-        screen = Screen.BROWSER
+        if (newTabGroupForSource(
+                source.id, fpTabs.map { it.id }.toSet()
+            ) == NewTabGroup.FINGERPRINT
+        ) {
+            // Unreachable today — fingerprint tabs are WebView-only,
+            // so no Gecko session can ever belong to one — but the
+            // group rule is total: never adopt a session into the
+            // normal group on a fingerprint tab's behalf. Close the
+            // handed-over session and open the address as a regular
+            // fingerprint tab instead.
+            try {
+                session.close()
+            } catch (t: Throwable) {
+                // Already gone; nothing to close.
+            }
+            newWindowInFpGroupHandler(uri)
+            screen = Screen.BROWSER
+        } else {
+            val tab = makeTab(source.engine, source.incognito, uri, source.desktopMode)
+            tab.attachAdoptedGeckoSession(session, context)
+            tabs.add(tab)
+            activeTabId = tab.id
+            screen = Screen.BROWSER
+        }
     }
 
     // A WebView tab's rendering process was killed by the system: rebuild
@@ -1912,6 +1966,21 @@ fun BrowserApp(
      * the other way, because the label follows the tab's engine.
      */
     fun openLoadErrorInOtherEngine(tab: BrowserTab, failedUrl: String) {
+        // Fingerprint tabs have no other engine (v0.172.0): the
+        // mode is WebView-only, and recreateTab below only knows
+        // the normal list, so without this guard the call would
+        // silently reload the same tab in the same engine and
+        // look like a switch that never happened. The fingerprint
+        // shell's error page hides the switch button and says why
+        // (see FingerprintShell); this guard is the second net
+        // for any other caller.
+        if (fpTabs.contains(tab)) {
+            android.widget.Toast.makeText(
+                context, "指纹模式只用系统 WebView，不能换内核打开",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            return
+        }
         if (!failedUrl.startsWith("http://") &&
             !failedUrl.startsWith("https://")
         ) return
@@ -1975,13 +2044,24 @@ fun BrowserApp(
     fun activeFpTab(): BrowserTab? =
         fpTabs.firstOrNull { it.id == activeFpTabId }
 
-    /** Open a fingerprint tab (always WebView, never history). */
-    fun newFpTab(url: String = HOME_URL): BrowserTab {
+    /**
+     * Open a fingerprint tab (always WebView, never history).
+     * [activate] = false is the background-open form (v0.172.0,
+     * the long-press menu's rule since v0.48.0): the tab joins
+     * the group without stealing the screen from the page the
+     * user is reading.
+     */
+    fun newFpTab(url: String = HOME_URL, activate: Boolean = true): BrowserTab {
         val tab = makeTab(Engine.WEBVIEW, false, url, fingerprint = true)
         fpTabs.add(tab)
-        activeFpTabId = tab.id
+        if (activate) activeFpTabId = tab.id
         return tab
     }
+
+    // The new-window handlers (declared above, before this
+    // function existed in scope) reach the fingerprint group
+    // through this holder (v0.172.0).
+    newWindowInFpGroupHandler = { target -> newFpTab(target) }
 
     /** Close a fingerprint tab; the group never sits empty. */
     fun closeFpTab(tab: BrowserTab) {
@@ -4654,12 +4734,34 @@ fun BrowserApp(
                                             // toast instead of being
                                             // switched away.
                                             pageContextMenu = null
-                                            newTab(
-                                                ctxMenu.engine,
-                                                ctxMenu.incognito,
-                                                link,
-                                                activate = false
-                                            )
+                                            // Landing group follows
+                                            // the SOURCE tab (v0.172.0):
+                                            // a link long-pressed in a
+                                            // fingerprint tab opens in
+                                            // the fingerprint group,
+                                            // wearing the profile and
+                                            // staying out of normal
+                                            // history — before this it
+                                            // always landed in the
+                                            // normal group behind the
+                                            // fingerprint shell.
+                                            if (newTabGroupForSource(
+                                                    ctxMenu.tabId,
+                                                    fpTabs.map { it.id }
+                                                        .toSet()
+                                                ) == NewTabGroup.FINGERPRINT
+                                            ) {
+                                                newFpTab(
+                                                    link, activate = false
+                                                )
+                                            } else {
+                                                newTab(
+                                                    ctxMenu.engine,
+                                                    ctxMenu.incognito,
+                                                    link,
+                                                    activate = false
+                                                )
+                                            }
                                             android.widget.Toast.makeText(
                                                 context,
                                                 "已在后台打开新标签",
@@ -4768,12 +4870,25 @@ fun BrowserApp(
                                             // rule as the link item
                                             // above (v0.48.0).
                                             pageContextMenu = null
-                                            newTab(
-                                                ctxMenu.engine,
-                                                ctxMenu.incognito,
-                                                image,
-                                                activate = false
-                                            )
+                                            // Same group rule as the
+                                            // link item above (v0.172.0).
+                                            if (newTabGroupForSource(
+                                                    ctxMenu.tabId,
+                                                    fpTabs.map { it.id }
+                                                        .toSet()
+                                                ) == NewTabGroup.FINGERPRINT
+                                            ) {
+                                                newFpTab(
+                                                    image, activate = false
+                                                )
+                                            } else {
+                                                newTab(
+                                                    ctxMenu.engine,
+                                                    ctxMenu.incognito,
+                                                    image,
+                                                    activate = false
+                                                )
+                                            }
                                             android.widget.Toast.makeText(
                                                 context,
                                                 "已在后台打开新标签",
@@ -6133,6 +6248,12 @@ private fun LoadErrorContent(
     // failed switch it points back the way it came.
     switchEngineLabel: String? = null,
     onSwitchEngine: () -> Unit = {},
+    // Why there is no switch button (v0.172.0): passed by the
+    // fingerprint shell, whose tabs are WebView-only — the mode
+    // has no other engine to switch to, so instead of a button
+    // that would have to land in the normal group (or silently
+    // do nothing), the page says so in plain words.
+    switchUnavailableNote: String? = null,
     // "Open over http instead" escape hatch (v0.77.0): only passed
     // when this tab's failed page is one the app itself upgraded
     // from http to https — a site that cannot do https must never
@@ -6219,6 +6340,14 @@ private fun LoadErrorContent(
                 modifier = Modifier.padding(top = 8.dp)
             )
         }
+        if (switchEngineLabel == null && switchUnavailableNote != null) {
+            Text(
+                switchUnavailableNote,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 12.dp)
+            )
+        }
         OutlinedButton(
             onClick = onGoHome,
             modifier = Modifier.padding(top = 12.dp)
@@ -6248,7 +6377,12 @@ private fun EngineUnavailableContent(
     url: String,
     onSwitchEngine: () -> Unit,
     onRetry: () -> Unit,
-    onGoHome: () -> Unit
+    onGoHome: () -> Unit,
+    // Fingerprint shell form (v0.172.0): non-null hides the
+    // switch-engine button and shows this note instead — the
+    // mode is WebView-only, there is no other engine to switch
+    // to, and the tab must not be moved into the normal group.
+    switchUnavailableNote: String? = null
 ) {
     val actions = engineFallbackActions(url)
     Column(
@@ -6285,7 +6419,9 @@ private fun EngineUnavailableContent(
                 modifier = Modifier.padding(bottom = 24.dp)
             )
         }
-        if (EngineFallbackAction.SWITCH_ENGINE in actions) {
+        if (EngineFallbackAction.SWITCH_ENGINE in actions &&
+            switchUnavailableNote == null
+        ) {
             Button(onClick = onSwitchEngine) {
                 Icon(Icons.Filled.SwapHoriz, contentDescription = null)
                 Text(
@@ -6295,6 +6431,14 @@ private fun EngineUnavailableContent(
             }
             Text(
                 "只换这一次，不会改这个网站以后用哪个内核打开",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+        }
+        if (switchUnavailableNote != null) {
+            Text(
+                switchUnavailableNote,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 8.dp)
@@ -12819,34 +12963,96 @@ private fun FingerprintShell(
                 )
             }
             val tab = activeTab
-            if (tab == null || tab.isHome) {
-                FingerprintHome(
-                    resolved = resolved,
-                    searchEngine = searchEngine,
-                    onOpenPicker = { showPicker = true },
-                    onSearch = { text ->
-                        activeTab?.load(resolveInput(text, searchEngine))
-                    },
-                    onQuickRegion = { candidate ->
-                        onProfileChange(
-                            candidate.regionId,
-                            candidate.timezones.first().id,
-                            candidate.devices.first().id,
-                            candidate.language
-                        )
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                )
-            } else {
-                key(tab.id) {
-                    TabContent(
-                        tab = tab,
+            when {
+                tab == null || tab.isHome -> {
+                    FingerprintHome(
+                        resolved = resolved,
+                        searchEngine = searchEngine,
+                        onOpenPicker = { showPicker = true },
+                        onSearch = { text ->
+                            activeTab?.load(resolveInput(text, searchEngine))
+                        },
+                        onQuickRegion = { candidate ->
+                            onProfileChange(
+                                candidate.regionId,
+                                candidate.timezones.first().id,
+                                candidate.devices.first().id,
+                                candidate.language
+                            )
+                        },
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
                     )
+                }
+                // Engine could not be created at all (v0.172.0):
+                // the shell used to render the blank placeholder
+                // TabContent returns in this state, forever. The
+                // fallback page now shows here too — without the
+                // switch-engine button (the mode is WebView-only)
+                // and with a note saying so; retry reloads the
+                // address, which clears the flag and retries
+                // creation through the usual obtain path.
+                tab.engineUnavailable -> {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                    ) {
+                        EngineUnavailableContent(
+                            engine = tab.engine,
+                            url = tab.url,
+                            onSwitchEngine = {},
+                            onRetry = { tab.load(tab.url) },
+                            onGoHome = { tab.load(HOME_URL) },
+                            switchUnavailableNote =
+                                "指纹模式只用系统 WebView，没有另一个内核可换。"
+                        )
+                    }
+                }
+                // Load failure (v0.172.0): until this version the
+                // shell ignored loadError entirely — a failed
+                // fingerprint page sat on a blank WebView with no
+                // reload, no home and no explanation. The error
+                // page shows here in its no-switch form: the mode
+                // has no other engine, the button is hidden and
+                // the note says where a switch IS possible
+                // instead of silently opening a normal tab.
+                tab.loadError != null -> {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                    ) {
+                        LoadErrorContent(
+                            error = tab.loadError!!,
+                            onReload = { tab.reload() },
+                            onGoHome = { tab.load(HOME_URL) },
+                            switchUnavailableNote =
+                                "指纹模式只用系统 WebView，不能换火狐内核打开；" +
+                                    "退出指纹模式后，可以在普通标签里换内核打开这个网址。",
+                            showHttpFallback = tab.httpsUpgraded &&
+                                tab.loadError!!.failedUrl
+                                    .startsWith("https://"),
+                            onOpenHttpFallback = {
+                                tab.load(
+                                    downgradeToHttp(
+                                        tab.loadError!!.failedUrl
+                                    )
+                                )
+                            }
+                        )
+                    }
+                }
+                else -> {
+                    key(tab.id) {
+                        TabContent(
+                            tab = tab,
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                        )
+                    }
                 }
             }
         }

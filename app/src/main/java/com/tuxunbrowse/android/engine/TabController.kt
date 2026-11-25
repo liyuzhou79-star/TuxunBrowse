@@ -686,6 +686,35 @@ fun shouldReleaseTransientUiForTab(
 ): Boolean =
     force || removedTabId == activeTabId || removedTabId == activeFpTabId
 
+/** Which tab group a newly created tab belongs to (v0.172.0). */
+enum class NewTabGroup { NORMAL, FINGERPRINT }
+
+/**
+ * The group a tab created FROM [sourceTabId] must land in
+ * (v0.172.0 new-tab routing audit). Every "open a new tab from
+ * this tab" path — the long-press context menu, a page's new-
+ * window request — decides by the SOURCE tab's group, never by
+ * which shell happens to be on screen: a tab created from a
+ * fingerprint tab lands in the fingerprint group (wearing the
+ * current profile, outside normal history), and a tab created
+ * from a normal tab lands in the normal group even while
+ * fingerprint mode is open elsewhere. Tab ids come from one
+ * process-wide counter, so membership in [fpTabIds] is the whole
+ * decision. Until this version the long-press menu's state
+ * carried no group identity at all and its new tabs always
+ * landed in the normal group — the same family as the inbound
+ * routing fixed in v0.153.0. Pure: no Android calls, unit-tested.
+ */
+fun newTabGroupForSource(
+    sourceTabId: Int,
+    fpTabIds: Set<Int>
+): NewTabGroup =
+    if (sourceTabId in fpTabIds) {
+        NewTabGroup.FINGERPRINT
+    } else {
+        NewTabGroup.NORMAL
+    }
+
 private const val DESKTOP_USER_AGENT =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) " +
         "Chrome/120.0.0.0 Safari/537.36"
