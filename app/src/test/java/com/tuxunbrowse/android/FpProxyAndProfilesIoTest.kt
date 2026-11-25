@@ -140,4 +140,50 @@ class FpProxyAndProfilesIoTest {
                 .isEmpty()
         )
     }
+
+    @Test
+    fun storedCombinationListIsCapped() {
+        // v0.212.0 data-growth audit: the import parser only
+        // validates the region id, so the stored list is the
+        // funnel that has to stop growing. Admission refuses a
+        // duplicate four-tuple at any size, and refuses
+        // everything once the list is at the cap.
+        val entry = CustomFingerprint(
+            "JP", "Pixel 8", "Asia/Tokyo", "ja-JP", "a"
+        )
+        assertTrue(
+            com.tuxunbrowse.android.data
+                .customFingerprintAdmission(emptyList(), entry)
+        )
+        assertFalse(
+            com.tuxunbrowse.android.data
+                .customFingerprintAdmission(listOf(entry), entry)
+        )
+        // Same ids under another label are still a duplicate.
+        assertFalse(
+            com.tuxunbrowse.android.data
+                .customFingerprintAdmission(
+                    listOf(entry), entry.copy(label = "other")
+                )
+        )
+        val full = (1..com.tuxunbrowse.android.data
+            .MAX_CUSTOM_FINGERPRINTS).map {
+            CustomFingerprint(
+                "JP", "dev-$it", "Asia/Tokyo", "ja-JP", "x"
+            )
+        }
+        assertEquals(
+            com.tuxunbrowse.android.data.MAX_CUSTOM_FINGERPRINTS,
+            full.size
+        )
+        assertFalse(
+            com.tuxunbrowse.android.data
+                .customFingerprintAdmission(full, entry)
+        )
+        // One below the cap still admits a fresh combination.
+        assertTrue(
+            com.tuxunbrowse.android.data
+                .customFingerprintAdmission(full.drop(1), entry)
+        )
+    }
 }

@@ -13616,8 +13616,8 @@ private fun FingerprintShell(
     onProfileChange: (String, String, String, String) -> Unit,
     customProfiles: List<com.tuxunbrowse.android.engine.CustomFingerprint> =
         emptyList(),
-    onSaveCustomProfile: (com.tuxunbrowse.android.engine.CustomFingerprint) -> Unit =
-        {},
+    onSaveCustomProfile: (com.tuxunbrowse.android.engine.CustomFingerprint) -> Boolean =
+        { false },
     onDeleteCustomProfile: (com.tuxunbrowse.android.engine.CustomFingerprint) -> Unit =
         {},
     isBookmarked: Boolean = false,
@@ -13708,6 +13708,7 @@ private fun FingerprintShell(
                             )
                     }
                     var added = 0
+                    var refusedByCap = 0
                     for (entry in parsed) {
                         if (customs.none {
                                 it.regionId == entry.regionId &&
@@ -13716,17 +13717,31 @@ private fun FingerprintShell(
                                     it.language == entry.language
                             }
                         ) {
-                            customs = customs + entry
-                            onSaveCustomProfile(entry)
-                            added++
+                            // The store is the authority: it
+                            // refuses past the stored-list cap
+                            // (v0.212.0), and only accepted
+                            // entries join the shown list and
+                            // the count.
+                            if (onSaveCustomProfile(entry)) {
+                                customs = customs + entry
+                                added++
+                            } else {
+                                refusedByCap++
+                            }
                         }
                     }
                     android.widget.Toast.makeText(
                         context,
-                        if (added > 0) {
-                            "已导入 $added 条档案"
-                        } else {
-                            "没有导入新的档案（文件里没有新组合）"
+                        when {
+                            added > 0 && refusedByCap > 0 ->
+                                "已导入 $added 条档案，另有 " +
+                                    "$refusedByCap 条因档案已满" +
+                                    "（最多 200 条）没导入"
+                            added > 0 -> "已导入 $added 条档案"
+                            refusedByCap > 0 ->
+                                "档案已满（最多 200 条），没有再导入"
+                            else ->
+                                "没有导入新的档案（文件里没有新组合）"
                         },
                         android.widget.Toast.LENGTH_LONG
                     ).show()
@@ -15078,10 +15093,10 @@ private fun FingerprintShell(
                                         it.deviceId == entry.deviceId &&
                                         it.timezoneId == entry.timezoneId &&
                                         it.language == entry.language
-                                }
+                                } &&
+                                onSaveCustomProfile(entry)
                             ) {
                                 customs = customs + entry
-                                onSaveCustomProfile(entry)
                             }
                         },
                         modifier = Modifier.fillMaxWidth()

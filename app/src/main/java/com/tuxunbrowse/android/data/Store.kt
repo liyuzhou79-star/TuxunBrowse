@@ -234,6 +234,41 @@ data class GeckoDownloadRecord(
  */
 const val MAX_GECKO_DOWNLOAD_RECORDS = 200
 
+/**
+ * Cap on stored saved fingerprint combinations (「我的档案」),
+ * v0.212.0 data-growth audit. Hand-saved combinations are
+ * bounded by the profile library itself (region × device ×
+ * timezone × language, duplicates refused), but the import
+ * parser only validates the region id — the other three ids
+ * are taken as written, so repeated imports of crafted files
+ * could each add up to MAX_CUSTOM_PROFILE_IMPORT fresh
+ * four-tuples and grow the stored list without bound. The cap
+ * matches the per-file import cap and sits far above the
+ * library's own combination space, so no legitimate list can
+ * reach it; past it, further saves are refused (and the import
+ * UI says so) instead of the preference growing forever.
+ */
+const val MAX_CUSTOM_FINGERPRINTS = 200
+
+/**
+ * Whether [entry] may join the stored combination list: not a
+ * duplicate four-tuple, and the list is under
+ * [MAX_CUSTOM_FINGERPRINTS]. Pure, so the growth audit's
+ * contract is unit-tested without a Store.
+ */
+fun customFingerprintAdmission(
+    current: List<com.tuxunbrowse.android.engine.CustomFingerprint>,
+    entry: com.tuxunbrowse.android.engine.CustomFingerprint
+): Boolean {
+    if (current.size >= MAX_CUSTOM_FINGERPRINTS) return false
+    return current.none {
+        it.regionId == entry.regionId &&
+            it.deviceId == entry.deviceId &&
+            it.timezoneId == entry.timezoneId &&
+            it.language == entry.language
+    }
+}
+
 /** One address-bar suggestion row, from a bookmark or a history entry. */
 data class Suggestion(val title: String, val url: String, val bookmarked: Boolean)
 
@@ -1519,19 +1554,18 @@ class Store(private val context: Context) {
                 .apply()
         }
 
-    /** Save [entry] unless an identical combination is saved. */
+    /**
+     * Save [entry] unless an identical combination is saved or
+     * the stored list is already at [MAX_CUSTOM_FINGERPRINTS].
+     * Returns true when the entry was actually stored, so the
+     * import UI can count honestly.
+     */
     fun addCustomFingerprint(
         entry: com.tuxunbrowse.android.engine.CustomFingerprint
-    ) {
+    ): Boolean {
         val current = customFingerprints()
-        if (current.any {
-                it.regionId == entry.regionId &&
-                    it.deviceId == entry.deviceId &&
-                    it.timezoneId == entry.timezoneId &&
-                    it.language == entry.language
-            }
-        ) {
-            return
+        if (!customFingerprintAdmission(current, entry)) {
+            return false
         }
         val arr = JSONArray()
         for (item in current + entry) {
@@ -1545,6 +1579,7 @@ class Store(private val context: Context) {
             )
         }
         prefs.edit().putString(KEY_FP_CUSTOM, arr.toString()).apply()
+        return true
     }
 
     /** Drop the saved combination with the same four ids. */
