@@ -319,6 +319,7 @@ import com.tuxunbrowse.android.engine.PrivacySignals
 import com.tuxunbrowse.android.engine.EngineSleepCandidate
 import com.tuxunbrowse.android.engine.TabContent
 import com.tuxunbrowse.android.engine.selectSleepVictims
+import com.tuxunbrowse.android.engine.shouldReleaseTransientUiForTab
 import com.tuxunbrowse.android.engine.trimAliveLimit
 import com.tuxunbrowse.android.engine.savePageScreenshot
 import com.tuxunbrowse.android.engine.sharePageScreenshot
@@ -1570,9 +1571,25 @@ fun BrowserApp(
      * Every answer uses the same "cancel" value as the v0.34.0
      * composition-disposal safety net. [force] is for close-all,
      * where every tab goes away at once.
+     *
+     * "Active" spans both tab groups (v0.168.0): the fingerprint
+     * group has its own active tab ([activeFpTabId]), and its pages
+     * raise the very same singleton pendings (SSL / auth dialogs,
+     * file picker, system permissions — fingerprint tabs are
+     * WebView tabs). Until this version the check compared only
+     * against the normal group's [activeTabId], so closing the
+     * active fingerprint tab answered nothing: its dialog stayed
+     * on screen over the next tab and its answer went into a
+     * destroyed WebView. The gate itself is the pure
+     * [shouldReleaseTransientUiForTab]; tab ids are unique across
+     * both groups, so a background tab of either group still never
+     * matches.
      */
     fun releaseTransientUiForRemovedTab(tabId: Int, force: Boolean = false) {
-        if (!force && tabId != activeTabId) return
+        if (!shouldReleaseTransientUiForTab(
+                tabId, force, activeTabId, activeFpTabId
+            )
+        ) return
         try {
             jsPromptRequest?.respond?.invoke(false, null)
         } catch (t: Throwable) {
@@ -1686,6 +1703,15 @@ fun BrowserApp(
             // swapped inside fpTabs and rebuilt WITH the profile.
             android.os.Handler(android.os.Looper.getMainLooper()).post {
                 if (!fpTabs.contains(tab)) return@post
+                // Same pre-replacement cleanup as recreateTab on
+                // the normal path (v0.168.0): the dead tab's pending
+                // clipboard answers are denied and — when it was
+                // the active fingerprint tab — its pending dialogs /
+                // picker / permission answers are released with
+                // their cancel values instead of being left waiting
+                // on a WebView whose renderer is gone.
+                denyClipboardPermissionsForTab(tab.id)
+                releaseTransientUiForRemovedTab(tab.id)
                 val target = deadUrl.ifBlank { tab.url }
                 val idx = fpTabs.indexOf(tab)
                 val replacement = makeTab(
@@ -1921,6 +1947,11 @@ fun BrowserApp(
     fun closeFpTab(tab: BrowserTab) {
         val idx = fpTabs.indexOf(tab)
         denyClipboardPermissionsForTab(tab.id)
+        // Same transient-UI release as closeTab (v0.168.0): the
+        // helper's active check spans both groups' active tabs, so
+        // closing the ACTIVE fingerprint tab now answers its
+        // pending dialogs / picker / permission requests with
+        // their cancel values, exactly like the normal path.
         releaseTransientUiForRemovedTab(tab.id)
         tab.destroy()
         fpTabs.remove(tab)
@@ -1964,6 +1995,15 @@ fun BrowserApp(
         if (fpTabs.isEmpty()) return
         val urls = fpTabs.map { it.url }
         val activeIdx = fpTabs.indexOfFirst { it.id == activeFpTabId }
+        // Every fingerprint tab goes away at once, so — exactly
+        // like closeAllTabs on the normal group — the transient-UI
+        // release runs unconditionally first (v0.168.0): the active
+        // fingerprint tab's pending dialogs / picker / permission
+        // answers get their cancel values instead of being left
+        // waiting on WebViews this rebuild is about to destroy.
+        // (The per-tab clipboard deny below stays as the second
+        // net, same as the normal group's close paths.)
+        releaseTransientUiForRemovedTab(activeFpTabId, force = true)
         fpTabs.toList().forEach { old ->
             denyClipboardPermissionsForTab(old.id)
             old.destroy()

@@ -661,6 +661,31 @@ fun trimAliveLimit(level: Int): Int? =
         level >= android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE
     ) 1 else null
 
+/**
+ * Whether removing a tab should release the app-global transient
+ * UI state — the JS / auth / SSL dialogs, the shared file-picker
+ * answer and the system-permission answer (v0.168.0). Those
+ * pendings are app-global singletons with no tab id of their own;
+ * they can only ever belong to the tab the user is looking at,
+ * which is the active tab of whichever tab group is on screen.
+ * There are two groups (v0.144.0): the normal tabs ([activeTabId])
+ * and the fingerprint tabs ([activeFpTabId]). Tab ids come from
+ * one process-wide counter, so an id matches at most one group's
+ * active tab. Until this version the check compared only against
+ * the normal active id, so closing the active fingerprint tab
+ * never answered its pendings — its SSL / auth dialogs, file
+ * picker or permission request were left waiting on a destroyed
+ * WebView. [force] (whole-group teardown: close-all, profile
+ * rebuild) always releases. Pure: no Android calls, unit-tested.
+ */
+fun shouldReleaseTransientUiForTab(
+    removedTabId: Int,
+    force: Boolean,
+    activeTabId: Int,
+    activeFpTabId: Int
+): Boolean =
+    force || removedTabId == activeTabId || removedTabId == activeFpTabId
+
 private const val DESKTOP_USER_AGENT =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) " +
         "Chrome/120.0.0.0 Safari/537.36"
