@@ -12769,7 +12769,10 @@ private data class IpCheckResult(
     val ip: String,
     val countryCode: String,
     val city: String,
-    val timezone: String
+    val timezone: String,
+    /** Which geo service answered (v0.155.0) — shown on the
+     * card so a dead source is diagnosable at a glance. */
+    val source: String
 )
 
 /**
@@ -12782,15 +12785,19 @@ private data class IpCheckResult(
  * including which services may be asked.
  */
 private suspend fun fetchExitIp(): IpCheckResult? {
-    fetchExitIpFrom("https://ipapi.co/json/")?.let { return it }
+    fetchExitIpFrom("https://ipapi.co/json/", "ipapi.co")
+        ?.let { return it }
     // ipapi.co is not reachable from every network the app runs
     // on; ip.sb's free geo endpoint answers the same four fields
     // under the same names. A source that answers without a
     // country counts as failed — no verdict is ever guessed.
-    return fetchExitIpFrom("https://api.ip.sb/geoip")
+    return fetchExitIpFrom("https://api.ip.sb/geoip", "api.ip.sb")
 }
 
-private suspend fun fetchExitIpFrom(url: String): IpCheckResult? =
+private suspend fun fetchExitIpFrom(
+    url: String,
+    source: String
+): IpCheckResult? =
     withContext(Dispatchers.IO) {
         var conn: java.net.HttpURLConnection? = null
         try {
@@ -12808,7 +12815,8 @@ private suspend fun fetchExitIpFrom(url: String): IpCheckResult? =
                 ip = obj.optString("ip"),
                 countryCode = country,
                 city = obj.optString("city"),
-                timezone = obj.optString("timezone")
+                timezone = obj.optString("timezone"),
+                source = source
             )
         } catch (t: Throwable) {
             null
@@ -12922,6 +12930,7 @@ private fun FingerprintHome(
                             }
                     )
                     Text("IP 时区：${result.timezone}")
+                    Text("数据来源：${result.source}")
                     val countryOk =
                         result.countryCode == profile.regionId
                     val zoneOk = result.timezone == zone.id
