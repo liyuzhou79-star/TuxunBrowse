@@ -5489,9 +5489,19 @@ private fun HomeContent(
                         )
                 ) {
                     ListItem(
-                        headlineContent = { Text(bookmark.title, maxLines = 2) },
+                        headlineContent = {
+                            Text(
+                                bookmark.title,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        },
                         supportingContent = {
-                            Text(hostOf(bookmark.url) ?: bookmark.url, maxLines = 1)
+                            Text(
+                                hostOf(bookmark.url) ?: bookmark.url,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         },
                         leadingContent = {
                             Icon(Icons.Filled.Bookmark, contentDescription = null)
@@ -6193,7 +6203,17 @@ private fun BrowserScreen(
             onDismissRequest = { showCloseOthersConfirm = false },
             title = { Text("关闭其他标签页？") },
             text = {
-                Text("会关掉除当前标签外的 ${tabs.size - 1} 个标签页。普通标签会记进「最近关闭」（最多 10 个），之后能在标签列表里一个个恢复；无痕标签不会被记录。无痕标签关掉后，系统 WebView 的登录状态会被清掉。")
+                // Scrollable body (v0.137.0, same v0.115.0
+                // treatment): a long body at the largest font
+                // scale in a short landscape window must scroll
+                // instead of pushing the buttons off-screen.
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text("会关掉除当前标签外的 ${tabs.size - 1} 个标签页。普通标签会记进「最近关闭」（最多 10 个），之后能在标签列表里一个个恢复；无痕标签不会被记录。无痕标签关掉后，系统 WebView 的登录状态会被清掉。")
+                }
             },
             confirmButton = {
                 Button(onClick = {
@@ -6214,7 +6234,15 @@ private fun BrowserScreen(
             onDismissRequest = { showCloseAllConfirm = false },
             title = { Text("关闭全部标签页？") },
             text = {
-                Text("现在开着的 ${tabs.size} 个标签页会全部关掉，然后开一个新的首页标签。普通标签会记进「最近关闭」（最多 10 个），之后能在标签列表里一个个恢复；无痕标签不会被记录。无痕标签关掉后，系统 WebView 的登录状态会被清掉。")
+                // Scrollable body (v0.137.0, same v0.115.0
+                // treatment as the close-others dialog above).
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text("现在开着的 ${tabs.size} 个标签页会全部关掉，然后开一个新的首页标签。普通标签会记进「最近关闭」（最多 10 个），之后能在标签列表里一个个恢复；无痕标签不会被记录。无痕标签关掉后，系统 WebView 的登录状态会被清掉。")
+                }
             },
             confirmButton = {
                 Button(onClick = {
@@ -7302,12 +7330,26 @@ private fun BrowserScreen(
             onDismissRequest = { showClearSiteConfirm = false },
             title = { Text("清除这个网站的数据？") },
             text = {
-                Text(
-                    "会清掉火狐里 $siteHost 的 Cookie 和网站数据，并删掉本机保存的" +
-                        "这个网站的历史记录。注意：系统 WebView 的网站数据没法按网站单独清" +
-                        "（系统 WebView 不支持按网站清除），这次不会清系统 WebView 的数据；" +
-                        "要清的话只能去设置里的「清除浏览数据」整清。"
-                )
+                // Scrollable body (v0.137.0 visual regression pass,
+                // same treatment as the v0.115.0 dialogs): this is
+                // the longest dialog body in the app and it carries
+                // an unbounded external value (the site's host); at
+                // the largest font scale in a short landscape window
+                // an unscrollable Text could push the buttons off
+                // the bottom. verticalScroll changes nothing when
+                // the content fits.
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        "会清掉火狐里 $siteHost 的 Cookie 和网站数据，并删掉本机保存的" +
+                            "这个网站的历史记录。注意：系统 WebView 的网站数据没法按网站单独清" +
+                            "（系统 WebView 不支持按网站清除），这次不会清系统 WebView 的数据；" +
+                            "要清的话只能去设置里的「清除浏览数据」整清。"
+                    )
+                }
             },
             confirmButton = {
                 Button(onClick = {
@@ -7968,7 +8010,14 @@ private fun BrowserScreen(
                                     tab.title.ifBlank { "新标签页" }
                                 },
                                 style = MaterialTheme.typography.titleSmall,
-                                maxLines = 2
+                                // Explicit ellipsis (v0.137.0 visual
+                                // regression pass): with maxLines set
+                                // and no overflow, Compose clips the
+                                // text mid-glyph at the card edge; the
+                                // bookmark/history rows have spelled
+                                // Ellipsis out since their own passes.
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
                             )
                             Text(
                                 if (tab.isHome) {
@@ -7977,7 +8026,8 @@ private fun BrowserScreen(
                                     hostOf(tab.url) ?: tab.url
                                 },
                                 style = MaterialTheme.typography.bodySmall,
-                                maxLines = 1
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                             if (isActive) {
                                 Text(
@@ -8121,7 +8171,8 @@ private fun BrowserScreen(
                                                     } else {
                                                         info.title
                                                     },
-                                                    maxLines = 1
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
                                                 )
                                             },
                                             supportingContent = {
@@ -8131,7 +8182,8 @@ private fun BrowserScreen(
                                                     } else {
                                                         "系统 WebView · "
                                                     }) + (hostOf(info.url) ?: info.url),
-                                                    maxLines = 1
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
                                                 )
                                             },
                                             leadingContent = {
