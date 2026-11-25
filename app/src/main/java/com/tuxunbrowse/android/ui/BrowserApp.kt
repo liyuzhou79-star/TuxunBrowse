@@ -1646,7 +1646,40 @@ fun BrowserApp(
     // for incognito tabs too — only the URL is carried over, nothing is
     // written to disk that was not already there.
     renderProcessGoneHandler = { tab, deadUrl ->
-        if (tab.engine == Engine.WEBVIEW && tabs.contains(tab)) {
+        if (tab.engine == Engine.WEBVIEW && fpTabs.contains(tab)) {
+            // Fingerprint tabs live in their own list (v0.148.0):
+            // before this branch the handler only knew the normal
+            // list, so a killed renderer left a fingerprint tab on
+            // a permanent white screen with nothing recovering it.
+            // Same posted-rebuild shape as the normal path below,
+            // swapped inside fpTabs and rebuilt WITH the profile.
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                if (!fpTabs.contains(tab)) return@post
+                val target = deadUrl.ifBlank { tab.url }
+                val idx = fpTabs.indexOf(tab)
+                val replacement = makeTab(
+                    engine = Engine.WEBVIEW,
+                    incognito = true,
+                    initialUrl = tab.url,
+                    desktopMode = tab.desktopMode,
+                    fingerprint = true
+                )
+                fpTabs[idx] = replacement
+                if (activeFpTabId == tab.id) {
+                    activeFpTabId = replacement.id
+                }
+                tab.destroy()
+                if (target.isNotBlank() && target != HOME_URL &&
+                    replacement.url != target
+                ) {
+                    replacement.load(target)
+                }
+                android.widget.Toast.makeText(
+                    context, "页面进程被系统结束，已自动恢复",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
+        } else if (tab.engine == Engine.WEBVIEW && tabs.contains(tab)) {
             // Posted, not run inline: this fires from inside the dead
             // WebView's own client callback, and rebuilding destroys that
             // WebView — safer once the callback has returned.
@@ -12487,7 +12520,9 @@ private fun FingerprintShell(
                                 Text(
                                     "${candidate.webGlRenderer} · " +
                                         "${candidate.screenWidth}×" +
-                                        candidate.screenHeight.toString()
+                                        candidate.screenHeight.toString(),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             },
                             trailingContent = {
