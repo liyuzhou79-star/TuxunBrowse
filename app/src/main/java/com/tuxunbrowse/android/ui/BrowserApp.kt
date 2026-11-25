@@ -3706,7 +3706,6 @@ fun BrowserApp(
                 onOpenBookmarks = { screen = Screen.BOOKMARKS },
                 onOpenHistory = { screen = Screen.HISTORY },
                 onOpenSettings = { screen = Screen.SETTINGS },
-                adBlockEnabled = store.adBlockEnabled,
                 homeContent = {
                     HomeContent(
                         bookmarks = bookmarks,
@@ -4993,8 +4992,16 @@ private fun HomeContent(
     // Home-page search-engine quick switch: same data source as the
     // settings page (the store, via the callbacks above); this local
     // mirror is what the home search box reads, so a pick here takes
-    // effect on the home page at once.
-    var currentEngine by remember { mutableStateOf(searchEngine) }
+    // effect on the home page at once. The mirror is keyed on the
+    // incoming value (v0.132.0 settings audit): unkeyed, it would
+    // keep the engine from first composition if the shared source
+    // ever changed while this content stayed composed — the stale-
+    // snapshot class the v0.108.0 audit fixed on the settings page.
+    // A pick here writes the same value back through the callback,
+    // so re-keying on it re-reads the identical value.
+    var currentEngine by remember(searchEngine) {
+        mutableStateOf(searchEngine)
+    }
     var showEnginePicker by remember { mutableStateOf(false) }
     var homeSearchFocused by remember { mutableStateOf(false) }
     val homeFocusManager = LocalFocusManager.current
@@ -5804,7 +5811,6 @@ private fun BrowserScreen(
     onOpenBookmarks: () -> Unit,
     onOpenHistory: () -> Unit,
     onOpenSettings: () -> Unit,
-    adBlockEnabled: Boolean,
     homeContent: @Composable () -> Unit
 ) {
     val context = LocalContext.current
@@ -12662,7 +12668,7 @@ private fun SettingsScreen(
             item {
                 Text("备份与恢复", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "把书签、历史和主要设置存成备份文件，可导入合并恢复。",
+                    "把书签、历史和设置存成备份文件，可导入合并恢复。",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
