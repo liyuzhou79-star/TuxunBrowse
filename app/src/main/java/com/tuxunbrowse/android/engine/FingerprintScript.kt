@@ -483,9 +483,20 @@ object FingerprintScript {
   section(function () {
     if (!window.AudioBuffer || !AudioBuffer.prototype.getChannelData) return;
     var orig = AudioBuffer.prototype.getChannelData;
+    // Noise ONCE per (buffer, channel) (v0.152.0): getChannelData
+    // hands out the LIVE buffer, so the old apply-on-every-call
+    // shape stacked another ±1e-7 on every read — a page reading
+    // the same buffer repeatedly would watch the values drift,
+    // which is itself a tell. A WeakMap of noised channels keeps
+    // the first read's story final.
+    var noised = new WeakMap();
     AudioBuffer.prototype.getChannelData = function (channel) {
       var data = orig.call(this, channel);
       try {
+        var seen = noised.get(this);
+        if (!seen) { seen = {}; noised.set(this, seen); }
+        if (seen[channel]) return data;
+        seen[channel] = true;
         for (var i = 0; i < data.length; i += 997) {
           var h = hash(SEED * 7919 + i + channel * 104729);
           data[i] = data[i] + ((h % 2 === 0) ? 1e-7 : -1e-7);

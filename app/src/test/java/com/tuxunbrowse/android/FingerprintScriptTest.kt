@@ -36,6 +36,8 @@ class FingerprintScriptTest {
         // v0.150.0: colour depth and touch points are pinned too.
         assertTrue(payload.contains("colorDepth"))
         assertTrue(payload.contains("maxTouchPoints"))
+        // v0.152.0: audio noise applies once per buffer (WeakMap).
+        assertTrue(payload.contains("WeakMap"))
         assertTrue(payload.contains("getChannelData"))
         assertTrue(payload.contains("getBoundingClientRect"))
         assertTrue(payload.contains("getBattery"))
