@@ -16443,7 +16443,9 @@ private fun FingerprintHome(
         Text(
             "指纹模式只用系统 WebView，标签页不记历史；" +
                 storageSentence +
-                "网站能从请求里看出你在用本浏览器（应用标识头关不掉）。",
+                "网站能从请求里看出你在用本浏览器（应用标识头关不掉）。" +
+                "网页临时新建的空白窗口或空白子框架，在加载网址之前" +
+                "读到的仍是这台手机的真实参数；加载了网址，就按档案伪装。",
             style = MaterialTheme.typography.bodyMedium
         )
     }

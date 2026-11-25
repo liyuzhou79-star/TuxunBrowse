@@ -1071,6 +1071,14 @@ class BrowserTab(
     /** Throwaway WebView holding a window.open popup until its URL is known. */
     private var popupChild: WebView? = null
 
+    /**
+     * Document-start handler registered on [popupChild] (v0.209.0).
+     * Its own slot on purpose: the tab's fingerprint handler
+     * bookkeeping belongs to the main WebView, and the popup
+     * child must never overwrite or be removed by it.
+     */
+    private var popupChildScriptHandler: ScriptHandler? = null
+
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
 
     /**
@@ -1634,6 +1642,7 @@ class BrowserTab(
         removeGuardScriptHandler()
         removePrivacyScriptHandler()
         removeFingerprintScriptHandler()
+        removePopupChildScriptHandler()
         exitFullscreen()
         popupChild?.let {
             try {
@@ -1712,6 +1721,7 @@ class BrowserTab(
         removeGuardScriptHandler()
         removePrivacyScriptHandler()
         removeFingerprintScriptHandler()
+        removePopupChildScriptHandler()
         customViewCallback = null
         popupChild?.let {
             try {
@@ -2392,17 +2402,57 @@ class BrowserTab(
                 // jar, not the shared one. The child is created
                 // while this tab's combination is the live one,
                 // so the provider still names the right jar.
-                if (fingerprintProfileProvider() != null) {
+                val fpResolved = fingerprintProfileProvider()
+                if (fpResolved != null) {
                     fpStorageNameProvider()?.let { name ->
                         FpStorage.bind(child, name)
                     }
                 }
+                // Popup fingerprint coverage (v0.209.0): the child
+                // used to get the storage binding only, so a popup
+                // that never navigates to http (about:blank,
+                // blob:) kept answering with the host device's
+                // voice. Register the same document-start payload
+                // on the child — in the child's OWN handler slot,
+                // never the tab's (that bookkeeping belongs to
+                // the main WebView) — so any document that does
+                // load here is hooked from its first script. The
+                // blank document that already exists when the
+                // popup opens is covered by the evaluate in the
+                // child's onPageStarted below, the same way the
+                // fingerprint self-check hooks its blank page.
+                // What stays open, recorded in the checkpoint:
+                // the opener can read the popup synchronously in
+                // the window between window.open and that first
+                // callback, and no app-side hook can close it.
+                val fpPayload = fpResolved?.let {
+                    FingerprintScript.payload(
+                        it, fingerprintProtectionProvider()
+                    )
+                }
+                removePopupChildScriptHandler()
+                if (fpPayload != null && guardDocumentStartSupported()) {
+                    popupChildScriptHandler = try {
+                        WebViewCompat.addDocumentStartJavaScript(
+                            child, fpPayload, setOf("*")
+                        )
+                    } catch (t: Throwable) {
+                        null
+                    }
+                }
                 var forwarded = false
-                fun forward(target: String?) {
-                    if (forwarded) return
-                    if (target.isNullOrBlank() || !target.startsWith("http")) return
+                fun forward(target: String?): Boolean {
+                    if (forwarded) return true
+                    if (target.isNullOrBlank() ||
+                        !target.startsWith("http")
+                    ) {
+                        return false
+                    }
                     forwarded = true
-                    if (popupChild === child) popupChild = null
+                    if (popupChild === child) {
+                        popupChild = null
+                        removePopupChildScriptHandler()
+                    }
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                         try {
                             child.destroy()
@@ -2411,6 +2461,7 @@ class BrowserTab(
                         }
                     }
                     onNewWindowRequest(target)
+                    return true
                 }
                 child.webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(
@@ -2426,7 +2477,22 @@ class BrowserTab(
                         startedUrl: String?,
                         favicon: android.graphics.Bitmap?
                     ) {
-                        forward(startedUrl)
+                        val forwardedNow = forward(startedUrl)
+                        if (!forwardedNow && fpPayload != null) {
+                            // Not a navigation we forward: the
+                            // popup document stays alive in this
+                            // child, so hook its main frame now.
+                            // The payload is idempotent (the tab
+                            // path relies on the same property),
+                            // and a later real navigation is both
+                            // covered by the registration above
+                            // and forwarded exactly as before.
+                            try {
+                                cv.evaluateJavascript(fpPayload, null)
+                            } catch (t: Throwable) {
+                                // Best-effort only.
+                            }
+                        }
                     }
                 }
                 popupChild = child
@@ -2751,6 +2817,16 @@ class BrowserTab(
         }
         fingerprintScriptHandler = null
         fingerprintScriptPayload = null
+    }
+
+    /** Drop the popup child's document-start handler, if any. */
+    private fun removePopupChildScriptHandler() {
+        try {
+            popupChildScriptHandler?.remove()
+        } catch (t: Throwable) {
+            // The child may already be gone; nothing to clean up.
+        }
+        popupChildScriptHandler = null
     }
 
     /**
