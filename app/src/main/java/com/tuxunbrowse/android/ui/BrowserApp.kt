@@ -13873,10 +13873,8 @@ private fun FingerprintShell(
                                 candidate.language
                             )
                         },
-                        protection = fingerprintProtection,
-                        onProtectionChange = {
-                            applyFingerprintProtection(it)
-                        },
+                        protection = protection,
+                        onProtectionChange = onProtectionChange,
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
