@@ -83,25 +83,33 @@ object FingerprintScript {
     // v0.91.0. A profile switch misses once, rebuilds, and the
     // bytes are exactly what an uncached build would produce.
     @Volatile
-    private var cachedFor: ResolvedFingerprint? = null
+    private var cachedFor: Pair<ResolvedFingerprint, FingerprintProtection>? =
+        null
 
     @Volatile
     private var cachedPayload: String? = null
 
-    fun payload(resolved: ResolvedFingerprint): String {
-        cachedPayload?.let { if (cachedFor == resolved) return it }
+    fun payload(
+        resolved: ResolvedFingerprint,
+        protection: FingerprintProtection = FingerprintProtection()
+    ): String {
+        val key = resolved to protection
+        cachedPayload?.let { if (cachedFor == key) return it }
         return synchronized(this) {
             cachedPayload?.let {
-                if (cachedFor == resolved) return it
+                if (cachedFor == key) return it
             }
-            val built = buildPayload(resolved)
-            cachedFor = resolved
+            val built = buildPayload(resolved, protection)
+            cachedFor = key
             cachedPayload = built
             built
         }
     }
 
-    private fun buildPayload(resolved: ResolvedFingerprint): String {
+    private fun buildPayload(
+        resolved: ResolvedFingerprint,
+        protection: FingerprintProtection
+    ): String {
         val p = resolved.profile
         val d = resolved.device
         val tz = resolved.timezone
@@ -123,6 +131,18 @@ object FingerprintScript {
 (function () {
   'use strict';
   var SEED = ${resolved.seed};
+  // Per-surface protection switches (v0.190.0): each section
+  // below checks its own flag and installs nothing when the
+  // user turned that surface off — the page then reads the
+  // host's real values for that one surface only.
+  var FP_OPT_CANVAS = ${protection.canvasNoise};
+  var FP_OPT_WEBGL = ${protection.webglDisguise};
+  var FP_OPT_AUDIO = ${protection.audioNoise};
+  var FP_OPT_FONTS = ${protection.fontSet};
+  var FP_OPT_WEBRTC = ${protection.webrtcRelay};
+  var FP_OPT_SENSORS = ${protection.sensors};
+  var FP_OPT_BATTERY = ${protection.battery};
+  var FP_OPT_CHROME = ${protection.chromeObject};
   var LANG = ${jsStr(resolved.language)};
   var TZ = ${jsStr(tz.id)};
   var ZONE_NAME = ${jsStr(tz.zoneName)};
@@ -142,6 +162,7 @@ object FingerprintScript {
   // density.) The rule is a pure function of (seed, buffer
   // position): repeated reads of the same pixels agree.
   function noiseBytes(d) {
+    if (!FP_OPT_CANVAS) return;
     for (var i = 0; i + 3 < d.length; i += 4) {
       var h = hash(SEED * 1000003 + i);
       if (h % 211 === 0) {
@@ -457,7 +478,8 @@ object FingerprintScript {
     // the raw values while staying stable for the profile. This
     // is a mitigation, not a font swap: the glyphs themselves are
     // still the host's, recorded in the checkpoint.
-    if (CanvasRenderingContext2D.prototype.measureText) {
+    if (FP_OPT_FONTS &&
+      CanvasRenderingContext2D.prototype.measureText) {
       var scale = 1 + ((hash(SEED * 97 + 13) % 89) - 44) / 10000;
       var origMT = CanvasRenderingContext2D.prototype.measureText;
       setMethod(CanvasRenderingContext2D.prototype, 'measureText',
@@ -510,7 +532,7 @@ object FingerprintScript {
             return noiseData(origOGID.apply(this, arguments));
           }, origOGID));
       }
-      if (octx.measureText) {
+      if (FP_OPT_FONTS && octx.measureText) {
         var origOMT = octx.measureText;
         setMethod(octx, 'measureText',
           fixFn(function () {
@@ -546,6 +568,7 @@ object FingerprintScript {
   });
 
   section(function () {
+    if (!FP_OPT_FONTS) return;
     // Font list surface (v0.174.0): document.fonts.check() is
     // the enumeration probe — check('16px "SamsungOne"') asks
     // "is this family on this device?" without loading a thing.
@@ -610,6 +633,7 @@ object FingerprintScript {
   });
 
   section(function () {
+    if (!FP_OPT_WEBGL) return;
     // The profile GPU's capability table (v0.145.0): a renderer
     // string that disagrees with MAX_TEXTURE_SIZE & friends is a
     // cross-check failure, so the commonly probed parameters
@@ -716,6 +740,7 @@ object FingerprintScript {
   });
 
   section(function () {
+    if (!FP_OPT_WEBGL) return;
     // WebGPU (v0.159.0): navigator.gpu was the one graphics API
     // still answering with the HOST GPU. A page asking
     // requestAdapter() gets an adapter whose .info names the
@@ -897,6 +922,7 @@ object FingerprintScript {
   // USB), so any fixed value would contradict the route the
   // user actually hears.
   section(function () {
+    if (!FP_OPT_AUDIO) return;
     var OrigAC = window.AudioContext ||
       window.webkitAudioContext;
     if (!OrigAC) return;
@@ -942,6 +968,7 @@ object FingerprintScript {
   });
 
   section(function () {
+    if (!FP_OPT_AUDIO) return;
     if (!window.AudioBuffer || !AudioBuffer.prototype.getChannelData) return;
     var orig = AudioBuffer.prototype.getChannelData;
     // Noise ONCE per (buffer, channel) (v0.152.0): getChannelData
@@ -998,6 +1025,7 @@ object FingerprintScript {
   });
 
   section(function () {
+    if (!FP_OPT_BATTERY) return;
     if (!('getBattery' in navigator)) return;
     setMethod(navigator, 'getBattery',
       fixFnAs(function () {
@@ -1030,6 +1058,7 @@ object FingerprintScript {
   });
 
   section(function () {
+    if (!FP_OPT_WEBRTC) return;
     // WebRTC (v0.160.0): until now the mode deleted
     // RTCPeerConnection outright — but a real Chrome phone HAS
     // the API, so its absence is itself a tell, at odds with
@@ -1134,6 +1163,205 @@ object FingerprintScript {
             'Permission denied', 'NotAllowedError'));
         }, 'getUserMedia', 0));
     }
+  });
+
+  section(function () {
+    if (!FP_OPT_SENSORS) return;
+    // Sensors (v0.190.0): a real phone HAS motion sensors and
+    // Chrome fires deviceorientation / devicemotion events;
+    // the host's real stream would report the host's own
+    // motion, and a phone lying untouched reports a
+    // suspiciously perfect zero. The profile instead presents
+    // a quietly held phone — a seeded, slowly wobbling
+    // gravity story (tilted as if in a hand) — and page
+    // listeners for the two event types are served from this
+    // stream instead of the host's. Recorded limits:
+    // synthetic events carry isTrusted=false like every
+    // script-made event, so a checker that insists on trusted
+    // events can still tell; the alternative (no events at
+    // all) reads as a sensor-less device, which a phone
+    // profile is not. The gravity vector's magnitude stays at
+    // 9.81 and its components follow the same beta/gamma the
+    // orientation events report.
+    if (!window.DeviceOrientationEvent &&
+      !window.DeviceMotionEvent) return;
+    var listeners = { deviceorientation: [], devicemotion: [] };
+    var propHandlers = {
+      deviceorientation: null, devicemotion: null
+    };
+    var origAdd = window.addEventListener;
+    var origRemove = window.removeEventListener;
+    function isSensorType(t) {
+      return t === 'deviceorientation' || t === 'devicemotion';
+    }
+    setMethod(window, 'addEventListener',
+      fixFn(function (t, fn) {
+        if (isSensorType(t) && typeof fn === 'function') {
+          if (listeners[t].indexOf(fn) < 0) listeners[t].push(fn);
+          return;
+        }
+        return origAdd.apply(window, arguments);
+      }, window.addEventListener));
+    setMethod(window, 'removeEventListener',
+      fixFn(function (t, fn) {
+        if (isSensorType(t)) {
+          var i = listeners[t].indexOf(fn);
+          if (i >= 0) listeners[t].splice(i, 1);
+          return;
+        }
+        return origRemove.apply(window, arguments);
+      }, window.removeEventListener));
+    ['deviceorientation', 'devicemotion'].forEach(function (t) {
+      try {
+        Object.defineProperty(window, 'on' + t, {
+          get: function () { return propHandlers[t]; },
+          set: function (fn) {
+            propHandlers[t] =
+              (typeof fn === 'function') ? fn : null;
+          },
+          configurable: true, enumerable: true
+        });
+      } catch (e) {}
+    });
+    var betaBase = 62 + (hash(SEED) % 10);
+    var gammaBase = (hash(SEED * 3) % 7) - 3;
+    var alphaBase = hash(SEED * 7) % 360;
+    var tick = 0;
+    function dispatch(type, ev) {
+      var list = listeners[type].slice();
+      for (var i = 0; i < list.length; i++) {
+        try { list[i].call(window, ev); } catch (e) {}
+      }
+      var ph = propHandlers[type];
+      if (ph) { try { ph.call(window, ev); } catch (e) {} }
+    }
+    setInterval(function () {
+      tick++;
+      var beta = betaBase + Math.sin(tick / 9) * 0.6;
+      var gamma = gammaBase + Math.cos(tick / 13) * 0.5;
+      if (window.DeviceOrientationEvent) {
+        dispatch('deviceorientation',
+          new DeviceOrientationEvent('deviceorientation', {
+            alpha: (alphaBase + tick * 0.02) % 360,
+            beta: beta, gamma: gamma, absolute: false
+          }));
+      }
+      if (window.DeviceMotionEvent) {
+        var br = beta * Math.PI / 180;
+        var gr = gamma * Math.PI / 180;
+        dispatch('devicemotion',
+          new DeviceMotionEvent('devicemotion', {
+            acceleration: { x: 0, y: 0, z: 0 },
+            accelerationIncludingGravity: {
+              x: -Math.sin(gr) * Math.cos(br) * 9.81,
+              y: Math.sin(br) * 9.81,
+              z: Math.cos(br) * Math.cos(gr) * 9.81
+            },
+            rotationRate: { alpha: 0, beta: 0, gamma: 0 },
+            interval: 100
+          }));
+      }
+    }, 100);
+  });
+
+  section(function () {
+    if (!FP_OPT_CHROME) return;
+    // window.chrome (v0.190.0): real Chrome carries a
+    // window.chrome object (app / loadTimes / csi); the
+    // WebView ships none, so its ABSENCE marked every profile
+    // page as not-Chrome. The object follows Chrome's public
+    // shape, and the timing answers are computed from THIS
+    // page's own performance.timing, so they agree with what
+    // the page itself can measure — no canned constants for
+    // another read to contradict.
+    try {
+      if (window.chrome && window.chrome.loadTimes) return;
+      var timing =
+        (window.performance && performance.timing) || {};
+      var navStart = timing.navigationStart || Date.now();
+      function secs(ms) { return ms ? ms / 1000 : 0; }
+      function loadTimes() {
+        return {
+          requestTime: secs(navStart),
+          startLoadTime: secs(navStart),
+          commitLoadTime: secs(timing.responseStart || navStart),
+          finishDocumentLoadTime:
+            secs(timing.domContentLoadedEventEnd),
+          finishLoadTime: secs(timing.loadEventEnd),
+          firstPaintTime: secs(timing.msFirstPaint),
+          firstPaintAfterLoadTime: 0,
+          navigationType: 'Other',
+          wasFetchedViaSpdy: true,
+          wasNpnNegotiated: true,
+          npnNegotiatedProtocol: 'h2',
+          wasAlternateProtocolAvailable: false,
+          connectionInfo: 'h2'
+        };
+      }
+      function csi() {
+        return {
+          startE: navStart,
+          onloadT: timing.loadEventEnd || undefined,
+          pageT: timing.loadEventEnd
+            ? (timing.loadEventEnd - navStart) / 1000 : 0,
+          tran: 15
+        };
+      }
+      var chromeObj = {
+        app: {
+          isInstalled: false,
+          InstallState: {
+            DISABLED: 'disabled',
+            INSTALLED: 'installed',
+            NOT_INSTALLED: 'not_installed'
+          },
+          RunningState: {
+            CANNOT_RUN: 'cannot_run',
+            READY_TO_RUN: 'ready_to_run',
+            RUNNING: 'running'
+          },
+          getDetails: fixFnAs(
+            function () { return null; }, 'getDetails', 0),
+          getIsInstalled: fixFnAs(
+            function () { return false; }, 'getIsInstalled', 0)
+        },
+        loadTimes: fixFnAs(loadTimes, 'loadTimes', 0),
+        csi: fixFnAs(csi, 'csi', 0)
+      };
+      Object.defineProperty(window, 'chrome', {
+        value: chromeObj, writable: true,
+        enumerable: true, configurable: true
+      });
+    } catch (e) {}
+  });
+
+  section(function () {
+    // Permissions consistency (v0.190.0): Chrome answers
+    // permissions.query({name: 'notifications'}) from the
+    // same state Notification.permission reports; engines
+    // that answer the two independently can be caught
+    // disagreeing (a standard detector cross-check). Map the
+    // query onto the Notification answer when both exist.
+    // Always on: this is a consistency fix, not a disguise
+    // surface, so it has no switch.
+    if (!navigator.permissions || !window.Notification) return;
+    var permsProto = Object.getPrototypeOf(navigator.permissions);
+    if (!permsProto || !permsProto.query) return;
+    var origQuery = permsProto.query;
+    setMethod(permsProto, 'query', fixFn(function (desc) {
+      if (desc && desc.name === 'notifications') {
+        var state = Notification.permission === 'default'
+          ? 'prompt' : Notification.permission;
+        return Promise.resolve({
+          name: 'notifications', state: state,
+          onchange: null,
+          addEventListener: function () {},
+          removeEventListener: function () {},
+          dispatchEvent: function () { return false; }
+        });
+      }
+      return origQuery.call(navigator.permissions, desc);
+    }, permsProto.query));
   });
 })();
 """.trimIndent()

@@ -1,6 +1,8 @@
 package com.tuxunbrowse.android
 
 import com.tuxunbrowse.android.engine.FingerprintProfiles
+import com.tuxunbrowse.android.engine.FingerprintProtection
+import com.tuxunbrowse.android.engine.FingerprintScript
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -330,3 +332,67 @@ class FingerprintConsistencyTest {
         }
     }
 }
+
+    // ---- Protection switches (v0.190.0) ----
+
+    @Test
+    fun protectionJsonRoundTrips() {
+        val p = FingerprintProtection(
+            canvasNoise = false, sensors = false,
+            chromeObject = false
+        )
+        val back = FingerprintProtection.fromJson(p.toJson())
+        assertEquals(p, back)
+        // Corrupt or missing storage falls back to all-on: a
+        // damaged pref must never silently weaken a surface.
+        assertEquals(
+            FingerprintProtection(),
+            FingerprintProtection.fromJson(null)
+        )
+        assertEquals(
+            FingerprintProtection(),
+            FingerprintProtection.fromJson("{broken")
+        )
+        assertEquals(
+            FingerprintProtection(),
+            FingerprintProtection.fromJson("{}")
+        )
+    }
+
+    @Test
+    fun protectionSwitchesGateTheirOwnPayloadSections() {
+        val resolved = FingerprintProfiles.resolve(
+            "jp", "Asia/Tokyo", "pixel8", "ja-JP", "147.0.0.0"
+        )
+        val allOn = FingerprintScript.payload(resolved)
+        assertTrue(allOn.contains("var FP_OPT_CANVAS = true;"))
+        assertTrue(allOn.contains("var FP_OPT_SENSORS = true;"))
+        assertTrue(allOn.contains("var FP_OPT_CHROME = true;"))
+        // The new sections exist in the default payload.
+        assertTrue(allOn.contains("deviceorientation"))
+        assertTrue(allOn.contains("loadTimes"))
+        assertTrue(allOn.contains("notifications"))
+        // Guards are wired: each gated section checks its flag.
+        assertTrue(allOn.contains("if (!FP_OPT_CANVAS) return;"))
+        assertTrue(allOn.contains("if (!FP_OPT_WEBGL) return;"))
+        assertTrue(allOn.contains("if (!FP_OPT_FONTS) return;"))
+        assertTrue(allOn.contains("if (!FP_OPT_WEBRTC) return;"))
+        assertTrue(allOn.contains("if (!FP_OPT_BATTERY) return;"))
+        assertTrue(allOn.contains("if (!FP_OPT_SENSORS) return;"))
+        assertTrue(allOn.contains("if (!FP_OPT_CHROME) return;"))
+        val noCanvas = FingerprintScript.payload(
+            resolved,
+            FingerprintProtection(canvasNoise = false)
+        )
+        assertTrue(noCanvas.contains("var FP_OPT_CANVAS = false;"))
+        assertTrue(noCanvas.contains("var FP_OPT_WEBGL = true;"))
+        // A different switch set is a different payload (the
+        // cache key includes the switches).
+        assertTrue(noCanvas != allOn)
+        val noSensors = FingerprintScript.payload(
+            resolved,
+            FingerprintProtection(sensors = false)
+        )
+        assertTrue(noSensors.contains("var FP_OPT_SENSORS = false;"))
+        assertTrue(noSensors.contains("var FP_OPT_CANVAS = true;"))
+    }

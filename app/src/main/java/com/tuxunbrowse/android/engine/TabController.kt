@@ -946,6 +946,12 @@ class BrowserTab(
     // never creates Gecko tabs (checkpoint has the API findings).
     private val fingerprintProfileProvider:
         () -> ResolvedFingerprint? = { null },
+    // Per-surface protection switches (v0.190.0), read live
+    // alongside the profile so a toggle applies at the next
+    // page start (the mode rebuilds its tabs on a toggle, so
+    // in practice every live tab re-reads at once).
+    private val fingerprintProtectionProvider:
+        () -> FingerprintProtection = { FingerprintProtection() },
     // Whether the STRICT tracking-protection level is in force
     // (v0.92.0): widens this tab's WebView request interception to
     // AdBlocker's strict host list. Gecko tabs ignore it — their
@@ -2656,7 +2662,9 @@ class BrowserTab(
     /** Register the fingerprint document-start handler. */
     private fun registerFingerprintScriptHandler(view: WebView) {
         val resolved = fingerprintProfileProvider() ?: return
-        val payload = FingerprintScript.payload(resolved)
+        val payload = FingerprintScript.payload(
+            resolved, fingerprintProtectionProvider()
+        )
         if (!guardDocumentStartSupported()) return
         if (fingerprintScriptHandler != null &&
             fingerprintScriptPayload == payload
@@ -2703,7 +2711,9 @@ class BrowserTab(
             removeFingerprintScriptHandler()
             return
         }
-        val payload = FingerprintScript.payload(resolved)
+        val payload = FingerprintScript.payload(
+            resolved, fingerprintProtectionProvider()
+        )
         if (guardDocumentStartSupported()) {
             if (fingerprintScriptHandler == null ||
                 fingerprintScriptPayload != payload

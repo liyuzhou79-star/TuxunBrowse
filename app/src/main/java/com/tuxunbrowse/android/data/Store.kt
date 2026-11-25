@@ -1286,6 +1286,25 @@ class Store(private val context: Context) {
             )
         }
 
+    /**
+     * Per-surface protection switches for fingerprint mode
+     * (v0.190.0), one JSON pref in the same fp_* family. Like
+     * the other fp_* keys it stays out of backups: it is a
+     * property of this device's mode setup, and the backup
+     * audit's key list is a pinned contract.
+     */
+    var fingerprintProtection:
+        com.tuxunbrowse.android.engine.FingerprintProtection
+        get() = com.tuxunbrowse.android.engine
+            .FingerprintProtection.fromJson(
+                safeString(KEY_FP_PROTECT, null)
+            )
+        set(value) {
+            prefs.edit()
+                .putString(KEY_FP_PROTECT, value.toJson())
+                .apply()
+        }
+
     /** Save [entry] unless an identical combination is saved. */
     fun addCustomFingerprint(
         entry: com.tuxunbrowse.android.engine.CustomFingerprint
@@ -1715,6 +1734,7 @@ class Store(private val context: Context) {
         private const val KEY_FP_DEVICE = "fp_device"
         private const val KEY_FP_LANGUAGE = "fp_language"
         private const val KEY_FP_CUSTOM = "fp_custom"
+        private const val KEY_FP_PROTECT = "fp_protect"
         private const val KEY_COMPAT_SITES = "compat_sites"
         private const val KEY_DESKTOP_SITES = "desktop_sites"
         private const val KEY_BOOKMARKS = "bookmarks"

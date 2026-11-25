@@ -45,3 +45,10 @@ specifications and public measurement data.
   practice of pinning real per-GPU parameter sets.
 - Brave's farbling write-ups — the per-profile stable-noise
   approach.
+- CreepJS (MIT) — its public lie-detection checklist informed
+  the self-audit of the wrapper functions' stealth and the
+  cross-checks (for example permissions versus Notification)
+  that the payload now keeps in agreement.
+- Cromite (GPL-3.0) — its published Android patch list was
+  used as a coverage reference for Android-specific surfaces
+  (sensors among them); no patches are included.

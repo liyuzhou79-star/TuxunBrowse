@@ -162,6 +162,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.Surface
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -232,6 +234,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
@@ -315,6 +318,7 @@ import com.tuxunbrowse.android.engine.AdBlocker
 import com.tuxunbrowse.android.engine.BrowserTab
 import com.tuxunbrowse.android.engine.GeckoDownloadTracker
 import com.tuxunbrowse.android.engine.FingerprintProfiles
+import com.tuxunbrowse.android.engine.FingerprintProtection
 import com.tuxunbrowse.android.engine.FingerprintScript
 import com.tuxunbrowse.android.engine.ResolvedFingerprint
 import com.tuxunbrowse.android.engine.GeckoHolder
@@ -620,6 +624,9 @@ fun BrowserApp(
     val fpTabs = remember { mutableStateListOf<BrowserTab>() }
     var activeFpTabId by remember { mutableStateOf(-1) }
     var fingerprintMode by remember { mutableStateOf(false) }
+    var fingerprintProtection by remember {
+        mutableStateOf(store.fingerprintProtection)
+    }
     // Startup loading split (v0.28.0 audit): the big JSON lists
     // (and, since v0.79.0, the bookmark folder names) start out
     // EMPTY here and are filled in by the startup effect
@@ -763,7 +770,10 @@ fun BrowserApp(
             kotlinx.coroutines.withContext(
                 kotlinx.coroutines.Dispatchers.Default
             ) {
-                FingerprintScript.payload(store.resolvedFingerprint())
+                FingerprintScript.payload(
+                    store.resolvedFingerprint(),
+                    store.fingerprintProtection
+                )
             }
         }
     }
@@ -1539,6 +1549,9 @@ fun BrowserApp(
             fingerprintProfileProvider = {
                 if (fingerprint) store.resolvedFingerprint() else null
             },
+            fingerprintProtectionProvider = {
+                store.fingerprintProtection
+            },
             trackingStrictProvider = {
                 store.trackingProtectionLevel ==
                     TrackingProtectionLevel.STRICT
@@ -2165,6 +2178,26 @@ fun BrowserApp(
     }
 
     /** Reopen one entry of the recently-closed stack and drop it. */
+    /**
+     * A protection-options toggle (v0.190.0): persist the new
+     * switch set, then rebuild the fingerprint tabs through
+     * the profile path so every live tab re-reads its payload
+     * (with the new switches) at creation. Outside the mode
+     * there are no tabs to rebuild and the next entry picks
+     * the switches up from the store.
+     */
+    fun applyFingerprintProtection(next: FingerprintProtection) {
+        fingerprintProtection = next
+        store.fingerprintProtection = next
+        if (fpTabs.isEmpty()) return
+        applyFingerprintProfile(
+            store.fingerprintRegionId,
+            store.fingerprintTimezoneId,
+            store.fingerprintDeviceId,
+            store.fingerprintLanguage
+        )
+    }
+
     fun reopenClosedTab(info: ClosedTabInfo) {
         recentClosedTabs.remove(info)
         // The captured mode is a live value, like a saved session:
@@ -4135,7 +4168,10 @@ fun BrowserApp(
                     onOpenDownloads = { screen = Screen.DOWNLOADS },
                     onOpenBookmarks = { screen = Screen.BOOKMARKS },
                     onOpenHistory = { screen = Screen.HISTORY },
-                    onOpenSettings = { screen = Screen.SETTINGS }
+                    onOpenSettings = { screen = Screen.SETTINGS },
+                    onCloseAllTabs = {
+                        fpTabs.toList().forEach { closeFpTab(it) }
+                    }
                 )
             } else {
             BrowserScreen(
@@ -6697,6 +6733,7 @@ private fun BrowserScreen(
     val context = LocalContext.current
     var showTabs by remember { mutableStateOf(false) }
     var tabQuery by remember { mutableStateOf("") }
+    var tabSheetMenu by remember { mutableStateOf(false) }
     // Tab sheet multi-select (v0.76.0): while on, card taps toggle
     // a check instead of switching tabs. Selection is a set of tab
     // ids, so it survives the sheet's search filtering untouched.
@@ -8605,9 +8642,10 @@ private fun BrowserScreen(
     // is the current tab's neighbourhood. The scroll runs once
     // per opening (keyed on showTabs only, so typing in the
     // search field never yanks the list around); the item index
-    // counts the full-span rows ahead of the cards — header row
-    // and search field, plus the multi-select action row while
-    // multi-select is on.
+    // counts the full-span rows ahead of the cards — the
+    // header row (v0.190.0: it carries the search pill now),
+    // plus the multi-select action row while multi-select
+    // is on.
     val tabGridState = rememberLazyGridState()
     LaunchedEffect(showTabs) {
         if (showTabs) {
@@ -8615,7 +8653,7 @@ private fun BrowserScreen(
                 it.id == activeTab?.id
             }
             if (activeIndex >= 0) {
-                val headerItems = if (tabMultiSelect) 3 else 2
+                val headerItems = if (tabMultiSelect) 2 else 1
                 tabGridState.scrollToItem(headerItems + activeIndex)
             }
         }
@@ -8641,48 +8679,207 @@ private fun BrowserScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            if (tabMultiSelect) {
-                                // Live count only (v0.93.0): the
-                                // raw set can briefly hold an id the
-                                // hygiene effect has not pruned yet;
-                                // the header must never claim more
-                                // tabs than the actions would touch.
-                                "已选 ${tabs.count { it.id in selectedTabIds }} 个"
-                            } else {
-                                // Same count, same number as the
-                                // bottom bar's tab item (v0.131.0
-                                // count audit): the sheet title
-                                // used to carry no number at all,
-                                // so the two surfaces could not be
-                                // cross-checked at a glance. Both
-                                // read tabs.size — every open tab,
-                                // incognito ones included.
-                                "标签页 ${tabs.size}"
-                            },
-                            style = MaterialTheme.typography.titleLarge,
-                            // Polite live region (v0.78.0
-                            // accessibility pass): TalkBack speaks
-                            // the new count as selections change
-                            // instead of the user having to navigate
-                            // back to the header to hear it.
-                            modifier = Modifier
-                                .weight(1f)
-                                .semantics {
-                                    liveRegion = LiveRegionMode.Polite
-                                }
-                        )
-                        if (tabMultiSelect) {
-                            TextButton(onClick = { exitTabMultiSelect() }) {
+                    if (tabMultiSelect) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment =
+                                Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "已选 ${tabs.count { it.id in selectedTabIds }} 个",
+                                style = MaterialTheme.typography.titleLarge,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .semantics {
+                                        liveRegion =
+                                            LiveRegionMode.Polite
+                                    }
+                            )
+                            TextButton(
+                                onClick = { exitTabMultiSelect() }
+                            ) {
                                 Text("退出多选")
                             }
-                        } else {
-                            TextButton(onClick = { tabMultiSelect = true }) {
-                                Text("多选")
+                        }
+                    } else {
+                        // Chrome-style header row (v0.190.0): a
+                        // filled + button, the pill search field,
+                        // the tab-count box and a floating menu —
+                        // the same component family and numbers as
+                        // the shells' toolbar (ToolbarSpec). The
+                        // search field lives in this row now; the
+                        // old standalone search row is gone.
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment =
+                                Alignment.CenterVertically,
+                            horizontalArrangement =
+                                Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilledIconButton(
+                                onClick = {
+                                    showTabs = false; onNewTab()
+                                }
+                            ) {
+                                Icon(
+                                    Icons.Filled.Add,
+                                    contentDescription = "新增分页"
+                                )
+                            }
+                            TextField(
+                                value = tabQuery,
+                                onValueChange = { tabQuery = it },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp),
+                                singleLine = true,
+                                placeholder = {
+                                    Text("搜寻分页", maxLines = 1)
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Filled.Search,
+                                        contentDescription = null
+                                    )
+                                },
+                                shape = RoundedCornerShape(percent = 50),
+                                colors = TextFieldDefaults.colors(
+                                    focusedContainerColor =
+                                        MaterialTheme.colorScheme
+                                            .surfaceContainerHigh,
+                                    unfocusedContainerColor =
+                                        MaterialTheme.colorScheme
+                                            .surfaceContainerHigh,
+                                    focusedIndicatorColor =
+                                        Color.Transparent,
+                                    unfocusedIndicatorColor =
+                                        Color.Transparent,
+                                    disabledIndicatorColor =
+                                        Color.Transparent
+                                ),
+                                keyboardOptions = KeyboardOptions(
+                                    autoCorrectEnabled = false,
+                                    imeAction = ImeAction.Search
+                                )
+                            )
+                            TabCountButton(
+                                count = tabs.size,
+                                onClick = {}
+                            )
+                            Box {
+                                IconButton(
+                                    onClick = { tabSheetMenu = true }
+                                ) {
+                                    Icon(
+                                        Icons.Filled.MoreVert,
+                                        contentDescription = "更多选项"
+                                    )
+                                }
+                                MaterialTheme(
+                                    shapes = MaterialTheme.shapes.copy(
+                                        extraSmall =
+                                            RoundedCornerShape(16.dp)
+                                    )
+                                ) {
+                                    DropdownMenu(
+                                        expanded = tabSheetMenu,
+                                        onDismissRequest = {
+                                            tabSheetMenu = false
+                                        },
+                                        offset = DpOffset(0.dp, 8.dp)
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("新增分页") },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Filled.Add,
+                                                    null
+                                                )
+                                            },
+                                            onClick = {
+                                                tabSheetMenu = false
+                                                showTabs = false
+                                                onNewTab()
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text("新增无痕分页")
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Filled
+                                                        .VisibilityOff,
+                                                    null
+                                                )
+                                            },
+                                            onClick = {
+                                                tabSheetMenu = false
+                                                showTabs = false
+                                                onNewIncognitoTab()
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text("关闭所有分页")
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Filled.Close,
+                                                    null
+                                                )
+                                            },
+                                            onClick = {
+                                                tabSheetMenu = false
+                                                showTabs = false
+                                                onCloseAllTabs()
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("选取分页") },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Filled.Check,
+                                                    null
+                                                )
+                                            },
+                                            onClick = {
+                                                tabSheetMenu = false
+                                                tabMultiSelect = true
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text("删除浏览资料")
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Filled.Delete,
+                                                    null
+                                                )
+                                            },
+                                            onClick = {
+                                                tabSheetMenu = false
+                                                showTabs = false
+                                                onOpenClearData()
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("设定") },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Filled.Settings,
+                                                    null
+                                                )
+                                            },
+                                            onClick = {
+                                                tabSheetMenu = false
+                                                showTabs = false
+                                                onOpenSettings()
+                                            }
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -8756,25 +8953,6 @@ private fun BrowserScreen(
                         }
                     }
                 }
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    OutlinedTextField(
-                        value = tabQuery,
-                        onValueChange = { tabQuery = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        // Live-filter field (v0.138.0): Search
-                        // action face, no auto-correct — the text
-                        // is matched against titles and URLs.
-                        keyboardOptions = KeyboardOptions(
-                            autoCorrectEnabled = false,
-                            imeAction = ImeAction.Search
-                        ),
-                        placeholder = { Text("搜索标签页（标题或网址）") },
-                        leadingIcon = {
-                            Icon(Icons.Filled.Search, contentDescription = null)
-                        }
-                    )
-                }
                 if (visibleTabs.isEmpty()) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         EmptyState(Icons.Filled.Search, "没有找到相关的标签页。")
@@ -8823,6 +9001,18 @@ private fun BrowserScreen(
                     ElevatedCard(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .then(
+                                if (isActive) {
+                                    Modifier.border(
+                                        2.dp,
+                                        MaterialTheme.colorScheme
+                                            .primary,
+                                        RoundedCornerShape(24.dp)
+                                    )
+                                } else {
+                                    Modifier
+                                }
+                            )
                             // Selection state on the card itself
                             // (v0.99.0 accessibility audit): in
                             // multi-select a tap on the card toggles
@@ -8868,35 +9058,60 @@ private fun BrowserScreen(
                                     }
                                 }
                             ),
-                        colors = if (isActive ||
-                            (tabMultiSelect && tab.id in selectedTabIds)
+                        colors = if (
+                            tabMultiSelect && tab.id in selectedTabIds
                         ) {
                             CardDefaults.elevatedCardColors(
                                 containerColor = MaterialTheme.colorScheme.secondaryContainer
                             )
                         } else {
                             CardDefaults.elevatedCardColors()
-                        }
+                        },
+                        shape = RoundedCornerShape(24.dp)
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                AssistChip(
-                                    onClick = { },
-                                    label = { Text(engineBadge) },
-                                    // Visual only (v0.136.0): the
-                                    // badge text is read on the
-                                    // card stop (see the card's
-                                    // semantics above), so the chip
-                                    // itself stays out of the
-                                    // semantics tree instead of
-                                    // posing as a button that does
-                                    // nothing.
+                                Box(
                                     modifier = Modifier
-                                        .clearAndSetSemantics { }
+                                        .size(28.dp)
+                                        .background(
+                                            MaterialTheme.colorScheme
+                                                .surfaceContainerHighest,
+                                            CircleShape
+                                        ),
+                                    contentAlignment =
+                                        Alignment.Center
+                                ) {
+                                    Icon(
+                                        if (tab.isHome) {
+                                            Icons.Filled.Home
+                                        } else {
+                                            Icons.Filled.Language
+                                        },
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = MaterialTheme.colorScheme
+                                            .onSurfaceVariant
+                                    )
+                                }
+                                Text(
+                                    if (tab.isHome) {
+                                        "首页"
+                                    } else {
+                                        tab.title.ifBlank {
+                                            "新标签页"
+                                        }
+                                    },
+                                    style = MaterialTheme.typography
+                                        .titleSmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(horizontal = 8.dp)
                                 )
                                 if (tabMultiSelect) {
                                     // Multi-select (v0.76.0): the
@@ -8926,7 +9141,10 @@ private fun BrowserScreen(
                                         }
                                     )
                                 } else {
-                                    IconButton(onClick = { onCloseTab(tab) }) {
+                                    IconButton(
+                                        onClick = { onCloseTab(tab) },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
                                         Icon(
                                             Icons.Filled.Close,
                                             contentDescription = "关闭标签"
@@ -8943,7 +9161,12 @@ private fun BrowserScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(96.dp)
-                                    .padding(vertical = 8.dp),
+                                    .padding(vertical = 8.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(
+                                        MaterialTheme.colorScheme
+                                            .surfaceContainer
+                                    ),
                                 contentAlignment = Alignment.Center
                             ) {
                                 val thumb = tab.thumbnail
@@ -9021,22 +9244,6 @@ private fun BrowserScreen(
                                     )
                                 }
                             }
-                            Text(
-                                if (tab.isHome) {
-                                    "首页"
-                                } else {
-                                    tab.title.ifBlank { "新标签页" }
-                                },
-                                style = MaterialTheme.typography.titleSmall,
-                                // Explicit ellipsis (v0.137.0 visual
-                                // regression pass): with maxLines set
-                                // and no overflow, Compose clips the
-                                // text mid-glyph at the card edge; the
-                                // bookmark/history rows have spelled
-                                // Ellipsis out since their own passes.
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
                             Text(
                                 if (tab.isHome) {
                                     "TuxunBrowse 首页"
@@ -9150,16 +9357,6 @@ private fun BrowserScreen(
                             }
                         )
                     }
-                    }
-                }
-                if (!tabMultiSelect) {
-                    item(span = { GridItemSpan(maxLineSpan) }) {
-                        FilledTonalButton(
-                            onClick = { showTabs = false; onNewTab() },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("新建标签页")
-                        }
                     }
                 }
                 if (!tabMultiSelect && recentClosed.isNotEmpty()) {
@@ -13227,7 +13424,8 @@ private fun FingerprintShell(
     onOpenDownloads: () -> Unit = {},
     onOpenBookmarks: () -> Unit = {},
     onOpenHistory: () -> Unit = {},
-    onOpenSettings: () -> Unit = {}
+    onOpenSettings: () -> Unit = {},
+    onCloseAllTabs: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val profile = resolved.profile
@@ -13667,6 +13865,10 @@ private fun FingerprintShell(
                                 candidate.language
                             )
                         },
+                        protection = fingerprintProtection,
+                        onProtectionChange = {
+                            applyFingerprintProtection(it)
+                        },
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
@@ -13966,59 +14168,364 @@ private fun FingerprintShell(
     }
     if (showTabs) {
         ModalBottomSheet(onDismissRequest = { showTabs = false }) {
-            LazyColumn(
-                // Height cap (v0.169.0 alignment pass): the normal
-                // mode sheets cap their content at 600–640dp; this
-                // fingerprint-mode sheet was the lone uncapped one.
+            var fpTabQuery by remember { mutableStateOf("") }
+            var fpSheetMenu by remember { mutableStateOf(false) }
+            val visibleFpTabs = if (fpTabQuery.isBlank()) {
+                tabs
+            } else {
+                tabs.filter {
+                    it.title.contains(fpTabQuery, ignoreCase = true) ||
+                        it.url.contains(fpTabQuery, ignoreCase = true)
+                }
+            }
+            // Same grid language as the normal tab sheet
+            // (v0.190.0 three-shell unification): 24dp cards,
+            // glyph head, pill search header. Fingerprint tabs
+            // never show thumbnails — the body is a labelled
+            // placeholder, per the mode's privacy rule.
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(2),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 640.dp),
-                contentPadding = PaddingValues(bottom = 24.dp)
+                    .heightIn(max = 640.dp)
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 24.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                item {
-                    ListItem(
-                        headlineContent = { Text("指纹模式 · 标签页") },
-                        trailingContent = {
-                            TextButton(onClick = {
-                                showTabs = false
-                                onNewTab()
-                            }) { Text("新建") }
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement =
+                            Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilledIconButton(
+                            onClick = {
+                                showTabs = false; onNewTab()
+                            },
+                            colors = IconButtonDefaults
+                                .filledIconButtonColors(
+                                    containerColor =
+                                        MaterialTheme.colorScheme
+                                            .tertiaryContainer,
+                                    contentColor =
+                                        MaterialTheme.colorScheme
+                                            .onTertiaryContainer
+                                )
+                        ) {
+                            Icon(
+                                Icons.Filled.Add,
+                                contentDescription = "新增指纹分页"
+                            )
                         }
-                    )
+                        TextField(
+                            value = fpTabQuery,
+                            onValueChange = { fpTabQuery = it },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp),
+                            singleLine = true,
+                            placeholder = {
+                                Text("搜寻分页", maxLines = 1)
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Filled.Search,
+                                    contentDescription = null
+                                )
+                            },
+                            shape = RoundedCornerShape(percent = 50),
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor =
+                                    MaterialTheme.colorScheme
+                                        .surfaceContainerHigh,
+                                unfocusedContainerColor =
+                                    MaterialTheme.colorScheme
+                                        .surfaceContainerHigh,
+                                focusedIndicatorColor =
+                                    Color.Transparent,
+                                unfocusedIndicatorColor =
+                                    Color.Transparent,
+                                disabledIndicatorColor =
+                                    Color.Transparent
+                            ),
+                            keyboardOptions = KeyboardOptions(
+                                autoCorrectEnabled = false,
+                                imeAction = ImeAction.Search
+                            )
+                        )
+                        TabCountButton(
+                            count = tabs.size,
+                            onClick = {}
+                        )
+                        Box {
+                            IconButton(
+                                onClick = { fpSheetMenu = true }
+                            ) {
+                                Icon(
+                                    Icons.Filled.MoreVert,
+                                    contentDescription = "更多选项"
+                                )
+                            }
+                            MaterialTheme(
+                                shapes = MaterialTheme.shapes.copy(
+                                    extraSmall =
+                                        RoundedCornerShape(16.dp)
+                                )
+                            ) {
+                                DropdownMenu(
+                                    expanded = fpSheetMenu,
+                                    onDismissRequest = {
+                                        fpSheetMenu = false
+                                    },
+                                    offset = DpOffset(0.dp, 8.dp)
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("新增指纹分页") },
+                                        leadingIcon = {
+                                            Icon(Icons.Filled.Add, null)
+                                        },
+                                        onClick = {
+                                            fpSheetMenu = false
+                                            showTabs = false
+                                            onNewTab()
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("新增无痕分页") },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Filled
+                                                    .VisibilityOff,
+                                                null
+                                            )
+                                        },
+                                        onClick = {
+                                            fpSheetMenu = false
+                                            fpConflictToast(
+                                                "无痕标签走普通模式口径，" +
+                                                    "会和指纹档案混杂"
+                                            )
+                                        },
+                                        colors = MenuDefaults.itemColors(
+                                            textColor =
+                                                MaterialTheme.colorScheme
+                                                    .onSurface.copy(
+                                                        alpha = 0.38f
+                                                    ),
+                                            leadingIconColor =
+                                                MaterialTheme.colorScheme
+                                                    .onSurface.copy(
+                                                        alpha = 0.38f
+                                                    )
+                                        )
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("关闭所有分页") },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Filled.Close,
+                                                null
+                                            )
+                                        },
+                                        onClick = {
+                                            fpSheetMenu = false
+                                            showTabs = false
+                                            onCloseAllTabs()
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("删除浏览资料") },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Filled.Delete,
+                                                null
+                                            )
+                                        },
+                                        onClick = {
+                                            fpSheetMenu = false
+                                            fpConflictToast(
+                                                "浏览资料和普通模式共用" +
+                                                    "一份存储，清掉会连" +
+                                                    "指纹标签的登录一起清掉"
+                                            )
+                                        },
+                                        colors = MenuDefaults.itemColors(
+                                            textColor =
+                                                MaterialTheme.colorScheme
+                                                    .onSurface.copy(
+                                                        alpha = 0.38f
+                                                    ),
+                                            leadingIconColor =
+                                                MaterialTheme.colorScheme
+                                                    .onSurface.copy(
+                                                        alpha = 0.38f
+                                                    )
+                                        )
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("设定") },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Filled.Settings,
+                                                null
+                                            )
+                                        },
+                                        onClick = {
+                                            fpSheetMenu = false
+                                            showTabs = false
+                                            onOpenSettings()
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
-                items(tabs, key = { it.id }) { tab ->
-                    ListItem(
-                        headlineContent = {
-                            Text(
-                                tab.title.ifBlank { "新标签页" },
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        },
-                        supportingContent = {
-                            Text(
-                                if (tab.isHome) "指纹模式首页" else tab.url,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        },
-                        modifier = Modifier.clickable {
+                if (visibleFpTabs.isEmpty()) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        EmptyState(
+                            Icons.Filled.Search,
+                            "没有找到相关的标签页。"
+                        )
+                    }
+                }
+                gridItems(visibleFpTabs, key = { it.id }) { tab ->
+                    val isActiveFp = tab.id == activeTab?.id
+                    ElevatedCard(
+                        onClick = {
                             showTabs = false
                             onSelectTab(tab)
                         },
-                        trailingContent = {
-                            IconButton(onClick = { onCloseTab(tab) }) {
-                                Icon(
-                                    Icons.Filled.Close,
-                                    contentDescription = "关闭标签页"
+                        shape = RoundedCornerShape(24.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(
+                                if (isActiveFp) {
+                                    Modifier.border(
+                                        2.dp,
+                                        MaterialTheme.colorScheme
+                                            .tertiary,
+                                        RoundedCornerShape(24.dp)
+                                    )
+                                } else {
+                                    Modifier
+                                }
+                            )
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment =
+                                    Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .background(
+                                            MaterialTheme.colorScheme
+                                                .tertiaryContainer,
+                                            CircleShape
+                                        ),
+                                    contentAlignment =
+                                        Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Filled.Fingerprint,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = MaterialTheme.colorScheme
+                                            .onTertiaryContainer
+                                    )
+                                }
+                                Text(
+                                    if (tab.isHome) {
+                                        "指纹模式首页"
+                                    } else {
+                                        tab.title.ifBlank {
+                                            "新标签页"
+                                        }
+                                    },
+                                    style = MaterialTheme.typography
+                                        .titleSmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(horizontal = 8.dp)
+                                )
+                                IconButton(
+                                    onClick = { onCloseTab(tab) },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Filled.Close,
+                                        contentDescription = "关闭标签页"
+                                    )
+                                }
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(96.dp)
+                                    .padding(vertical = 8.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(
+                                        MaterialTheme.colorScheme
+                                            .surfaceContainer
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(
+                                    horizontalAlignment =
+                                        Alignment.CenterHorizontally
+                                ) {
+                                    Icon(
+                                        Icons.Filled.VisibilityOff,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme
+                                            .onSurfaceVariant,
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .padding(bottom = 4.dp)
+                                    )
+                                    Text(
+                                        "指纹标签不显示预览",
+                                        style = MaterialTheme.typography
+                                            .bodySmall,
+                                        color = MaterialTheme.colorScheme
+                                            .onSurfaceVariant
+                                    )
+                                }
+                            }
+                            Text(
+                                if (tab.isHome) {
+                                    "指纹模式首页"
+                                } else {
+                                    hostOf(tab.url) ?: tab.url
+                                },
+                                style = MaterialTheme.typography
+                                    .bodySmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (isActiveFp) {
+                                Text(
+                                    "当前标签",
+                                    style = MaterialTheme.typography
+                                        .labelMedium,
+                                    color = MaterialTheme.colorScheme
+                                        .tertiary
                                 )
                             }
                         }
-                    )
+                    }
                 }
             }
         }
     }
+
     if (showPicker) {
         ModalBottomSheet(onDismissRequest = { showPicker = false }) {
             LazyColumn(
@@ -14426,10 +14933,12 @@ private fun fpSelfCheckProbe(expJson: String): String = """
       var r = ext
         ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)
         : gl.getParameter(gl.RENDERER);
-      row('WebGL 厂商', v === EXP.glVendor ? 'ok' : 'bad',
-        String(v));
-      row('WebGL 型号', r === EXP.glRenderer ? 'ok' : 'bad',
-        String(r));
+      row('WebGL 厂商', EXP.webglOff ? 'off'
+          : (v === EXP.glVendor ? 'ok' : 'bad'),
+        EXP.webglOff ? '已在保护选项里关闭' : String(v));
+      row('WebGL 型号', EXP.webglOff ? 'off'
+          : (r === EXP.glRenderer ? 'ok' : 'bad'),
+        EXP.webglOff ? '已在保护选项里关闭' : String(r));
     } else {
       row('WebGL 厂商', 'na', 'WebGL 不可用');
       row('WebGL 型号', 'na', 'WebGL 不可用');
@@ -14440,9 +14949,11 @@ private fun fpSelfCheckProbe(expJson: String): String = """
       '16px "' + EXP.fontIn + '"');
     var fOut = document.fonts.check(
       '16px "' + EXP.fontOut + '"');
-    row('字体清单', fIn === true && fOut === false
-      ? 'ok' : 'bad',
-      EXP.fontIn + ' 应在架、' + EXP.fontOut + ' 应不在架');
+    row('字体清单', EXP.fontOff ? 'off'
+        : (fIn === true && fOut === false ? 'ok' : 'bad'),
+      EXP.fontOff ? '已在保护选项里关闭'
+        : (EXP.fontIn + ' 应在架、' + EXP.fontOut +
+          ' 应不在架'));
   } catch (e) { row('字体清单', 'bad', '读取失败'); }
   try {
     var cv = document.createElement('canvas');
@@ -14488,10 +14999,11 @@ private fun fpSelfCheckProbe(expJson: String): String = """
       done = true;
       try {
         var info = a && a.info;
-        row('WebGPU 厂商',
-          info && info.vendor === EXP.gpuVendor
-            ? 'ok' : 'bad',
-          info ? String(info.vendor) : '无适配器信息');
+        row('WebGPU 厂商', EXP.webglOff ? 'off'
+            : (info && info.vendor === EXP.gpuVendor
+              ? 'ok' : 'bad'),
+          EXP.webglOff ? '已在保护选项里关闭'
+            : (info ? String(info.vendor) : '无适配器信息'));
       } catch (e) { row('WebGPU 厂商', 'bad', '读取失败'); }
       finish();
     }).catch(function () {
@@ -14516,6 +15028,8 @@ private fun FingerprintHome(
     onSearch: (String) -> Unit,
     onQuickRegion: (com.tuxunbrowse.android.engine.FingerprintProfile) -> Unit =
         {},
+    protection: FingerprintProtection = FingerprintProtection(),
+    onProtectionChange: (FingerprintProtection) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val profile = resolved.profile
@@ -14540,7 +15054,7 @@ private fun FingerprintHome(
     var checkStarted by remember { mutableStateOf(false) }
     LaunchedEffect(
         profile.regionId, zone.id, resolved.device.id,
-        resolved.language
+        resolved.language, protection
     ) {
         selfCheckRows = null
     }
@@ -14574,6 +15088,8 @@ private fun FingerprintHome(
             .put("gpuVendor", device.webGpuVendor)
             .put("fontIn", fontIn)
             .put("fontOut", fontOut)
+            .put("webglOff", !protection.webglDisguise)
+            .put("fontOff", !protection.fontSet)
             .toString()
         val probe = fpSelfCheckProbe(exp)
         val wv = WebView(fpHomeContext)
@@ -14614,7 +15130,7 @@ private fun FingerprintHome(
                 view: WebView, url: String
             ) {
                 view.evaluateJavascript(
-                    FingerprintScript.payload(resolved)
+                    FingerprintScript.payload(resolved, protection)
                 ) {
                     view.evaluateJavascript(probe, null)
                 }
@@ -14690,6 +15206,104 @@ private fun FingerprintHome(
                 if (query.isNotBlank()) onSearch(query)
             })
         )
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    "保护选项",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    "关掉哪一项，哪一项就用回这台手机的真实样子；" +
+                        "其余照常按档案伪装。"
+                )
+                val protectionRows = listOf(
+                    Triple(
+                        "画布噪声",
+                        "给画布读数掺入按档案定的细微噪声",
+                        protection.canvasNoise
+                    ),
+                    Triple(
+                        "显卡伪装",
+                        "显卡型号、参数和 WebGPU 按档案机型回答",
+                        protection.webglDisguise
+                    ),
+                    Triple(
+                        "音频噪声",
+                        "给音频读数掺入按档案定的细微噪声",
+                        protection.audioNoise
+                    ),
+                    Triple(
+                        "字体清单",
+                        "字体查询只答档案机型自带的字体",
+                        protection.fontSet
+                    ),
+                    Triple(
+                        "WebRTC 中转形态",
+                        "语音视频通话只走中转，不暴露真实地址",
+                        protection.webrtcRelay
+                    ),
+                    Triple(
+                        "传感器",
+                        "方向和运动传感器按档案生成静止手持的样子",
+                        protection.sensors
+                    ),
+                    Triple(
+                        "电池",
+                        "电量和充电状态按档案讲一个固定故事",
+                        protection.battery
+                    ),
+                    Triple(
+                        "Chrome 对象",
+                        "补上真 Chrome 带的 window.chrome 对象",
+                        protection.chromeObject
+                    )
+                )
+                protectionRows.forEachIndexed { index, row ->
+                    ListItem(
+                        headlineContent = { Text(row.first) },
+                        supportingContent = { Text(row.second) },
+                        trailingContent = {
+                            Switch(
+                                checked = row.third,
+                                onCheckedChange = { value ->
+                                    onProtectionChange(
+                                        when (index) {
+                                            0 -> protection.copy(
+                                                canvasNoise = value
+                                            )
+                                            1 -> protection.copy(
+                                                webglDisguise = value
+                                            )
+                                            2 -> protection.copy(
+                                                audioNoise = value
+                                            )
+                                            3 -> protection.copy(
+                                                fontSet = value
+                                            )
+                                            4 -> protection.copy(
+                                                webrtcRelay = value
+                                            )
+                                            5 -> protection.copy(
+                                                sensors = value
+                                            )
+                                            6 -> protection.copy(
+                                                battery = value
+                                            )
+                                            else -> protection.copy(
+                                                chromeObject = value
+                                            )
+                                        }
+                                    )
+                                }
+                            )
+                        }
+                    )
+                }
+            }
+        }
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(
                 modifier = Modifier.padding(16.dp),
@@ -14797,12 +15411,13 @@ private fun FingerprintHome(
                                 when (ok) {
                                     "ok" -> "通过"
                                     "na" -> "无法检测"
+                                    "off" -> "已关闭"
                                     else -> "异常"
                                 },
                                 color = when (ok) {
                                     "ok" -> MaterialTheme
                                         .colorScheme.primary
-                                    "na" -> MaterialTheme
+                                    "na", "off" -> MaterialTheme
                                         .colorScheme
                                         .onSurfaceVariant
                                     else -> MaterialTheme
