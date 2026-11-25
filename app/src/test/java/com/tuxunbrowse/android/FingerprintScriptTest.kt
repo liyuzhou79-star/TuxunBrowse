@@ -54,6 +54,28 @@ class FingerprintScriptTest {
     }
 
     @Test
+    fun payloadHooksTheLocalDateFace() {
+        val payload = FingerprintScript.payload(
+            FingerprintProfiles.resolve("JP", "Asia/Tokyo")
+        )
+        // v0.207.0: the local component face speaks for the
+        // profile zone too — before this, only the offset and
+        // toString did, and getHours()/toTimeString() answered
+        // for the host zone, contradicting the claimed offset
+        // whenever host and profile differed.
+        for (name in listOf(
+            "getFullYear", "getMonth", "getDate", "getDay",
+            "getHours", "getMinutes", "getSeconds", "getYear",
+            "setFullYear", "setMonth", "setDate", "setHours",
+            "setMinutes", "setSeconds", "setYear",
+            "toDateString", "toTimeString",
+            "fpLocalDate", "fpFromLocal", "fpParse", "FpDate"
+        )) {
+            assertTrue("missing $name", payload.contains(name))
+        }
+    }
+
+    @Test
     fun payloadFollowsThePickedZoneInsideTheRegion() {
         val payload = FingerprintScript.payload(
             FingerprintProfiles.resolve("US", "America/Los_Angeles")

@@ -13,7 +13,11 @@ package com.tuxunbrowse.android.engine
  * userAgentData with the profile's model), screen geometry and
  * devicePixelRatio, the time zone (Intl default zone + default
  * locale, Date.getTimezoneOffset, synthesised Date strings with a
- * daylight-aware zone name, and locale date formatting),
+ * daylight-aware zone name, locale date formatting, and — since
+ * v0.207.0 — the local component face too: the component getters
+ * and setters, toDateString/toTimeString, multi-field construction
+ * and offset-less ISO parsing all read the profile zone instead of
+ * the host's),
  * geolocation answers at the zone's city, canvas readback noise
  * (seeded, deterministic), WebGL unmasked vendor/renderer strings
  * AND the getParameter capability table for the profile's GPU,
@@ -437,37 +441,221 @@ object FingerprintScript {
         return new Intl.DateTimeFormat(locales, options)
           .format(this);
       }, Date.prototype.toLocaleTimeString));
-    function pad2(n) { return (n < 10 ? '0' : '') + n; }
-    setMethod(Date.prototype, 'toString', fixFn(function () {
-      if (isNaN(this.getTime())) return 'Invalid Date';
+    // String forms from one shared parts builder: toString
+    // keeps its long-standing synthesis; toDateString and
+    // toTimeString used to fall through to the host-zone
+    // natives (toTimeString printed the host's GMT offset and
+    // zone name outright) and are built from the same parts
+    // now (v0.207.0).
+    function fpStringParts(date) {
       var dtf = new OrigDTF('en-US', {
-        timeZone: TZ, hourCycle: 'h23', weekday: 'short', year: 'numeric',
-        month: 'short', day: '2-digit', hour: '2-digit',
-        minute: '2-digit', second: '2-digit'
+        timeZone: TZ, hourCycle: 'h23', weekday: 'short',
+        year: 'numeric', month: 'short', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit'
       });
       var map = {};
-      dtf.formatToParts(this).forEach(function (part) {
+      dtf.formatToParts(date).forEach(function (part) {
         map[part.type] = part.value;
       });
-      var off = tzOffsetMinutes(this);
+      var off = tzOffsetMinutes(date);
       var sign = off < 0 ? '-' : '+';
       var abs = Math.abs(off);
-      // Daylight-aware zone name (v0.145.0): the standard offset
-      // is the smaller (more negative, for the northern-hemisphere
-      // zones in the profiles) of the January/July offsets; a date
-      // whose offset sits above it is in daylight time and takes
-      // the daylight name. Zones without DST keep the one name.
+      // Daylight-aware zone name (v0.145.0): the standard
+      // offset is the smaller (more negative, for the
+      // northern-hemisphere zones in the profiles) of the
+      // January/July offsets; a date whose offset sits above
+      // it is in daylight time and takes the daylight name.
+      // Zones without DST keep the one name.
       var name = ZONE_NAME;
       if (DAYLIGHT_NAME) {
-        var jan = tzOffsetMinutes(new Date(Date.UTC(+map.year, 0, 1)));
-        var jul = tzOffsetMinutes(new Date(Date.UTC(+map.year, 6, 1)));
+        var jan = tzOffsetMinutes(new OrigDate(
+          OrigDate.UTC(+map.year, 0, 1)));
+        var jul = tzOffsetMinutes(new OrigDate(
+          OrigDate.UTC(+map.year, 6, 1)));
         if (off > Math.min(jan, jul)) name = DAYLIGHT_NAME;
       }
-      return map.weekday + ' ' + map.month + ' ' + map.day + ' ' +
-        map.year + ' ' + pad2(+map.hour) + ':' + map.minute + ':' +
-        map.second + ' GMT' + sign + pad2(Math.floor(abs / 60)) +
-        pad2(abs % 60) + ' (' + name + ')';
-    }, Date.prototype.toString));
+      function pad2(n) { return (n < 10 ? '0' : '') + n; }
+      return {
+        date: map.weekday + ' ' + map.month + ' ' + map.day +
+          ' ' + map.year,
+        time: pad2(+map.hour) + ':' + map.minute + ':' +
+          map.second + ' GMT' + sign +
+          pad2(Math.floor(abs / 60)) + pad2(abs % 60) +
+          ' (' + name + ')'
+      };
+    }
+    setMethod(Date.prototype, 'toString',
+      fixFn(function () {
+        if (isNaN(this.getTime())) return 'Invalid Date';
+        var p = fpStringParts(this);
+        return p.date + ' ' + p.time;
+      }, Date.prototype.toString));
+    setMethod(Date.prototype, 'toDateString',
+      fixFn(function () {
+        if (isNaN(this.getTime())) return 'Invalid Date';
+        return fpStringParts(this).date;
+      }, Date.prototype.toDateString));
+    setMethod(Date.prototype, 'toTimeString',
+      fixFn(function () {
+        if (isNaN(this.getTime())) return 'Invalid Date';
+        return fpStringParts(this).time;
+      }, Date.prototype.toTimeString));
+    // Local component face (v0.207.0): until now only the
+    // offset and the string forms spoke for the profile zone
+    // — the local getters still answered for the HOST zone,
+    // so getHours() contradicted getTimezoneOffset() whenever
+    // the two differed. Everything below reads (and writes)
+    // the instant through the profile zone: shift by the
+    // zone's offset, then use the UTC fields.
+    var OrigDate = Date;
+    function fpLocalDate(date) {
+      return new OrigDate(date.getTime() +
+        tzOffsetMinutes(date) * 60000);
+    }
+    // Inverse of fpLocalDate: the instant whose profile-zone
+    // fields equal the given components. The offset depends
+    // on the instant itself, so solve once, then re-solve
+    // with the offset at the solution (converges everywhere
+    // except inside the spring-forward gap, where native
+    // behaviour is implementation-defined anyway).
+    function fpFromLocal(y, mo, d, h, mi, s, ms) {
+      var guess = OrigDate.UTC(y, mo, d, h, mi, s, ms);
+      if (isNaN(guess)) return NaN;
+      var t = guess - tzOffsetMinutes(new OrigDate(guess)) * 60000;
+      return guess - tzOffsetMinutes(new OrigDate(t)) * 60000;
+    }
+    function fpLocalParts(date) {
+      var s = fpLocalDate(date);
+      return [s.getUTCFullYear(), s.getUTCMonth(), s.getUTCDate(),
+        s.getUTCHours(), s.getUTCMinutes(), s.getUTCSeconds(),
+        s.getUTCMilliseconds()];
+    }
+    function fpApplyLocal(date, parts) {
+      return date.setTime(fpFromLocal(parts[0], parts[1],
+        parts[2], parts[3], parts[4], parts[5], parts[6]));
+    }
+    [['getFullYear', 'getUTCFullYear'],
+     ['getMonth', 'getUTCMonth'], ['getDate', 'getUTCDate'],
+     ['getDay', 'getUTCDay'], ['getHours', 'getUTCHours'],
+     ['getMinutes', 'getUTCMinutes'],
+     ['getSeconds', 'getUTCSeconds']].forEach(function (pair) {
+      setMethod(Date.prototype, pair[0], fixFn(function () {
+        if (isNaN(this.getTime())) return NaN;
+        return fpLocalDate(this)[pair[1]]();
+      }, Date.prototype[pair[0]]));
+    });
+    setMethod(Date.prototype, 'getYear',
+      fixFn(function () {
+        if (isNaN(this.getTime())) return NaN;
+        return this.getFullYear() - 1900;
+      }, Date.prototype.getYear));
+    // Setters write through the same lens: the components
+    // are profile-zone wall time. (setMilliseconds and
+    // setTime are offset-independent and stay native.)
+    // Native quirk kept: setFullYear alone revives an
+    // invalid date, from New Year midnight; the other
+    // setters return NaN on one.
+    setMethod(Date.prototype, 'setFullYear',
+      fixFn(function (y, mo, d) {
+        var parts = isNaN(this.getTime())
+          ? [0, 0, 1, 0, 0, 0, 0] : fpLocalParts(this);
+        parts[0] = +y;
+        if (mo !== undefined) parts[1] = +mo;
+        if (d !== undefined) parts[2] = +d;
+        return fpApplyLocal(this, parts);
+      }, Date.prototype.setFullYear));
+    setMethod(Date.prototype, 'setMonth',
+      fixFn(function (mo, d) {
+        if (isNaN(this.getTime())) return NaN;
+        var parts = fpLocalParts(this);
+        parts[1] = +mo;
+        if (d !== undefined) parts[2] = +d;
+        return fpApplyLocal(this, parts);
+      }, Date.prototype.setMonth));
+    setMethod(Date.prototype, 'setDate',
+      fixFn(function (d) {
+        if (isNaN(this.getTime())) return NaN;
+        var parts = fpLocalParts(this);
+        parts[2] = +d;
+        return fpApplyLocal(this, parts);
+      }, Date.prototype.setDate));
+    setMethod(Date.prototype, 'setHours',
+      fixFn(function (h, mi, s, ms) {
+        if (isNaN(this.getTime())) return NaN;
+        var parts = fpLocalParts(this);
+        parts[3] = +h;
+        if (mi !== undefined) parts[4] = +mi;
+        if (s !== undefined) parts[5] = +s;
+        if (ms !== undefined) parts[6] = +ms;
+        return fpApplyLocal(this, parts);
+      }, Date.prototype.setHours));
+    setMethod(Date.prototype, 'setMinutes',
+      fixFn(function (mi, s, ms) {
+        if (isNaN(this.getTime())) return NaN;
+        var parts = fpLocalParts(this);
+        parts[4] = +mi;
+        if (s !== undefined) parts[5] = +s;
+        if (ms !== undefined) parts[6] = +ms;
+        return fpApplyLocal(this, parts);
+      }, Date.prototype.setMinutes));
+    setMethod(Date.prototype, 'setSeconds',
+      fixFn(function (s, ms) {
+        if (isNaN(this.getTime())) return NaN;
+        var parts = fpLocalParts(this);
+        parts[5] = +s;
+        if (ms !== undefined) parts[6] = +ms;
+        return fpApplyLocal(this, parts);
+      }, Date.prototype.setSeconds));
+    setMethod(Date.prototype, 'setYear',
+      fixFn(function (y) {
+        y = +y;
+        if (y >= 0 && y <= 99) y += 1900;
+        return this.setFullYear(y);
+      }, Date.prototype.setYear));
+    // Constructor and Date.parse: multi-field construction
+    // and offset-less ISO strings name profile-zone wall
+    // time, not the host's. Date-only strings stay with the
+    // native parser (the spec reads those as UTC), as does
+    // anything carrying an explicit offset or a non-ISO
+    // shape.
+    function fpParse(str) {
+      if (typeof str === 'string') {
+        var m = /^\s*(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?\s*$/
+          .exec(str);
+        if (m) {
+          var ms = m[7] ? +((m[7] + '000').slice(0, 3)) : 0;
+          return fpFromLocal(+m[1], +m[2] - 1, +m[3], +m[4],
+            +m[5], +(m[6] || 0), ms);
+        }
+      }
+      return OrigDate.parse(str);
+    }
+    function FpDate() {
+      if (!new.target) return new OrigDate().toString();
+      if (arguments.length === 0) return new OrigDate();
+      if (arguments.length === 1) {
+        var v = arguments[0];
+        return typeof v === 'string'
+          ? new OrigDate(fpParse(v)) : new OrigDate(v);
+      }
+      var a = arguments;
+      function num(i, dflt) {
+        return a.length > i ? +a[i] : dflt;
+      }
+      return new OrigDate(fpFromLocal(+a[0], +a[1],
+        num(2, 1), num(3, 0), num(4, 0), num(5, 0),
+        num(6, 0)));
+    }
+    FpDate.prototype = OrigDate.prototype;
+    FpDate.now = fixFn(function () { return OrigDate.now(); },
+      OrigDate.now);
+    FpDate.UTC = fixFn(function () {
+      return OrigDate.UTC.apply(null, arguments);
+    }, OrigDate.UTC);
+    FpDate.parse = fixFn(function (s) { return fpParse(s); },
+      OrigDate.parse);
+    fixFn(FpDate, OrigDate);
+    setMethod(window, 'Date', FpDate);
   });
 
   section(function () {

@@ -863,6 +863,9 @@ object FingerprintProfiles {
             .toString()
     }
 
+    /** Most combinations one imported file may contribute. */
+    const val MAX_CUSTOM_PROFILE_IMPORT = 200
+
     /**
      * Parse an exported combinations file (v0.197.0). Accepts
      * the wrapped document and, leniently, a bare array in the
@@ -872,7 +875,9 @@ object FingerprintProfiles {
      * ids are NOT validated further — applying an entry goes
      * through the same bounded resolve as everything else, so
      * a stale device or language degrades to the region
-     * default. Duplicates (same four ids) collapse.
+     * default. Duplicates (same four ids) collapse, and the
+     * result is capped at [MAX_CUSTOM_PROFILE_IMPORT] entries
+     * (v0.207.0).
      */
     fun parseCustomProfiles(
         raw: String?
@@ -892,7 +897,18 @@ object FingerprintProfiles {
         }
         val knownRegions = all.map { it.regionId }.toSet()
         val out = mutableListOf<CustomFingerprint>()
+        // Entry cap + set-based dedupe (v0.207.0 malformed-input
+        // sweep): this loop used to run unbounded with a linear
+        // duplicate scan per entry — O(n²) over however many
+        // entries a file claims, so a bloated or crafted export
+        // (hundreds of thousands of tiny entries, well under the
+        // import char cap) kept the parse busy effectively
+        // forever. A hand-kept combination list is a handful of
+        // entries; the cap sits far above real use, and the
+        // import toast reports how many actually landed.
+        val seen = HashSet<String>()
         for (i in 0 until arr.length()) {
+            if (out.size >= MAX_CUSTOM_PROFILE_IMPORT) break
             val obj = arr.optJSONObject(i) ?: continue
             val regionId = obj.optString("r")
             if (regionId !in knownRegions) continue
@@ -903,15 +919,11 @@ object FingerprintProfiles {
                 language = obj.optString("l"),
                 label = obj.optString("label")
             )
-            if (out.any {
-                    it.regionId == entry.regionId &&
-                        it.deviceId == entry.deviceId &&
-                        it.timezoneId == entry.timezoneId &&
-                        it.language == entry.language
-                }
-            ) {
-                continue
-            }
+            val key = listOf(
+                entry.regionId, entry.deviceId,
+                entry.timezoneId, entry.language
+            ).joinToString("")
+            if (!seen.add(key)) continue
             out += entry
         }
         return out

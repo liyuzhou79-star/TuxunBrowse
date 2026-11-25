@@ -2009,6 +2009,47 @@ const val MAX_IMPORT_ENTRIES = 5000
  */
 const val MAX_IMPORT_FILE_CHARS = 8_000_000
 
+/**
+ * Deepest JSON nesting an imported file may use (v0.207.0
+ * malformed-input sweep). Real exports nest about four levels;
+ * the guard exists because the platform's org.json parser is
+ * recursive with no depth limit of its own — a file nested
+ * thousands of levels deep (a few hundred KB of brackets, well
+ * under the char cap) overflows the parse thread's stack, and
+ * StackOverflowError is an Error, so the parsers' catch
+ * (Exception) never sees it: the import takes the process down
+ * instead of failing cleanly. The scan below is a single
+ * linear pass that counts brackets outside string literals,
+ * so it costs nothing next to the parse itself.
+ */
+const val MAX_JSON_NESTING_DEPTH = 100
+
+/** True when [raw]'s JSON nesting goes past the import cap. */
+fun jsonNestingTooDeep(raw: String): Boolean {
+    var depth = 0
+    var inString = false
+    var escaped = false
+    for (c in raw) {
+        if (inString) {
+            when {
+                escaped -> escaped = false
+                c == '\\' -> escaped = true
+                c == '"' -> inString = false
+            }
+            continue
+        }
+        when (c) {
+            '"' -> inString = true
+            '{', '[' -> {
+                depth++
+                if (depth > MAX_JSON_NESTING_DEPTH) return true
+            }
+            '}', ']' -> if (depth > 0) depth--
+        }
+    }
+    return false
+}
+
 /** Format marker written into every full-backup file. */
 const val BACKUP_FORMAT = "tuxunbrowse-backup"
 
@@ -2207,6 +2248,9 @@ fun backupToJson(
  * valid backup simply come back empty/absent.
  */
 fun parseBackup(raw: String): BackupData? {
+    // Depth guard first (v0.207.0): the platform JSON parser
+    // is recursive and unbounded — see MAX_JSON_NESTING_DEPTH.
+    if (jsonNestingTooDeep(raw)) return null
     val obj = try {
         JSONObject(raw.trim())
     } catch (e: Exception) {
@@ -2486,6 +2530,9 @@ fun bookmarksToHtml(list: List<Bookmark>): String {
 fun bookmarksFromJson(raw: String): List<Bookmark> {
     val trimmed = raw.trim()
     if (trimmed.isEmpty()) return emptyList()
+    // Depth guard first (v0.207.0): the platform JSON parser
+    // is recursive and unbounded — see MAX_JSON_NESTING_DEPTH.
+    if (jsonNestingTooDeep(trimmed)) return emptyList()
     val arr = try {
         if (trimmed.startsWith("[")) {
             JSONArray(trimmed)
@@ -2540,8 +2587,19 @@ private fun decodeHtmlEntities(text: String): String {
  * participates per match.
  */
 private val HTML_TOKEN_REGEX = Regex(
-    "<(/?)DL\\b[^>]*>|<H3\\b[^>]*>(.*?)</H3>|" +
-        "<A\\s[^>]*?HREF\\s*=\\s*\"([^\"]*)\"[^>]*>(.*?)</A>",
+    // Every stretch is length-bounded (v0.207.0 malformed-input
+    // sweep): with unbounded quantifiers, a pathological file —
+    // hundreds of KB of "<A " with no ">" anywhere — makes the
+    // backtracking scan for HREF re-walk the tail at every tag
+    // start (a 750 KB sample took ~67 s in a desktop regex
+    // engine; a phone CPU fares worse), so the import never
+    // answers. Real exports keep attribute stretches under a
+    // few hundred characters and titles far under the caps
+    // below, so legitimate files are unaffected; a token that
+    // exceeds a cap simply does not match and its entry is not
+    // imported.
+    "<(/?)DL\\b[^>]{0,512}>|<H3\\b[^>]{0,512}>(.{0,4096}?)</H3>|" +
+        "<A\\s[^>]{0,512}?HREF\\s*=\\s*\"([^\"]{0,4096})\"[^>]{0,512}>(.{0,4096}?)</A>",
     setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
 )
 

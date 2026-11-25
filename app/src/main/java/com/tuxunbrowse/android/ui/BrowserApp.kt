@@ -15317,6 +15317,42 @@ private fun fpSelfCheckProbe(expJson: String): String = """
     row('时区', tz === EXP.tz ? 'ok' : 'bad', String(tz));
   } catch (e) { row('时区', 'bad', '读取失败'); }
   try {
+    // Local time + zone name (v0.207.0): the component
+    // getters must tell the same story as Intl for the
+    // claimed zone (they used to answer for the host zone),
+    // and the name Date strings carry in parentheses must
+    // match the name Intl reports for the zone — the one
+    // pair of eyes that can settle a zone-name spelling the
+    // profile pins as a constant.
+    var now = new Date();
+    var parts = {};
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: EXP.tz, hourCycle: 'h23', year: 'numeric',
+      month: '2-digit', day: '2-digit', hour: '2-digit',
+      minute: '2-digit', second: '2-digit'
+    }).formatToParts(now).forEach(function (p) {
+      parts[p.type] = +p.value;
+    });
+    var localOk = now.getFullYear() === parts.year &&
+      now.getMonth() === parts.month - 1 &&
+      now.getDate() === parts.day &&
+      now.getHours() === parts.hour &&
+      now.getMinutes() === parts.minute &&
+      now.getSeconds() === parts.second;
+    var inString = /\(([^)]+)\)$/.exec(now.toString());
+    var longName = new Intl.DateTimeFormat('en-US', {
+      timeZone: EXP.tz, timeZoneName: 'long'
+    }).formatToParts(now).filter(function (p) {
+      return p.type === 'timeZoneName';
+    })[0].value;
+    var nameOk = !!inString && inString[1] === longName;
+    row('本地时间与时区名', localOk && nameOk ? 'ok' : 'bad',
+      '本地 ' + now.getHours() + ' 点 ' + now.getMinutes() +
+      ' 分，时区名 ' + (inString ? inString[1] : '（无）') +
+      (nameOk ? '' : '，Intl 报 ' + longName) +
+      (localOk ? '' : '，本地分量与 Intl 对不上'));
+  } catch (e) { row('本地时间与时区名', 'bad', '读取失败'); }
+  try {
     row('机型（UA）',
       navigator.userAgent.indexOf(EXP.uaModel) >= 0
         ? 'ok' : 'bad', EXP.uaModel);
