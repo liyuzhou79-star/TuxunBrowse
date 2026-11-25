@@ -31,6 +31,8 @@ class FingerprintScriptTest {
         assertTrue(payload.contains("getCurrentPosition"))
         assertTrue(payload.contains("getImageData"))
         assertTrue(payload.contains("0x9246"))
+        // v0.149.0: the framebuffer readback carries noise too.
+        assertTrue(payload.contains("readPixels"))
         assertTrue(payload.contains("getChannelData"))
         assertTrue(payload.contains("getBoundingClientRect"))
         assertTrue(payload.contains("getBattery"))

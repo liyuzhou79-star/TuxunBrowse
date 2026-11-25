@@ -37,9 +37,10 @@ package com.tuxunbrowse.android.engine
  * rewrite; the JS-visible language is the profile's), the device's
  * real font set (measureText scaling and rect jitter only shift
  * the measurements off the raw values — a mitigation, not a font
- * swap), WebGL readPixels-level noise, and anything on the Gecko
- * engine (no per-session surface — see the checkpoint's Gecko
- * findings; fingerprint tabs are WebView-only).
+ * swap), and anything on the Gecko engine (no per-session
+ * surface — see the checkpoint's Gecko findings; fingerprint
+ * tabs are WebView-only). WebGL readPixels noise joined the
+ * covered set in v0.149.0.
  */
 object FingerprintScript {
 
@@ -334,6 +335,34 @@ object FingerprintScript {
           }
           return orig.apply(this, arguments);
         };
+        // readPixels (v0.149.0): the canvas noise is pointless if
+        // a checker can read the framebuffer back raw — readback
+        // is the other half of every WebGL fingerprint. Same
+        // sparse ±1 treatment, keyed by SEED + byte position, so
+        // repeated reads of the same scene agree with each other
+        // and with the canvas story. Only the plain Uint8Array
+        // form is touched (the WebGL2 pixel-pack-offset form
+        // passes a number, not an array). ±1 on roughly 1-in-500
+        // bytes is invisible to pages rendering with readPixels;
+        // it only moves the hash.
+        if (ctor.prototype.readPixels) {
+          var origRead = ctor.prototype.readPixels;
+          ctor.prototype.readPixels = function () {
+            var r = origRead.apply(this, arguments);
+            try {
+              var pixels = arguments[6];
+              if (pixels && pixels instanceof Uint8Array) {
+                for (var i = 0; i < pixels.length; i += 499) {
+                  if ((hash(SEED * 31 + i * 11) & 7) === 0) {
+                    pixels[i] = (pixels[i] +
+                      ((hash(SEED * 17 + i * 13) & 1) ? 1 : 255)) & 255;
+                  }
+                }
+              }
+            } catch (e) {}
+            return r;
+          };
+        }
       });
   });
 
