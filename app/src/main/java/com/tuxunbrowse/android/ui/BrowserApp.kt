@@ -6267,77 +6267,7 @@ private fun EnginePickerScreen(
 ) {
     var selected by remember { mutableStateOf(initial) }
     Scaffold(
-        bottomBar = {
-            // Bottom bar (v0.187.0, three-shell unification):
-            // the same 56dp surfaceContainer bar with evenly
-            // spread 48dp targets as the normal shell; the
-            // fingerprint set is the mode's own high-frequency
-            // actions — back / forward / reload / profile.
-            Surface(
-                modifier = Modifier
-                    .windowInsetsPadding(
-                        WindowInsets.navigationBars.only(
-                            WindowInsetsSides.Bottom
-                        )
-                    )
-                    .height(56.dp),
-                color = MaterialTheme.colorScheme.surfaceContainer,
-                tonalElevation = 3.dp
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement =
-                        Arrangement.SpaceAround,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(
-                        onClick = { activeTab?.goBack() },
-                        enabled = activeTab?.canGoBack == true
-                    ) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "后退"
-                        )
-                    }
-                    IconButton(
-                        onClick = { activeTab?.goForward() },
-                        enabled = activeTab?.canGoForward == true
-                    ) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowForward,
-                            contentDescription = "前进"
-                        )
-                    }
-                    IconButton(onClick = {
-                        if (activeTab?.loading == true) {
-                            activeTab.stopLoading()
-                        } else {
-                            activeTab?.reload()
-                        }
-                    }) {
-                        Icon(
-                            if (activeTab?.loading == true) {
-                                Icons.Filled.Close
-                            } else {
-                                Icons.Filled.Refresh
-                            },
-                            contentDescription =
-                                if (activeTab?.loading == true) {
-                                    "停止加载"
-                                } else {
-                                    "刷新"
-                                }
-                        )
-                    }
-                    IconButton(onClick = { showPicker = true }) {
-                        Icon(
-                            Icons.Filled.Fingerprint,
-                            contentDescription = "切换档案"
-                        )
-                    }
-                }
-            }
-        }
+        topBar = { TopAppBar(title = { Text(title) }) }
     ) { padding ->
         LazyColumn(
             modifier = Modifier
@@ -7856,38 +7786,6 @@ private fun BrowserScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            // Identity strip (v0.147.0's mode tint, kept as
-            // the mode's allowed difference in the unified
-            // layout): the tertiary colour lives on this slim
-            // strip now, so the toolbar row below can share
-            // the normal shell's exact geometry and surface.
-            Surface(
-                color = MaterialTheme.colorScheme.tertiaryContainer,
-                contentColor =
-                    MaterialTheme.colorScheme.onTertiaryContainer
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .windowInsetsPadding(WindowInsets.statusBars)
-                        .height(48.dp)
-                        .padding(horizontal = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        Icons.Filled.Fingerprint,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Text(
-                        "指纹模式",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Spacer(modifier = Modifier.weight(1f))
-                    TextButton(onClick = onExit) { Text("退出") }
-                }
-            }
             if (!chromeHidden) {
             // Loading progress bar (v0.171.0): the read of the tab's
             // progress state lives inside TabLoadProgressBar's own
@@ -13266,37 +13164,76 @@ private fun FingerprintShell(
         tab.load(resolveInput(text, searchEngine))
     }
     Scaffold(
-        topBar = {
-            // The mode's visual identity (v0.147.0): the tertiary
-            // container tint is used NOWHERE in the normal shell,
-            // so the mode reads as a different place at a glance —
-            // same official components and theme roles, different
-            // role assignment.
-            TopAppBar(
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        bottomBar = {
+            // Bottom bar (v0.187.0, three-shell unification):
+            // the same 56dp surfaceContainer bar with evenly
+            // spread 48dp targets as the normal shell; the
+            // fingerprint set is the mode's own high-frequency
+            // actions — back / forward / reload / profile.
+            Surface(
+                modifier = Modifier
+                    .windowInsetsPadding(
+                        WindowInsets.navigationBars.only(
+                            WindowInsetsSides.Bottom
+                        )
+                    )
+                    .height(56.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                tonalElevation = 3.dp
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement =
+                        Arrangement.SpaceAround,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = { activeTab?.goBack() },
+                        enabled = activeTab?.canGoBack == true
                     ) {
                         Icon(
-                            Icons.Filled.Fingerprint,
-                            contentDescription = null
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "后退"
                         )
-                        Text("指纹模式")
                     }
-                },
-                actions = {
-                    TextButton(onClick = onExit) { Text("退出") }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor =
-                        MaterialTheme.colorScheme.tertiaryContainer,
-                    titleContentColor =
-                        MaterialTheme.colorScheme.onTertiaryContainer,
-                    actionIconContentColor =
-                        MaterialTheme.colorScheme.onTertiaryContainer
-                )
-            )
+                    IconButton(
+                        onClick = { activeTab?.goForward() },
+                        enabled = activeTab?.canGoForward == true
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowForward,
+                            contentDescription = "前进"
+                        )
+                    }
+                    IconButton(onClick = {
+                        if (activeTab?.loading == true) {
+                            activeTab.stopLoading()
+                        } else {
+                            activeTab?.reload()
+                        }
+                    }) {
+                        Icon(
+                            if (activeTab?.loading == true) {
+                                Icons.Filled.Close
+                            } else {
+                                Icons.Filled.Refresh
+                            },
+                            contentDescription =
+                                if (activeTab?.loading == true) {
+                                    "停止加载"
+                                } else {
+                                    "刷新"
+                                }
+                        )
+                    }
+                    IconButton(onClick = { showPicker = true }) {
+                        Icon(
+                            Icons.Filled.Fingerprint,
+                            contentDescription = "切换档案"
+                        )
+                    }
+                }
+            }
         }
     ) { padding ->
         Column(
@@ -13304,6 +13241,38 @@ private fun FingerprintShell(
                 .fillMaxSize()
                 .padding(padding)
         ) {
+            // Identity strip (v0.147.0's mode tint, kept as
+            // the mode's allowed difference in the unified
+            // layout): the tertiary colour lives on this slim
+            // strip now, so the toolbar row below can share
+            // the normal shell's exact geometry and surface.
+            Surface(
+                color = MaterialTheme.colorScheme.tertiaryContainer,
+                contentColor =
+                    MaterialTheme.colorScheme.onTertiaryContainer
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .windowInsetsPadding(WindowInsets.statusBars)
+                        .height(48.dp)
+                        .padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Fingerprint,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        "指纹模式",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                    TextButton(onClick = onExit) { Text("退出") }
+                }
+            }
             // Unified toolbar row (v0.187.0): the same
             // order and numbers as the normal shell — home,
             // pill, engine switch, new tab, tab count, menu —
