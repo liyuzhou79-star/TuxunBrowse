@@ -17,6 +17,9 @@ import androidx.compose.foundation.Image as FoundationImage
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -201,7 +204,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -7962,6 +7967,16 @@ private fun BrowserScreen(
             } else {
                 tabContent()
             }
+            // Edge-swipe navigation (v0.179.0): over the web
+            // content only (fullscreen chrome-hidden keeps it
+            // too — the early return above hosts its own view —
+            // this overlay sits in the normal content box).
+            if (activeTab != null && !chromeHidden) {
+                EdgeSwipeNavigation(
+                    onBack = { activeTab?.goBack() },
+                    onForward = { activeTab?.goForward() }
+                )
+            }
         }
     }
 
@@ -12755,6 +12770,103 @@ private fun ClearDataScreen(
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+/**
+ * Edge-swipe web navigation (v0.179.0, both shells): a drag
+ * that STARTS within 24dp of the left edge and travels 64dp
+ * inward goes back in the web history; the right edge mirrors
+ * it forward. Vertical drift past 48dp bails out untouched, so
+ * page scrolling and pull-to-refresh never see a consumed
+ * event from us; once fired, the rest of that gesture is
+ * consumed so the page does not also react. Nothing is
+ * consumed before the threshold, so ordinary page touches —
+ * including horizontal carousels NOT starting at the very
+ * edge — are unaffected; an edge-born horizontal swipe past
+ * 64dp is claimed by navigation (the documented trade-off of
+ * having this gesture at all).
+ *
+ * System-gesture avoidance: the OS back gesture owns the
+ * edges by default. Two invisible 24dp x 200dp strips at the
+ * vertical centre of each edge carry systemGestureExclusion,
+ * inside which the system is asked to let the app's gesture
+ * win; above and below those strips the system back gesture
+ * keeps its priority, and on three-button navigation there
+ * is no conflict anywhere. The exclusion is an OS-honoured
+ * request (capped per edge by the platform), not a guarantee
+ * on every OEM build — the real-device checklist carries it.
+ */
+@Composable
+private fun EdgeSwipeNavigation(
+    onBack: () -> Unit,
+    onForward: () -> Unit
+) {
+    val density = LocalDensity.current
+    val edgePx = with(density) { 24.dp.toPx() }
+    val triggerPx = with(density) { 64.dp.toPx() }
+    val driftPx = with(density) { 48.dp.toPx() }
+    Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .width(24.dp)
+                .height(200.dp)
+                .systemGestureExclusion()
+        )
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .width(24.dp)
+                .height(200.dp)
+                .systemGestureExclusion()
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(onBack, onForward) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(
+                            requireUnconsumed = false
+                        )
+                        val fromLeft = down.position.x <= edgePx
+                        val fromRight =
+                            down.position.x >= size.width - edgePx
+                        if (!fromLeft && !fromRight) {
+                            return@awaitEachGesture
+                        }
+                        var fired = false
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes
+                                .firstOrNull { it.id == down.id }
+                                ?: break
+                            if (!change.pressed) break
+                            if (fired) {
+                                change.consume()
+                                continue
+                            }
+                            val dx = change.position.x -
+                                down.position.x
+                            val dy = change.position.y -
+                                down.position.y
+                            if (kotlin.math.abs(dy) > driftPx &&
+                                kotlin.math.abs(dy) >
+                                kotlin.math.abs(dx)
+                            ) {
+                                break
+                            }
+                            val inward = if (fromLeft) dx else -dx
+                            if (inward >= triggerPx) {
+                                fired = true
+                                change.consume()
+                                if (fromLeft) onBack()
+                                else onForward()
+                            }
+                        }
+                    }
+                }
+        )
+    }
+}
+
 private fun FingerprintShell(
     tabs: List<BrowserTab>,
     activeTab: BrowserTab?,
@@ -13092,6 +13204,13 @@ private fun FingerprintShell(
                                 modifier = Modifier.fillMaxSize()
                             )
                         }
+                        // Edge-swipe navigation (v0.179.0):
+                        // same gesture, same geometry as the
+                        // normal shell.
+                        EdgeSwipeNavigation(
+                            onBack = { tab.goBack() },
+                            onForward = { tab.goForward() }
+                        )
                     }
                 }
             }
