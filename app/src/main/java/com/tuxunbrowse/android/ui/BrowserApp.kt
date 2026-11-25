@@ -573,6 +573,14 @@ fun BrowserApp(
 ) {
     val context = LocalContext.current
     val store = remember { Store(context) }
+    // Scope for the file work below (v0.167.0 stability audit):
+    // imports and exports used to read, parse, serialize and write
+    // whole files synchronously inside activity-result callbacks
+    // and click handlers — all main-thread work, so a slow content
+    // provider or a large import file froze the UI for the duration.
+    // Those paths now launch here, do the heavy part off the main
+    // thread, and come back for state changes and toasts.
+    val appScope = rememberCoroutineScope()
     var screen by remember {
         mutableStateOf(if (store.mainEngineChosen) Screen.BROWSER else Screen.PICKER)
     }
@@ -2415,46 +2423,59 @@ fun BrowserApp(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        try {
-            val raw = readImportFileText(context, uri)
-            val head = raw.trimStart()
-            val isHtml = head.startsWith("<!DOCTYPE NETSCAPE", ignoreCase = true) ||
-                head.startsWith("<DL", ignoreCase = true)
-            var skipped = 0
-            val parsed = if (isHtml) {
-                val (list, bad) = bookmarksFromHtml(raw)
-                skipped += bad
-                list
-            } else {
-                bookmarksFromJson(raw)
-            }
-            // De-duplicate within the file itself as well.
-            val imported = parsed.distinctBy { it.url }
-            skipped += parsed.size - imported.size
-            var added = 0
-            imported.forEach { bm ->
-                if (bookmarks.none { it.url == bm.url }) {
-                    bookmarks.add(bm)
-                    added++
-                } else {
-                    skipped++
+        // Threading (v0.167.0): the read (up to the 8M-char cap,
+        // through the content provider) and the parse run on a
+        // background dispatcher; only the merge into the live
+        // bookmark list and the result toast stay on the main
+        // thread, exactly as before.
+        appScope.launch {
+            try {
+                val (imported, parseSkipped) =
+                    withContext(Dispatchers.Default) {
+                        val raw = readImportFileText(context, uri)
+                        val head = raw.trimStart()
+                        val isHtml = head.startsWith(
+                            "<!DOCTYPE NETSCAPE", ignoreCase = true
+                        ) || head.startsWith("<DL", ignoreCase = true)
+                        var skipped = 0
+                        val parsed = if (isHtml) {
+                            val (list, bad) = bookmarksFromHtml(raw)
+                            skipped += bad
+                            list
+                        } else {
+                            bookmarksFromJson(raw)
+                        }
+                        // De-duplicate within the file itself as well.
+                        val distinct = parsed.distinctBy { it.url }
+                        skipped += parsed.size - distinct.size
+                        distinct to skipped
+                    }
+                var skipped = parseSkipped
+                var added = 0
+                imported.forEach { bm ->
+                    if (bookmarks.none { it.url == bm.url }) {
+                        bookmarks.add(bm)
+                        added++
+                    } else {
+                        skipped++
+                    }
                 }
+                if (added > 0) store.saveBookmarks(bookmarks)
+                android.widget.Toast.makeText(
+                    context,
+                    if (imported.isEmpty() && skipped == 0) {
+                        "这个文件里没有可导入的书签"
+                    } else {
+                        "导入了 $added 条书签，跳过 $skipped 条（重复或不支持的）"
+                    },
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            } catch (t: Throwable) {
+                android.widget.Toast.makeText(
+                    context, "文件有问题，没导入任何书签，请换一个文件重试",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
             }
-            if (added > 0) store.saveBookmarks(bookmarks)
-            android.widget.Toast.makeText(
-                context,
-                if (imported.isEmpty() && skipped == 0) {
-                    "这个文件里没有可导入的书签"
-                } else {
-                    "导入了 $added 条书签，跳过 $skipped 条（重复或不支持的）"
-                },
-                android.widget.Toast.LENGTH_LONG
-            ).show()
-        } catch (t: Throwable) {
-            android.widget.Toast.makeText(
-                context, "文件有问题，没导入任何书签，请换一个文件重试",
-                android.widget.Toast.LENGTH_LONG
-            ).show()
         }
     }
 
@@ -2463,8 +2484,19 @@ fun BrowserApp(
     var pendingBackup by remember { mutableStateOf<BackupData?>(null) }
 
     fun exportBackup() {
+        // Threading (v0.167.0): the serialization and the Downloads
+        // write used to run synchronously in the settings click
+        // handler, on the main thread. The lists are snapshotted
+        // here; everything else runs on IO and only the result
+        // toast comes back. Same file, same name, same failure
+        // cleanup (v0.107.0) as before.
+        val bookmarksSnapshot = bookmarks.toList()
+        val historySnapshot = history.toList()
+        val foldersSnapshot = bookmarkFolders.toList()
+        appScope.launch {
+        val exportOk = withContext(Dispatchers.IO) {
         val json = backupToJson(
-            bookmarks, history,
+            bookmarksSnapshot, historySnapshot,
             BackupSettings(
                 mainEngine = store.mainEngine,
                 incognitoEngine = store.incognitoEngine,
@@ -2488,7 +2520,9 @@ fun BrowserApp(
             ),
             compatSites = store.loadCompatSites().sorted(),
             desktopSites = store.loadDesktopSites().sorted(),
-            bookmarkFolders = allBookmarkFolders(bookmarks, bookmarkFolders),
+            bookmarkFolders = allBookmarkFolders(
+                bookmarksSnapshot, foldersSnapshot
+            ),
             totalBlocked = store.totalBlocked
         )
         val fileName = "tuxunbrowse-backup.json"
@@ -2524,10 +2558,7 @@ fun BrowserApp(
                     ?: context.filesDir
                 java.io.File(dir, fileName).writeText(json, Charsets.UTF_8)
             }
-            android.widget.Toast.makeText(
-                context, "备份已导出到下载文件夹：$fileName",
-                android.widget.Toast.LENGTH_LONG
-            ).show()
+            true
         } catch (t: Throwable) {
             try {
                 backupDestUri?.let {
@@ -2536,9 +2567,18 @@ fun BrowserApp(
             } catch (t2: Throwable) {
                 // Best-effort cleanup of the partial entry.
             }
-            android.widget.Toast.makeText(
-                context, "导出失败，请重试", android.widget.Toast.LENGTH_LONG
-            ).show()
+            false
+        }
+        }
+        android.widget.Toast.makeText(
+            context,
+            if (exportOk) {
+                "备份已导出到下载文件夹：tuxunbrowse-backup.json"
+            } else {
+                "导出失败，请重试"
+            },
+            android.widget.Toast.LENGTH_LONG
+        ).show()
         }
     }
 
@@ -2693,23 +2733,29 @@ fun BrowserApp(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        try {
-            val raw = readImportFileText(context, uri)
-            val parsed = parseBackup(raw)
-            if (parsed == null) {
+        // Threading (v0.167.0): same move as the bookmark import —
+        // the file read and the backup parse run off the main
+        // thread; the confirmation dialog state is set back here.
+        appScope.launch {
+            try {
+                val parsed = withContext(Dispatchers.Default) {
+                    parseBackup(readImportFileText(context, uri))
+                }
+                if (parsed == null) {
                 android.widget.Toast.makeText(
                     context,
                     "这个文件不是 TuxunBrowse 的备份文件，数据没有动",
                     android.widget.Toast.LENGTH_LONG
                 ).show()
-            } else {
-                pendingBackup = parsed
+                } else {
+                    pendingBackup = parsed
+                }
+            } catch (t: Throwable) {
+                android.widget.Toast.makeText(
+                    context, "文件有问题，没导入，请换一个备份文件重试",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
             }
-        } catch (t: Throwable) {
-            android.widget.Toast.makeText(
-                context, "文件有问题，没导入，请换一个备份文件重试",
-                android.widget.Toast.LENGTH_LONG
-            ).show()
         }
     }
 
@@ -3385,17 +3431,22 @@ fun BrowserApp(
     }
 
     fun doExportBookmarks(html: Boolean) {
-        val content = if (html) {
-            bookmarksToHtml(bookmarks)
-        } else {
-            bookmarksToJson(bookmarks)
-        }
         val fileName = if (html) {
             "tuxunbrowse-bookmarks.html"
         } else {
             "tuxunbrowse-bookmarks.json"
         }
         val mimeType = if (html) "text/html" else "application/json"
+        // Threading (v0.167.0): same move as the backup export —
+        // serialize and write off the main thread, toast back here.
+        val bookmarksSnapshot = bookmarks.toList()
+        appScope.launch {
+        val exportOk = withContext(Dispatchers.IO) {
+        val content = if (html) {
+            bookmarksToHtml(bookmarksSnapshot)
+        } else {
+            bookmarksToJson(bookmarksSnapshot)
+        }
         // Same MediaStore cleanup as the backup export above
         // (v0.107.0): a failed write deletes the just-inserted
         // entry instead of leaving an empty file in Downloads, and
@@ -3427,10 +3478,7 @@ fun BrowserApp(
                 java.io.File(dir, fileName)
                     .writeText(content, Charsets.UTF_8)
             }
-            android.widget.Toast.makeText(
-                context, "书签已导出到下载文件夹：$fileName",
-                android.widget.Toast.LENGTH_LONG
-            ).show()
+            true
         } catch (t: Throwable) {
             try {
                 exportDestUri?.let {
@@ -3439,9 +3487,18 @@ fun BrowserApp(
             } catch (t2: Throwable) {
                 // Best-effort cleanup of the partial entry.
             }
-            android.widget.Toast.makeText(
-                context, "导出失败，请重试", android.widget.Toast.LENGTH_LONG
-            ).show()
+            false
+        }
+        }
+        android.widget.Toast.makeText(
+            context,
+            if (exportOk) {
+                "书签已导出到下载文件夹：$fileName"
+            } else {
+                "导出失败，请重试"
+            },
+            android.widget.Toast.LENGTH_LONG
+        ).show()
         }
     }
 
@@ -10993,9 +11050,17 @@ private fun DownloadsScreen(
     // records (v0.69.0). The status filter chips above apply to the
     // DownloadManager list only.
     val geckoStore = remember { Store(context) }
+    // Threading (v0.167.0): the records list used to be parsed
+    // synchronously inside remember{} during composition (up to
+    // the 200-record cap, on the main thread), and the reload
+    // effect below re-parsed it on the main thread too. It now
+    // starts empty and every load runs on IO — the effect keyed
+    // on the live-download ids below performs the first load as
+    // well, since it fires on entry.
     var geckoRecords by remember {
-        mutableStateOf(geckoStore.loadGeckoDownloads())
+        mutableStateOf<List<GeckoDownloadRecord>>(emptyList())
     }
+    val downloadsScope = rememberCoroutineScope()
     val geckoTimeFormat = remember {
         java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
     }
@@ -11044,7 +11109,11 @@ private fun DownloadsScreen(
     // the records from the same store they were written to.
     val activeGeckoIds = activeGeckoDownloads.map { it.id }
     LaunchedEffect(activeGeckoIds) {
-        geckoRecords = geckoStore.loadGeckoDownloads()
+        geckoRecords = kotlinx.coroutines.withContext(
+            kotlinx.coroutines.Dispatchers.IO
+        ) {
+            geckoStore.loadGeckoDownloads()
+        }
     }
     var pendingGeckoDelete by remember {
         mutableStateOf<GeckoDownloadRecord?>(null)
@@ -11439,15 +11508,28 @@ private fun DownloadsScreen(
             confirmButton = {
                 Button(onClick = {
                     pendingGeckoDelete = null
-                    if (deleteGeckoRecord(toDeleteGecko)) {
+                    // Threading (v0.167.0): deleting the record's
+                    // file is provider/file I/O (existence query,
+                    // delete, store rewrite) — it runs on IO, the
+                    // result toast comes back to the main thread.
+                    downloadsScope.launch {
+                        val deleted = kotlinx.coroutines.withContext(
+                            kotlinx.coroutines.Dispatchers.IO
+                        ) {
+                            deleteGeckoRecord(toDeleteGecko)
+                        }
                         android.widget.Toast.makeText(
-                            context, "已删除记录和文件",
-                            android.widget.Toast.LENGTH_SHORT
-                        ).show()
-                    } else {
-                        android.widget.Toast.makeText(
-                            context, "文件没删掉，记录先保留着",
-                            android.widget.Toast.LENGTH_LONG
+                            context,
+                            if (deleted) {
+                                "已删除记录和文件"
+                            } else {
+                                "文件没删掉，记录先保留着"
+                            },
+                            if (deleted) {
+                                android.widget.Toast.LENGTH_SHORT
+                            } else {
+                                android.widget.Toast.LENGTH_LONG
+                            }
                         ).show()
                     }
                 }) { Text("删除") }
@@ -11474,27 +11556,43 @@ private fun DownloadsScreen(
             confirmButton = {
                 Button(onClick = {
                     showClearGeckoConfirm = false
-                    // Same semantics as a single delete, per record:
-                    // file first, record only once the file is gone.
-                    var removedCount = 0
-                    var keptCount = 0
-                    geckoRecords.toList().forEach { record ->
-                        if (deleteGeckoRecord(record)) {
-                            removedCount++
-                        } else {
-                            keptCount++
-                        }
+                    // Threading (v0.167.0): this loop used to run
+                    // entirely on the main thread — per record a
+                    // provider existence query, a file delete and
+                    // a full store load+save, so clearing the whole
+                    // section blocked the UI for the whole list.
+                    // Same semantics as a single delete, per record
+                    // (file first, record only once the file is
+                    // gone), now on IO; the counts toast returns
+                    // to the main thread.
+                    val recordsSnapshot = geckoRecords.toList()
+                    downloadsScope.launch {
+                        val (removedCount, keptCount) =
+                            kotlinx.coroutines.withContext(
+                                kotlinx.coroutines.Dispatchers.IO
+                            ) {
+                                var removed = 0
+                                var kept = 0
+                                recordsSnapshot.forEach { record ->
+                                    if (deleteGeckoRecord(record)) {
+                                        removed++
+                                    } else {
+                                        kept++
+                                    }
+                                }
+                                removed to kept
+                            }
+                        android.widget.Toast.makeText(
+                            context,
+                            if (keptCount == 0) {
+                                "已清除 $removedCount 条记录"
+                            } else {
+                                "已清除 $removedCount 条；" +
+                                    "$keptCount 条的文件没删掉，记录保留着"
+                            },
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
                     }
-                    android.widget.Toast.makeText(
-                        context,
-                        if (keptCount == 0) {
-                            "已清除 $removedCount 条记录"
-                        } else {
-                            "已清除 $removedCount 条；" +
-                                "$keptCount 条的文件没删掉，记录保留着"
-                        },
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
                 }) { Text("清空") }
             },
             dismissButton = {
