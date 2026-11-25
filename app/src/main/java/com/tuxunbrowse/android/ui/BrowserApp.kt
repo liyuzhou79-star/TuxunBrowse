@@ -16,6 +16,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image as FoundationImage
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -155,6 +156,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.material3.Text
 import androidx.compose.material3.Surface
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -7070,6 +7073,16 @@ private fun BrowserScreen(
             // through expandedTouchTarget: 40dp of layout, a full
             // 48dp hit area overflowing evenly into the field's
             // own padding, visuals and widths unchanged.
+            // Chrome-layout pass (v0.180.0): the field becomes a
+            // filled pill (site icon / lock inside its head, the
+            // star inside its tail), a tab-count button joins
+            // the row at its right next to the overflow menu,
+            // and the back button leaves the top row — back /
+            // forward now lead the bottom toolbar (and the edge
+            // gestures from v0.179.0 cover them too). The engine
+            // switch keeps its one-tap seat between pill and
+            // count: it is this browser's own signature control
+            // and the checklist leans on it.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -7079,46 +7092,34 @@ private fun BrowserScreen(
                 horizontalArrangement = Arrangement.spacedBy(0.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .combinedClickable(
-                            // Enabled exactly when a back step
-                            // exists (v0.99.0 accessibility audit):
-                            // the old condition also enabled the
-                            // button on a first page where canGoBack
-                            // is false — TalkBack then offered an
-                            // active "back" button that did nothing,
-                            // while its tint already said disabled.
-                            // No long-press handler is registered,
-                            // so no long-press action is advertised
-                            // either; the description is just "后退".
-                            enabled = activeTab?.canGoBack == true,
-                            onClick = {
-                                if (activeTab?.canGoBack == true) {
-                                    activeTab?.goBack()
-                                }
-                            },
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "后退",
-                        tint = if (activeTab?.canGoBack == true) {
-                            MaterialTheme.colorScheme.onSurface
-                        } else {
-                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                        }
-                    )
-                }
-                OutlinedTextField(
+                TextField(
                     value = addressValue,
                     onValueChange = { addressValue = it },
                     modifier = Modifier
                         .weight(1f)
+                        .height(48.dp)
                         .onFocusChanged { addressFocused = it.isFocused },
                     singleLine = true,
+                    // The pill (v0.180.0): fully rounded filled
+                    // shape, no indicator line in any state.
+                    shape = RoundedCornerShape(percent = 50),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor =
+                            MaterialTheme.colorScheme
+                                .surfaceContainerHigh,
+                        unfocusedContainerColor =
+                            MaterialTheme.colorScheme
+                                .surfaceContainerHigh,
+                        focusedIndicatorColor =
+                            androidx.compose.ui.graphics.Color
+                                .Transparent,
+                        unfocusedIndicatorColor =
+                            androidx.compose.ui.graphics.Color
+                                .Transparent,
+                        disabledIndicatorColor =
+                            androidx.compose.ui.graphics.Color
+                                .Transparent
+                    ),
                     placeholder = {
                         // Never wrap: a wrapped placeholder in a
                         // squeezed field renders one character per
@@ -7203,6 +7204,39 @@ private fun BrowserScreen(
                             Icons.Filled.SwapHoriz,
                             contentDescription = "切换内核（现在是" +
                                 if (activeTab.engine == Engine.GECKO) "火狐）" else "系统 WebView）"
+                        )
+                    }
+                }
+                // Tab-count button (v0.180.0): the switcher's
+                // entry moves up here, Chrome-style — a rounded
+                // square outline carrying the open-tab count.
+                // The semantics wrapper names it for TalkBack;
+                // the tap does exactly what the old bottom-bar
+                // tabs item did, query reset included.
+                IconButton(
+                    onClick = {
+                        onTabsOpened(); tabQuery = ""; showTabs = true
+                    },
+                    modifier = Modifier.semantics {
+                        contentDescription =
+                            "标签页，共 ${tabs.size} 个，点按打开标签页列表"
+                    }
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(24.dp)
+                            .border(
+                                2.dp,
+                                MaterialTheme.colorScheme.onSurface,
+                                RoundedCornerShape(6.dp)
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "${tabs.size}",
+                            style = MaterialTheme.typography
+                                .labelMedium,
+                            maxLines = 1
                         )
                     }
                 }
@@ -7446,133 +7480,132 @@ private fun BrowserScreen(
         },
         bottomBar = {
             if (!chromeHidden) {
-            NavigationBar(
-                // Compact height (v0.92.0): the stock bar is
-                // 80dp; constraining the official component's
-                // container to 64dp hands 16dp back to the web
-                // page while every item's touch target stays
-                // 64dp tall, above the 48dp minimum. The
-                // system navigation-bar inset is padded
-                // OUTSIDE that height (and the component's own
-                // insets are zeroed), so the bar never slides
-                // under the system buttons on 3-button devices.
+            // Chrome-style bottom toolbar (v0.180.0): five
+            // icon-only buttons spread evenly, no labels — the
+            // composition mirrors the current Chrome bottom
+            // bar's even icon spacing. Back / forward lead it
+            // (they left the top row in the same pass; both
+            // keep the canGo tint rule and 48dp targets), then
+            // new tab (its long-press menu rides along
+            // unchanged), incognito and settings — the two
+            // one-tap entries this bar already carried. The
+            // tab switcher moved to the top row's count button.
+            // Container colour/elevation match the old
+            // NavigationBar's (surfaceContainer, 3dp), and the
+            // navigation-bar inset is padded outside the 56dp
+            // height exactly as the v0.92.0 bar did, so nothing
+            // slides under the system buttons.
+            Surface(
                 modifier = Modifier
                     .windowInsetsPadding(
                         WindowInsets.navigationBars.only(
                             WindowInsetsSides.Bottom
                         )
                     )
-                    .height(64.dp),
-                windowInsets = WindowInsets(0, 0, 0, 0)
+                    .height(56.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                tonalElevation = 3.dp
             ) {
-                NavigationBarItem(
-                    selected = false,
-                    onClick = { onTabsOpened(); tabQuery = ""; showTabs = true },
-                    icon = { Icon(Icons.Filled.Tab, contentDescription = null) },
-                    label = { Text("标签页 ${tabs.size}") }
-                )
-                NavigationBarItem(
-                    selected = false,
-                    onClick = onNewTab,
-                    // Long-press menu (v0.79.0): a plain tap keeps
-                    // doing exactly what it always did (the item's
-                    // own onClick above); the combinedClickable on
-                    // the item's modifier only ADDS the long-press —
-                    // its own click handler is deliberately a no-op
-                    // so a tap can never create two tabs. Same
-                    // combinedClickable pattern as the back/forward
-                    // buttons in the address row.
-                    modifier = Modifier.combinedClickable(
-                        onClick = { },
-                        onLongClick = { showNewTabMenu = true }
-                    ),
-                    icon = {
-                        Box {
-                            Icon(Icons.Filled.Add, contentDescription = null)
-                            DropdownMenu(
-                                expanded = showNewTabMenu,
-                                onDismissRequest = { showNewTabMenu = false }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement =
+                        Arrangement.SpaceAround,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .combinedClickable(
+                                enabled =
+                                    activeTab?.canGoBack == true,
+                                onClick = {
+                                    if (activeTab?.canGoBack ==
+                                        true
+                                    ) {
+                                        activeTab?.goBack()
+                                    }
+                                }
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "后退",
+                            tint = if (
+                                activeTab?.canGoBack == true
                             ) {
-                                DropdownMenuItem(
-                                    text = { Text("新建标签页") },
-                                    leadingIcon = {
-                                        Icon(Icons.Filled.Add, contentDescription = null)
-                                    },
-                                    onClick = { showNewTabMenu = false; onNewTab() }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("用火狐新建") },
-                                    leadingIcon = {
-                                        Icon(Icons.Filled.Language, contentDescription = null)
-                                    },
-                                    trailingIcon = if (mainEngine == Engine.GECKO) {
-                                        {
-                                            Text(
-                                                "默认",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    } else {
-                                        null
-                                    },
-                                    onClick = {
-                                        showNewTabMenu = false
-                                        onNewTabWithEngine(Engine.GECKO)
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("用系统 WebView 新建") },
-                                    leadingIcon = {
-                                        Icon(Icons.Filled.Language, contentDescription = null)
-                                    },
-                                    trailingIcon = if (mainEngine == Engine.WEBVIEW) {
-                                        {
-                                            Text(
-                                                "默认",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    } else {
-                                        null
-                                    },
-                                    onClick = {
-                                        showNewTabMenu = false
-                                        onNewTabWithEngine(Engine.WEBVIEW)
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("新建无痕标签页") },
-                                    leadingIcon = {
-                                        Icon(Icons.Filled.VisibilityOff, contentDescription = null)
-                                    },
-                                    onClick = {
-                                        showNewTabMenu = false
-                                        // NOT a shortcut around the
-                                        // picker: the incognito
-                                        // engine is still chosen in
-                                        // the usual dialog (v0.2.0).
-                                        showIncognitoPicker = true
-                                    }
-                                )
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                                    .copy(alpha = 0.38f)
                             }
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .combinedClickable(
+                                enabled =
+                                    activeTab?.canGoForward == true,
+                                onClick = {
+                                    if (activeTab?.canGoForward ==
+                                        true
+                                    ) {
+                                        activeTab?.goForward()
+                                    }
+                                }
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowForward,
+                            contentDescription = "前进",
+                            tint = if (
+                                activeTab?.canGoForward == true
+                            ) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                                    .copy(alpha = 0.38f)
+                            }
+                        )
+                    }
+                    Box {
+                        Box(
+                            modifier = Modifier
+                                .size(48.dp)
+                                .combinedClickable(
+                                    onClick = onNewTab,
+                                    onLongClick = {
+                                        showNewTabMenu = true
+                                    }
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Filled.Add,
+                                contentDescription = "新建标签页"
+                            )
                         }
-                    },
-                    label = { Text("新建") }
-                )
-                NavigationBarItem(
-                    selected = false,
-                    onClick = { showIncognitoPicker = true },
-                    icon = { Icon(Icons.Filled.VisibilityOff, contentDescription = null) },
-                    label = { Text("无痕") }
-                )
-                NavigationBarItem(
-                    selected = false,
-                    onClick = onOpenSettings,
-                    icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
-                    label = { Text("设置") }
-                )
+                            DropdownMenu(
+                                                            expanded = showNewTabMenu,
+                                                            onDismissRequest = { showNewTabMenu = false }
+                    }
+                    IconButton(
+                        onClick = { showIncognitoPicker = true }
+                    ) {
+                        Icon(
+                            Icons.Filled.VisibilityOff,
+                            contentDescription = "新建无痕标签页"
+                        )
+                    }
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(
+                            Icons.Filled.Settings,
+                            contentDescription = "设置"
+                        )
+                    }
+                }
             }
             }
         }
