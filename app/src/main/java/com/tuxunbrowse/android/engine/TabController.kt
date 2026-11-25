@@ -552,6 +552,23 @@ internal fun geckoErrorReasonFor(code: Int, category: Int): String = when (code)
 private fun geckoErrorReason(error: WebRequestError): String =
     geckoErrorReasonFor(error.code, error.category)
 
+/**
+ * Counter text for a Gecko in-page find result (v0.213.0), in
+ * exactly the WebView find listener's format ("x / y", or
+ * "没有找到"). FinderResult's shape was verified against the
+ * GeckoView 132 AAR with javap (public final boolean found /
+ * int current / int total), and the counting semantics against
+ * the JS modules shipped inside that same AAR: GeckoViewContent
+ * forwards the toolkit Finder's matches-count result, whose
+ * `current` counts every match up to and including the active
+ * one — i.e. it is already 1-based, unlike WebView's 0-based
+ * ordinal, so it is displayed as-is. A pure function so unit
+ * tests can pin the mapping without a GeckoResult (its only
+ * constructor takes an engine-internal GeckoBundle).
+ */
+internal fun geckoFindInfoText(found: Boolean, current: Int, total: Int): String =
+    if (!found || total <= 0) "没有找到" else "$current / $total"
+
 private var nextTabId = 1
 
 /**
@@ -820,6 +837,12 @@ class BrowserTab(
     private val onFullscreenHide: () -> Unit = {},
     private val onGeckoFullscreen: (Boolean) -> Unit = {},
     private val onRendererGone: (String) -> Unit = {},
+    // Gecko content-process death (v0.213.0): the session's
+    // ContentDelegate onCrash/onCrash-equivalent onKill reports
+    // through this, with the URL the tab was showing, so the app
+    // side can rebuild the tab in place — the Gecko twin of
+    // onRendererGone above.
+    private val onGeckoSessionDied: (String) -> Unit = {},
     private val onFileChooserRequest: (
         WebChromeClient.FileChooserParams,
         ValueCallback<Array<Uri>>
@@ -954,8 +977,21 @@ class BrowserTab(
     var canGoForward by mutableStateOf(false)
     var readerActive by mutableStateOf(false)
 
-    /** Find-in-page match counter text ("2 / 9"); WebView only. */
+    /** Find-in-page match counter text ("2 / 9"); both engines. */
     var findInfo by mutableStateOf("")
+
+    /**
+     * Sequence number of this tab's latest Gecko find request
+     * (v0.213.0). Gecko find results arrive asynchronously, one
+     * GeckoResult per find() call; the counter may only be
+     * written by the newest request's answer, and anything that
+     * drops the find state (new load, clearFind, reader rewrite,
+     * engine sleep — all funnel through resetFindState /
+     * clearFind) bumps the sequence so a late answer from a dead
+     * find can never resurrect a counter for a page that no
+     * longer exists.
+     */
+    private var geckoFindSeq = 0
 
     /**
      * The query the WebView's current find session was started with
@@ -1150,6 +1186,41 @@ class BrowserTab(
     var webView: WebView? = null
     var geckoSession: GeckoSession? = null
     var geckoView: GeckoView? = null
+
+    /**
+     * Whether this tab's current Gecko session death has already
+     * been reported to the app side (v0.213.0). onCrash and
+     * onKill are alternative reports of the same event family,
+     * and nothing may rebuild the tab twice; the flag is set on
+     * the first report and cleared whenever a session is
+     * (re)configured in configureGeckoSession.
+     */
+    private var geckoDeathReported = false
+
+    /**
+     * The Gecko content process hosting this tab's session died
+     * — crashed (onCrash) or was killed by the system (onKill);
+     * both callbacks were verified against the GeckoView 132
+     * AAR with javap, and Gecko's own contract for both is the
+     * same: the session is now closed and unusable. Until
+     * v0.213.0 neither callback was overridden anywhere, so a
+     * dead Gecko tab just sat on its last frame forever — the
+     * session reference stayed non-null, every loadUri went to a
+     * closed session, and only closing the tab (or an eventual
+     * sleep pass, which never touches the ACTIVE tab) ever
+     * recovered it. The WebView side has had the twin recovery
+     * since onRenderProcessGone was wired; this reports the
+     * death through onGeckoSessionDied and the app side rebuilds
+     * the tab in place, exactly like the WebView path. Crash or
+     * kill makes no difference: same recovery path.
+     */
+    private fun handleGeckoSessionDied() {
+        if (geckoDeathReported) return
+        geckoDeathReported = true
+        // The load this session was in the middle of is over.
+        loading = false
+        onGeckoSessionDied(url)
+    }
 
     /**
      * The document-start script handler for the page-guard script
@@ -1378,7 +1449,29 @@ class BrowserTab(
                 } else {
                     GeckoSession.FINDER_FIND_BACKWARDS
                 }
-                geckoSession?.finder?.find(query, flags)
+                // Match counter (v0.213.0): SessionFinder.find
+                // returns a GeckoResult<FinderResult> — verified
+                // against the GeckoView 132 AAR with javap. Until
+                // this version the result was dropped on the floor
+                // and the find bar claimed Gecko "has no counter
+                // API" (v0.9.0's assumption, wrong ever since);
+                // the answer now feeds the same findInfo counter
+                // the WebView listener writes. Only the newest
+                // request's answer may write it (see geckoFindSeq).
+                val seq = ++geckoFindSeq
+                try {
+                    geckoSession?.finder?.find(query, flags)
+                        ?.accept { result ->
+                            if (result != null && seq == geckoFindSeq) {
+                                findInfo = geckoFindInfoText(
+                                    result.found, result.current, result.total
+                                )
+                            }
+                        }
+                } catch (t: Throwable) {
+                    // A dead session answers nothing; the counter
+                    // simply stays as it is.
+                }
             }
         }
     }
@@ -1514,6 +1607,10 @@ class BrowserTab(
     fun clearFind() {
         findInfo = ""
         lastFindQuery = null
+        // Same invalidation as resetFindState (v0.213.0): a Gecko
+        // find answer still in flight must not rewrite the
+        // counter after the bar was closed.
+        geckoFindSeq++
         when (engine) {
             Engine.WEBVIEW -> webView?.clearMatches()
             Engine.GECKO -> geckoSession?.finder?.clear()
@@ -1533,6 +1630,9 @@ class BrowserTab(
     private fun resetFindState() {
         findInfo = ""
         lastFindQuery = null
+        // A pending Gecko find answer belongs to the page that
+        // just went away; invalidate it (v0.213.0).
+        geckoFindSeq++
     }
 
     /** Mark this tab's thumbnail as recently used (tab selected). */
@@ -2274,7 +2374,9 @@ class BrowserTab(
                 // under memory pressure). Returning true keeps the app
                 // alive; the app side rebuilds this tab in place with a
                 // fresh WebView and reloads the page it was on. This only
-                // ever fires for WebView tabs — Gecko has no such callback.
+                // ever fires for WebView tabs; the Gecko twin is the
+                // session's ContentDelegate onCrash/onKill (v0.213.0),
+                // wired to the same in-place rebuild.
                 // Crash or not makes no difference: same recovery path.
                 onRendererGone(url)
                 return true
@@ -2857,6 +2959,10 @@ class BrowserTab(
     }
 
     private fun configureGeckoSession(session: GeckoSession, appContext: Context) {
+        // A freshly configured session starts with a clean death
+        // slate (v0.213.0): any previous session's crash report
+        // must not mute this one's.
+        geckoDeathReported = false
         session.navigationDelegate = object : GeckoSession.NavigationDelegate {
             override fun onLocationChange(
                 s: GeckoSession,
@@ -3067,6 +3173,21 @@ class BrowserTab(
 
             override fun onFullScreen(s: GeckoSession, fullScreen: Boolean) {
                 onGeckoFullscreen(fullScreen)
+            }
+
+            // Content-process death (v0.213.0), both shapes
+            // verified against the GeckoView 132 AAR with javap:
+            // ContentDelegate carries onCrash(GeckoSession) and
+            // onKill(GeckoSession) as default methods, and for
+            // both the session is afterwards closed and unusable.
+            // Neither was overridden before this version, so a
+            // crashed or system-killed Gecko tab never recovered.
+            override fun onCrash(s: GeckoSession) {
+                handleGeckoSessionDied()
+            }
+
+            override fun onKill(s: GeckoSession) {
+                handleGeckoSessionDied()
             }
 
             // Gecko hands responses it cannot display (files to download)

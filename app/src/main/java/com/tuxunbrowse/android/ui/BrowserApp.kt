@@ -1255,6 +1255,11 @@ fun BrowserApp(
     // URL it was showing are passed so the tab can be rebuilt in place.
     var renderProcessGoneHandler: (BrowserTab, String) -> Unit = { _, _ -> }
 
+    // Gecko tabs report a dead content process (crash or system kill)
+    // through this handler (v0.213.0); wired up below next to
+    // renderProcessGoneHandler. Same contract: rebuild in place.
+    var geckoSessionDiedHandler: (BrowserTab, String) -> Unit = { _, _ -> }
+
     // WebView pages ask for files through this handler; wired up below
     // once the activity-result launcher exists. The default answers null
     // (cancelled) so a page is never left waiting.
@@ -1500,6 +1505,9 @@ fun BrowserApp(
             onGeckoFullscreen = { geckoFullscreen = it },
             onRendererGone = { deadUrl ->
                 created?.let { renderProcessGoneHandler(it, deadUrl) }
+            },
+            onGeckoSessionDied = { deadUrl ->
+                created?.let { geckoSessionDiedHandler(it, deadUrl) }
             },
             onFileChooserRequest = { params, callback ->
                 fileChooserHandler(params, callback)
@@ -1939,6 +1947,38 @@ fun BrowserApp(
                 val target = deadUrl.ifBlank { tab.url }
                 val replacement = recreateTab(
                     tab, Engine.WEBVIEW, tab.desktopMode, force = true
+                )
+                if (target.isNotBlank() && target != HOME_URL &&
+                    replacement.url != target
+                ) {
+                    replacement.load(target)
+                }
+                android.widget.Toast.makeText(
+                    context, "页面进程被系统结束，已自动恢复",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
+    // A Gecko tab's content process crashed or was killed by the
+    // system (v0.213.0): the session is closed and unusable, so —
+    // exactly like the WebView render-process path above — the tab
+    // is rebuilt in place (same slot, same engine, same desktop
+    // mode and incognito flag, via recreateTab) and reloads the
+    // page it was on. Gecko tabs only ever live in the normal list
+    // (fingerprint tabs are WebView-only), so there is no second
+    // group to handle here. Posted, not run inline: this fires
+    // from inside the dead session's own delegate callback, and
+    // rebuilding destroys that session's view — safer once the
+    // callback has returned.
+    geckoSessionDiedHandler = { tab, deadUrl ->
+        if (tab.engine == Engine.GECKO && tabs.contains(tab)) {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                if (!tabs.contains(tab)) return@post
+                val target = deadUrl.ifBlank { tab.url }
+                val replacement = recreateTab(
+                    tab, Engine.GECKO, tab.desktopMode, force = true
                 )
                 if (target.isNotBlank() && target != HOME_URL &&
                     replacement.url != target
@@ -7991,28 +8031,20 @@ private fun BrowserScreen(
                             onSearch = { onFind(findQuery, true) }
                         )
                     )
-                    if (activeTab?.engine == Engine.WEBVIEW &&
-                        !activeTab?.findInfo.isNullOrEmpty()
-                    ) {
+                    // Match counter, both engines since v0.213.0:
+                    // WebView writes findInfo from its find
+                    // listener, Gecko from the FinderResult its
+                    // find() call returns (the v0.9.0-era note
+                    // that Gecko "has no counter API" was wrong —
+                    // the result was there all along, the app just
+                    // never read it). The old Gecko-only "不显示
+                    // 计数" label is gone: the space now shows the
+                    // real count on both engines, or nothing until
+                    // the first result lands.
+                    if (!activeTab?.findInfo.isNullOrEmpty()) {
                         Text(
                             activeTab?.findInfo.orEmpty(),
                             style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.padding(horizontal = 4.dp)
-                        )
-                    }
-                    if (activeTab?.engine == Engine.GECKO) {
-                        // GeckoView offers no match-count API
-                        // (v0.9.0), and an unlabelled empty space
-                        // where WebView tabs show a counter reads
-                        // as "nothing found" (v0.124.0). Say so
-                        // plainly instead of faking a number:
-                        // matches still highlight and scroll into
-                        // view exactly as on the WebView side.
-                        Text(
-                            "火狐内核不显示计数",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
                             modifier = Modifier.padding(horizontal = 4.dp)
                         )
                     }
@@ -17615,7 +17647,6 @@ private fun SettingsScreen(
                         ListItem(headlineContent = { Text("网页截图") })
                         ListItem(headlineContent = { Text("标签预览图") })
                         ListItem(headlineContent = { Text("阅读模式与排版设置") })
-                        ListItem(headlineContent = { Text("页内查找计数") })
                         ListItem(headlineContent = { Text("本页拦截计数") })
                         ListItem(headlineContent = { Text("广告位隐藏") })
                         ListItem(headlineContent = { Text("打印 / 存为 PDF") })
@@ -17675,6 +17706,7 @@ private fun SettingsScreen(
                                 Text("文件上传、相机和麦克风、网站登录（基础认证）")
                             }
                         )
+                        ListItem(headlineContent = { Text("页内查找（含计数）") })
                         ListItem(
                             headlineContent = { Text("网页提示框") },
                             supportingContent = {
