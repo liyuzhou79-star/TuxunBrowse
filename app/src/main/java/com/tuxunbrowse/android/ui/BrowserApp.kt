@@ -13063,13 +13063,35 @@ private fun FingerprintShell(
                     }
                 }
                 else -> {
-                    key(tab.id) {
-                        TabContent(
-                            tab = tab,
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxWidth()
-                        )
+                    // Pull-to-refresh (v0.178.0): the fingerprint
+                    // shell gains the normal shell's gesture — the
+                    // official PullToRefreshBox with its official
+                    // indicator, threshold and rebound; refreshing
+                    // bound to the tab's own loading progress via
+                    // a derived boolean (the v0.171.0 discipline),
+                    // so the indicator folds away by itself when
+                    // the load ends. The box only engages after
+                    // the page itself declines to scroll up (the
+                    // nested-scroll contract), i.e. at the top.
+                    // Home / error / engine-unavailable above are
+                    // app pages and stay unwrapped — the same
+                    // gating as the normal shell.
+                    val fpRefreshActive by remember(tab.id) {
+                        derivedStateOf { tab.progress < 100 }
+                    }
+                    PullToRefreshBox(
+                        isRefreshing = fpRefreshActive,
+                        onRefresh = { tab.reload() },
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                    ) {
+                        key(tab.id) {
+                            TabContent(
+                                tab = tab,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
                     }
                 }
             }
