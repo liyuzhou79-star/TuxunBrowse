@@ -97,6 +97,39 @@ class FingerprintConsistencyTest {
     }
 
     @Test
+    fun knownHardwareFactsHoldForEveryDevice() {
+        // v0.162.0: spec-sheet facts a detector can check
+        // against public data — Tensor G3 (Pixel 8 / 8 Pro) is
+        // a nine-core part, and the 8 Pro's higher-resolution
+        // panel gives it a different CSS screen from the base
+        // Pixel 8. Pinning them here keeps a future library
+        // edit from silently reintroducing the wrong numbers.
+        for (profile in FingerprintProfiles.all) {
+            for (device in profile.devices) {
+                when (device.id) {
+                    "Pixel 8", "Pixel 8 Pro" -> assertEquals(
+                        "${device.id} cores",
+                        9, device.hardwareConcurrency
+                    )
+                    "Pixel 7a" -> assertEquals(
+                        "Pixel 7a cores",
+                        8, device.hardwareConcurrency
+                    )
+                }
+                if (device.id == "Pixel 8 Pro") {
+                    assertEquals(448, device.screenWidth)
+                    assertEquals(997, device.screenHeight)
+                    assertEquals(3.0, device.devicePixelRatio, 0.0)
+                }
+                if (device.id == "Pixel 8") {
+                    assertEquals(412, device.screenWidth)
+                    assertEquals(915, device.screenHeight)
+                }
+            }
+        }
+    }
+
+    @Test
     fun webGpuIdentityAgreesWithTheWebGlRenderer() {
         // v0.159.0: the WebGPU adapter info must name the same
         // GPU family as the WebGL renderer string — a detector

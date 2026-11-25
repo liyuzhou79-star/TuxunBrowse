@@ -278,7 +278,11 @@ object FingerprintProfiles {
         id = "Pixel 8", deviceModel = "Google Pixel 8",
         uaModel = "Pixel 8", userAgent = ua("Pixel 8"),
         screenWidth = 412, screenHeight = 915, devicePixelRatio = 2.625,
-        hardwareConcurrency = 8, deviceMemory = 8,
+        // Tensor G3 is a NINE-core part (1+4+4); a Pixel 8
+        // reports hardwareConcurrency 9, not 8 (corrected in
+        // v0.162.0 — the core count is public spec-sheet data
+        // and one of the first numbers a cross-check reads).
+        hardwareConcurrency = 9, deviceMemory = 8,
         webGlVendor = "ARM",
         webGlRenderer = "ANGLE (ARM, Mali-G715s MC10, OpenGL ES 3.2)",
         webGl = GL_MALI_G715,
@@ -289,10 +293,15 @@ object FingerprintProfiles {
     private fun pixel8Pro(delta: Int) = FpDevice(
         id = "Pixel 8 Pro", deviceModel = "Google Pixel 8 Pro",
         uaModel = "Pixel 8 Pro", userAgent = ua("Pixel 8 Pro"),
-        screenWidth = 412, screenHeight = 915, devicePixelRatio = 2.625,
+        // The Pro's panel is 1344×2992 at DPR 3.0 — CSS screen
+        // 448×997, NOT the base Pixel 8's 412×915 (corrected in
+        // v0.162.0; it previously borrowed the smaller phone's
+        // geometry, a spec-sheet check away from exposure).
+        screenWidth = 448, screenHeight = 997, devicePixelRatio = 3.0,
         // 12 GB of RAM on the spec sheet, but the Device Memory
         // API buckets and caps at 8 — the page-visible value is 8.
-        hardwareConcurrency = 8, deviceMemory = 8,
+        // Tensor G3: nine cores, like the base Pixel 8.
+        hardwareConcurrency = 9, deviceMemory = 8,
         webGlVendor = "ARM",
         webGlRenderer = "ANGLE (ARM, Mali-G715s MC10, OpenGL ES 3.2)",
         webGl = GL_MALI_G715,
