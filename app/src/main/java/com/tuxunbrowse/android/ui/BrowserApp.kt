@@ -7238,11 +7238,26 @@ private fun BrowserScreen(
             // switch keeps its one-tap seat between pill and
             // count: it is this browser's own signature control
             // and the checklist leans on it.
+            // Inset ownership (v0.193.0): this Row is the ONE
+            // consumer of the status-bar inset in this shell.
+            // It is a hand-built Row in the Scaffold's topBar
+            // slot, not a TopAppBar, so the Scaffold does not
+            // pad it — v0.191.0 deleted this windowInsetsPadding
+            // believing the Scaffold had it covered, and the
+            // row slid under the status bar, fused with the
+            // system icons (user's screenshot, 2026-11-25
+            // 21:25). The padding sits outside the pinned row
+            // height: total = inset + ToolbarSpec row body,
+            // exactly one layer. Never delete it again; blank-
+            // space bugs are diagnosed by counting inset
+            // consumers (see ToolbarSpec), not by removing
+            // layers or editing heights.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp)
                     .background(MaterialTheme.colorScheme.surface)
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .height(ToolbarSpec.ROW_HEIGHT_DP.dp)
                     .padding(horizontal = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(0.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -7251,7 +7266,7 @@ private fun BrowserScreen(
                 // engine switch, new tab, tab count, menu — the
                 // same order and the same numbers in every shell
                 // (see ToolbarSpec). The row's height is pinned
-                // at 56dp and every child is a 48dp target, so
+                // by ToolbarSpec and every child is a 48dp target, so
                 // the pill and the buttons share one centre line
                 // by construction: before this version the row
                 // took its height from the pill's own intrinsic
@@ -7292,7 +7307,7 @@ private fun BrowserScreen(
                         // icon always does something).
                         IconButton(
                             onClick = { showSiteInfo = true },
-                            modifier = Modifier.expandedTouchTarget(40.dp, 48.dp)
+                            modifier = Modifier.expandedTouchTarget(32.dp, 48.dp)
                         ) {
                             when {
                                 activeTab == null || activeTab.isHome ->
@@ -7312,7 +7327,7 @@ private fun BrowserScreen(
                         // audit, 200ms on the shared easing).
                         IconButton(
                             onClick = onToggleBookmark,
-                            modifier = Modifier.expandedTouchTarget(40.dp, 48.dp)
+                            modifier = Modifier.expandedTouchTarget(32.dp, 48.dp)
                         ) {
                             Crossfade(
                                 targetState = isBookmarked,
@@ -7480,26 +7495,32 @@ private fun BrowserScreen(
             // button — nothing is duplicated between the bars.
             // Container colour/elevation match the old
             // NavigationBar's (surfaceContainer, 3dp), and the
-            // navigation-bar inset is padded outside the 56dp
-            // height exactly as the v0.92.0 bar did, so nothing
-            // slides under the system buttons.
+            // navigation-bar inset is padded outside the bar's
+            // own height exactly as the v0.92.0 bar did, so
+            // nothing slides under the system buttons.
             Surface(
-                // Bar zone (v0.191.0): the surface spans the
-                // 56dp bar PLUS the navigation-bar inset, and
-                // the row fills the whole zone centred, so the
-                // icons sit in the middle of the full strip
-                // instead of riding its top with a blank
-                // coloured band underneath (user's "too much
-                // empty space below" report). The spread is
-                // SpaceEvenly: equal gaps everywhere, no
-                // half-size end gaps reading as a ghost slot.
-                modifier = Modifier.height(
-                    with(LocalDensity.current) {
-                        ToolbarSpec.BOTTOM_BAR_HEIGHT_DP.dp +
-                            WindowInsets.navigationBars
-                                .getBottom(this).toDp()
-                    }
-                ),
+                // Bar zone (v0.193.0): the navigation-bar
+                // inset is padded OUTSIDE the bar's own height
+                // (the v0.92.0/v0.190.0 construction): the row
+                // fills only the 48dp body, centred in it, and
+                // the inset band below is plain surface colour
+                // keeping the bar clear of the gesture bar.
+                // v0.191.0 instead folded the inset into a
+                // hand-computed height and centred the row
+                // across body+inset, which sank the icons half
+                // an inset toward the gesture bar and made the
+                // strip read as one big grey field (user's
+                // reports, 2026-11-25 21:25). This surface is
+                // the shell's ONE navigation-inset consumer.
+                // The spread is SpaceEvenly: equal gaps
+                // everywhere, no half-size end gaps.
+                modifier = Modifier
+                    .windowInsetsPadding(
+                        WindowInsets.navigationBars.only(
+                            WindowInsetsSides.Bottom
+                        )
+                    )
+                    .height(ToolbarSpec.BOTTOM_BAR_HEIGHT_DP.dp),
                 color = MaterialTheme.colorScheme.surfaceContainer,
                 tonalElevation = 3.dp
             ) {
@@ -7528,6 +7549,9 @@ private fun BrowserScreen(
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "后退",
+                            modifier = Modifier.size(
+                                ToolbarSpec.BOTTOM_ICON_DP.dp
+                            ),
                             tint = if (
                                 activeTab?.canGoBack == true
                             ) {
@@ -7557,6 +7581,9 @@ private fun BrowserScreen(
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowForward,
                             contentDescription = "前进",
+                            modifier = Modifier.size(
+                                ToolbarSpec.BOTTOM_ICON_DP.dp
+                            ),
                             tint = if (
                                 activeTab?.canGoForward == true
                             ) {
@@ -7572,13 +7599,19 @@ private fun BrowserScreen(
                     ) {
                         Icon(
                             Icons.Filled.VisibilityOff,
-                            contentDescription = "新建无痕标签页"
+                            contentDescription = "新建无痕标签页",
+                            modifier = Modifier.size(
+                                ToolbarSpec.BOTTOM_ICON_DP.dp
+                            )
                         )
                     }
                     IconButton(onClick = onOpenSettings) {
                         Icon(
                             Icons.Filled.Settings,
-                            contentDescription = "设置"
+                            contentDescription = "设置",
+                            modifier = Modifier.size(
+                                ToolbarSpec.BOTTOM_ICON_DP.dp
+                            )
                         )
                     }
                 }
@@ -13485,27 +13518,27 @@ private fun FingerprintShell(
     Scaffold(
         bottomBar = {
             // Bottom bar (v0.187.0, three-shell unification):
-            // the same 56dp surfaceContainer bar with evenly
-            // spread 48dp targets as the normal shell; the
+            // the same surfaceContainer bar body (ToolbarSpec)
+            // with evenly spread 48dp targets as the normal
+            // shell; the
             // fingerprint set is the mode's own high-frequency
             // actions — back / forward / reload / profile.
             Surface(
-                // Bar zone (v0.191.0): the surface spans the
-                // 56dp bar PLUS the navigation-bar inset, and
-                // the row fills the whole zone centred, so the
-                // icons sit in the middle of the full strip
-                // instead of riding its top with a blank
-                // coloured band underneath (user's "too much
-                // empty space below" report). The spread is
-                // SpaceEvenly: equal gaps everywhere, no
-                // half-size end gaps reading as a ghost slot.
-                modifier = Modifier.height(
-                    with(LocalDensity.current) {
-                        ToolbarSpec.BOTTOM_BAR_HEIGHT_DP.dp +
-                            WindowInsets.navigationBars
-                                .getBottom(this).toDp()
-                    }
-                ),
+                // Bar zone (v0.193.0): same construction
+                // as the normal shell — the navigation-bar
+                // inset is padded OUTSIDE the 48dp body, the
+                // row fills the body only, and this surface
+                // is the shell's ONE navigation-inset
+                // consumer. (v0.191.0's fold-the-inset-in
+                // height sank the icons toward the gesture
+                // bar; see the normal shell's note.)
+                modifier = Modifier
+                    .windowInsetsPadding(
+                        WindowInsets.navigationBars.only(
+                            WindowInsetsSides.Bottom
+                        )
+                    )
+                    .height(ToolbarSpec.BOTTOM_BAR_HEIGHT_DP.dp),
                 color = MaterialTheme.colorScheme.surfaceContainer,
                 tonalElevation = 3.dp
             ) {
@@ -13521,7 +13554,10 @@ private fun FingerprintShell(
                     ) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "后退"
+                            contentDescription = "后退",
+                            modifier = Modifier.size(
+                                ToolbarSpec.BOTTOM_ICON_DP.dp
+                            )
                         )
                     }
                     IconButton(
@@ -13530,7 +13566,10 @@ private fun FingerprintShell(
                     ) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowForward,
-                            contentDescription = "前进"
+                            contentDescription = "前进",
+                            modifier = Modifier.size(
+                                ToolbarSpec.BOTTOM_ICON_DP.dp
+                            )
                         )
                     }
                     IconButton(onClick = {
@@ -13551,13 +13590,19 @@ private fun FingerprintShell(
                                     "停止加载"
                                 } else {
                                     "刷新"
-                                }
+                                },
+                            modifier = Modifier.size(
+                                ToolbarSpec.BOTTOM_ICON_DP.dp
+                            )
                         )
                     }
                     IconButton(onClick = { showPicker = true }) {
                         Icon(
                             Icons.Filled.Fingerprint,
-                            contentDescription = "切换档案"
+                            contentDescription = "切换档案",
+                            modifier = Modifier.size(
+                                ToolbarSpec.BOTTOM_ICON_DP.dp
+                            )
                         )
                     }
                 }
@@ -13623,7 +13668,7 @@ private fun FingerprintShell(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp)
+                    .height(ToolbarSpec.ROW_HEIGHT_DP.dp)
                     .background(MaterialTheme.colorScheme.surface)
                     .padding(horizontal = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(0.dp),
@@ -13654,7 +13699,7 @@ private fun FingerprintShell(
                     placeholder = "搜索或输入网址",
                     leadingIcon = {
                         Box(
-                            modifier = Modifier.size(40.dp),
+                            modifier = Modifier.size(32.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             when {
@@ -13683,7 +13728,7 @@ private fun FingerprintShell(
                         IconButton(
                             onClick = onToggleBookmark,
                             modifier = Modifier
-                                .expandedTouchTarget(40.dp, 48.dp)
+                                .expandedTouchTarget(32.dp, 48.dp)
                         ) {
                             Icon(
                                 if (isBookmarked) {

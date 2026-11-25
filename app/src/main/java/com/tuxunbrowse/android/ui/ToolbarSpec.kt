@@ -11,8 +11,11 @@ package com.tuxunbrowse.android.ui
  *   home → address pill → engine switch → new tab →
  *   tab count → overflow menu
  *
- * - Row height 56dp, every button a 48dp target, the pill
- *   48dp tall and fully rounded; the row is vertically centred
+ * - Row height 52dp (v0.193.0: tightened from 56 — the
+ *   user's "bars feel loose" pass; the pill and the 48dp
+ *   targets leave 2dp of air top and bottom), every button
+ *   a 48dp target, the pill 48dp tall and fully rounded;
+ *   the row is vertically centred
  *   as a whole, so the pill and the buttons share one centre
  *   line by construction (the pre-0.187 row took its height
  *   from the pill's intrinsic measurement and the pill read
@@ -21,8 +24,16 @@ package com.tuxunbrowse.android.ui
  *   it takes whatever width the buttons leave, never less —
  *   the buttons are fixed-size, the pill is the only flexible
  *   element (the v0.13.0 vertical-placeholder lesson).
- * - The bottom bar, where a shell has one, is the same 56dp
- *   surfaceContainer surface with 48dp targets spread evenly.
+ * - The bottom bar, where a shell has one, is a 48dp
+ *   surfaceContainer body (v0.193.0: tightened from 56, the
+ *   48dp targets fill it exactly and the glyphs grow to
+ *   28dp so the strip no longer reads as a big grey field
+ *   with small buttons in it) with the targets spread
+ *   evenly. The navigation-bar inset is NOT part of this
+ *   height: it is padded outside the body by the bar's own
+ *   windowInsetsPadding, exactly one layer, owned by the
+ *   bar surface itself (see the inset-ownership rule in
+ *   this file's tail).
  *
  * Allowed fingerprint-shell differences (and only these):
  * the mode identity tint on its bars, the always-on profile
@@ -33,10 +44,10 @@ package com.tuxunbrowse.android.ui
  * the conflict instead of switching.
  */
 internal object ToolbarSpec {
-    const val ROW_HEIGHT_DP: Int = 56
+    const val ROW_HEIGHT_DP: Int = 52
     const val PILL_HEIGHT_DP: Int = 48
     const val BUTTON_DP: Int = 48
-    const val BOTTOM_BAR_HEIGHT_DP: Int = 56
+    const val BOTTOM_BAR_HEIGHT_DP: Int = 48
     const val TAB_COUNT_BOX_DP: Int = 24
     const val TAB_COUNT_RADIUS_DP: Int = 6
 
@@ -63,6 +74,42 @@ internal object ToolbarSpec {
     const val MENU_PANEL_MAX_WIDTH_DP: Int = 300
     const val MENU_PANEL_WIDTH_FRACTION: Float = 0.78f
     const val MENU_PANEL_MAX_HEIGHT_DP: Int = 640
+
+    /**
+     * Bottom-bar glyph size (v0.193.0): the buttons keep
+     * their 48dp targets, the glyphs themselves grow from
+     * the default 24dp to 28dp so the tightened 48dp bar
+     * reads as buttons in a bar, not dots in a field.
+     */
+    const val BOTTOM_ICON_DP: Int = 28
+
+    /**
+     * Inset ownership (v0.193.0, hard rule). Exactly one
+     * consumer per system inset, app-wide:
+     * - statusBars, top: the normal shell's toolbar Row
+     *   carries the one windowInsetsPadding(WindowInsets
+     *   .statusBars) — the row is a hand-built Row in the
+     *   Scaffold topBar slot, NOT a TopAppBar, so nothing
+     *   else pads it (v0.191.0 deleted this layer believing
+     *   the Scaffold covered it; the row slid straight
+     *   under the status bar, user's screenshot 4121). The
+     *   fingerprint shell needs none: it has no topBar, so
+     *   its Scaffold content padding owns the inset, and
+     *   its identity strip must never add its own (that was
+     *   the v0.191.0 double-inset bug).
+     * - navigationBars, bottom: each shell's bottom-bar
+     *   Surface pads it outside its own 48dp body via
+     *   windowInsetsPadding — never by adding the inset
+     *   into a hand-computed height with the row centred
+     *   across the whole zone (v0.191.0's construction,
+     *   which sank the icons half an inset toward the
+     *   gesture bar).
+     * Future "too much / too little blank space" reports are
+     * diagnosed by COUNTING inset consumers, never by
+     * editing the height numbers in this file.
+     */
+    const val STATUS_BAR_INSET_OWNERS: Int = 1
+    const val NAV_BAR_INSET_OWNERS_PER_SHELL: Int = 1
 
     /** The one toolbar order, by slot name, for the record. */
     val SLOT_ORDER: List<String> = listOf(

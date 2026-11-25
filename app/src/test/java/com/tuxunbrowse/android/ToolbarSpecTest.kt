@@ -77,8 +77,38 @@ class ToolbarSpecTest {
     }
 
     @Test
-    fun bottomBarHeightIsTheShared56() {
-        assertEquals(56, ToolbarSpec.BOTTOM_BAR_HEIGHT_DP)
-        assertEquals(56, ToolbarSpec.ROW_HEIGHT_DP)
+    fun barBodiesAreTheTightened193Numbers() {
+        // v0.193.0 tightening (user: the grey bottom strip
+        // felt huge with small buttons in it, and the top
+        // row's air should narrow too): the bottom body is
+        // exactly one 48dp target tall — the buttons fill
+        // it, no vertical air left to read as emptiness —
+        // and the top row keeps just 2dp of air above and
+        // below its 48dp children. The system insets are
+        // NOT in these numbers: they are padded outside the
+        // bodies by the single owning layer per shell (see
+        // InsetsOwnershipTest).
+        assertEquals(48, ToolbarSpec.BOTTOM_BAR_HEIGHT_DP)
+        assertEquals(52, ToolbarSpec.ROW_HEIGHT_DP)
+        assertEquals(
+            ToolbarSpec.BUTTON_DP,
+            ToolbarSpec.BOTTOM_BAR_HEIGHT_DP
+        )
+        assertEquals(
+            4,
+            ToolbarSpec.ROW_HEIGHT_DP - ToolbarSpec.PILL_HEIGHT_DP
+        )
+    }
+
+    @Test
+    fun bottomGlyphsAreBiggerThanTheDefaultIcon() {
+        // 28dp glyphs in 48dp targets: visibly buttons, not
+        // dots, while the hit area is unchanged.
+        assertEquals(28, ToolbarSpec.BOTTOM_ICON_DP)
+        assertTrue(ToolbarSpec.BOTTOM_ICON_DP > 24)
+        assertTrue(
+            ToolbarSpec.BOTTOM_ICON_DP <
+                ToolbarSpec.BOTTOM_BAR_HEIGHT_DP
+        )
     }
 }

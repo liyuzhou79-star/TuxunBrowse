@@ -83,14 +83,14 @@ internal fun PillTextField(
                         MaterialTheme.colorScheme.surfaceContainerHigh,
                         shape
                     )
-                    .padding(horizontal = 4.dp),
+                    .padding(horizontal = 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 leadingIcon?.invoke()
                 Box(
                     modifier = Modifier
                         .weight(1f)
-                        .padding(horizontal = 4.dp),
+                        .padding(horizontal = 2.dp),
                     contentAlignment = Alignment.CenterStart
                 ) {
                     if (value.text.isEmpty()) {
