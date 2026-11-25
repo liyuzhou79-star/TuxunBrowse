@@ -37,6 +37,8 @@ internal object ToolbarSpec {
     const val PILL_HEIGHT_DP: Int = 48
     const val BUTTON_DP: Int = 48
     const val BOTTOM_BAR_HEIGHT_DP: Int = 56
+    const val TAB_COUNT_BOX_DP: Int = 24
+    const val TAB_COUNT_RADIUS_DP: Int = 6
 
     /** The one toolbar order, by slot name, for the record. */
     val SLOT_ORDER: List<String> = listOf(

@@ -245,6 +245,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import com.tuxunbrowse.android.data.Bookmark
 import com.tuxunbrowse.android.data.DownloadMode
@@ -4171,6 +4173,10 @@ fun BrowserApp(
                     onOpenSettings = { screen = Screen.SETTINGS },
                     onCloseAllTabs = {
                         fpTabs.toList().forEach { closeFpTab(it) }
+                    },
+                    protection = fingerprintProtection,
+                    onProtectionChange = {
+                        applyFingerprintProtection(it)
                     }
                 )
             } else {
@@ -8816,7 +8822,7 @@ private fun BrowserScreen(
                                             onClick = {
                                                 tabSheetMenu = false
                                                 showTabs = false
-                                                onNewIncognitoTab()
+                                                showIncognitoPicker = true
                                             }
                                         )
                                         DropdownMenuItem(
@@ -13425,7 +13431,9 @@ private fun FingerprintShell(
     onOpenBookmarks: () -> Unit = {},
     onOpenHistory: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
-    onCloseAllTabs: () -> Unit = {}
+    onCloseAllTabs: () -> Unit = {},
+    protection: FingerprintProtection = FingerprintProtection(),
+    onProtectionChange: (FingerprintProtection) -> Unit = {}
 ) {
     val context = LocalContext.current
     val profile = resolved.profile
@@ -15018,6 +15026,41 @@ private fun fpSelfCheckProbe(expJson: String): String = """
   }
 })();
 """
+
+/**
+ * The tab-count box, shared by the tab sheets (v0.190.0):
+ * a 24dp rounded-square outline carrying the open-tab count
+ * — ToolbarSpec numbers, the same box the shells' toolbars
+ * draw inline.
+ */
+@Composable
+private fun TabCountButton(count: Int, onClick: () -> Unit) {
+    IconButton(
+        onClick = onClick,
+        modifier = Modifier.semantics {
+            contentDescription = "标签页，共 $count 个"
+        }
+    ) {
+        Box(
+            modifier = Modifier
+                .size(ToolbarSpec.TAB_COUNT_BOX_DP.dp)
+                .border(
+                    2.dp,
+                    MaterialTheme.colorScheme.onSurface,
+                    RoundedCornerShape(
+                        ToolbarSpec.TAB_COUNT_RADIUS_DP.dp
+                    )
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                "$count",
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1
+            )
+        }
+    }
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
