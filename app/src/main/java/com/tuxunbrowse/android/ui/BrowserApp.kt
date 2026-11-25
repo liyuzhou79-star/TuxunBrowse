@@ -9455,7 +9455,12 @@ private fun HistoryRangeClearDialog(
     onDismiss: () -> Unit,
     onConfirm: (HistoryClearRange) -> Unit
 ) {
-    var selected by remember { mutableStateOf(HistoryClearRange.ALL) }
+    // The preselected range is the LEAST destructive one
+    // (v0.142.0 audit): the dialog used to open with 全部时间
+    // selected, so opening it and tapping 清除 out of habit wiped
+    // the whole history. Widening the range is one tap; the counts
+    // for all three ranges are printed on their rows either way.
+    var selected by remember { mutableStateOf(HistoryClearRange.LAST_HOUR) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("清除历史记录") },
@@ -9777,8 +9782,24 @@ private fun HistoryScreen(
                         }
                     ) {
                         ListItem(
-                            headlineContent = { Text(item.title) },
-                            supportingContent = { Text(item.url) },
+                            headlineContent = {
+                                // Capped like every other list
+                                // row in the app (v0.142.0 audit):
+                                // an uncapped title used to wrap
+                                // without limit and stretch the row.
+                                Text(
+                                    item.title,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
+                            supportingContent = {
+                                Text(
+                                    item.url,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
                             leadingContent = {
                                 Icon(Icons.Filled.History, contentDescription = null)
                             },
