@@ -74,6 +74,28 @@ class FpProxyAndProfilesIoTest {
     }
 
     @Test
+    fun proxyRuleAndSummaryFollowTheFields() {
+        // v0.204.0: the Chromium rule the override is built
+        // from and the card's human summary are both derived
+        // from the same three fields — pin the derivation so
+        // a future field (auth, bypass list) cannot update
+        // one surface and silently strand the other.
+        val config = FpProxyConfig(
+            enabled = true, scheme = "socks5",
+            host = "127.0.0.1", port = 1080
+        )
+        assertEquals("socks5://127.0.0.1:1080", config.rule)
+        assertEquals("socks5://127.0.0.1:1080", config.summary)
+        assertEquals(
+            "socks5://127.0.0.1:1080（已停用）",
+            config.copy(enabled = false).summary
+        )
+        assertEquals(
+            "未设置", FpProxyConfig().summary
+        )
+    }
+
+    @Test
     fun customProfilesExportImportRoundTrips() {
         val entries = listOf(
             CustomFingerprint(

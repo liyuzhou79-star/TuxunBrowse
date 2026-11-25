@@ -1,5 +1,6 @@
 package com.tuxunbrowse.android
 
+import com.tuxunbrowse.android.engine.FingerprintProfiles
 import com.tuxunbrowse.android.engine.FpProxyBook
 import com.tuxunbrowse.android.engine.FpProxyConfig
 import com.tuxunbrowse.android.engine.FpStorageNames
@@ -122,5 +123,50 @@ class FpPerCombinationTest {
             emptyMap<String, FpProxyConfig>(),
             FpProxyBook.decode("{}")
         )
+    }
+
+    @Test
+    fun everyLibraryCombinationGetsItsOwnJar() {
+        // v0.204.0: the six-sample distinctness in
+        // storageNamesAreSafeAndDistinct, extended to the
+        // WHOLE library — the per-combination jar contract is
+        // only worth anything if it holds for every persona
+        // the picker can produce, including devices a future
+        // version adds to a region.
+        val combos = FingerprintProfiles.all.flatMap { region ->
+            region.devices.map { region.regionId to it.id }
+        }
+        assertEquals(16, combos.size)
+        val noLegacy = combos.map {
+            FpStorageNames.nameFor(it.first, it.second, null)
+        }
+        assertEquals(
+            "every combination must bind a different jar",
+            combos.size, noLegacy.toSet().size
+        )
+        assertTrue(noLegacy.all {
+            FpStorageNames.isFpProfileName(it) &&
+                it != FpStorageNames.LEGACY_NAME
+        })
+        // With ANY one combination owning the legacy jar, the
+        // full set stays distinct and the owner — and only the
+        // owner — keeps the old name.
+        for (owner in combos) {
+            val ownerKey = FpStorageNames.keyOf(owner.first, owner.second)
+            val names = combos.map {
+                FpStorageNames.nameFor(it.first, it.second, ownerKey)
+            }
+            assertEquals(
+                "legacy owner $ownerKey must not collide jars",
+                combos.size, names.toSet().size
+            )
+            combos.zip(names).forEach { (combo, name) ->
+                if (combo == owner) {
+                    assertEquals(FpStorageNames.LEGACY_NAME, name)
+                } else {
+                    assertNotEquals(FpStorageNames.LEGACY_NAME, name)
+                }
+            }
+        }
     }
 }
