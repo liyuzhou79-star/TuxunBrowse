@@ -62,7 +62,17 @@ internal fun FloatingMenuPanel(
     val density = LocalDensity.current
     val statusTopPx = WindowInsets.statusBars.getTop(density)
     val screenWidthDp = LocalConfiguration.current.screenWidthDp
-    val panelWidth = minOf(320, screenWidthDp - 32).dp
+    // Narrower and longer (v0.191.0): at most 300dp and at
+    // most 78% of the screen wide (the old min(320, screen
+    // − 32) panel read as a wide squat sheet on the real
+    // device), with the height budget raised in the Column
+    // below so the longer shape has room to exist.
+    val panelWidth = minOf(
+        ToolbarSpec.MENU_PANEL_MAX_WIDTH_DP,
+        (screenWidthDp * ToolbarSpec.MENU_PANEL_WIDTH_FRACTION)
+            .toInt(),
+        screenWidthDp - 32
+    ).dp
     Popup(
         alignment = Alignment.TopEnd,
         offset = IntOffset(
@@ -86,9 +96,16 @@ internal fun FloatingMenuPanel(
         ) {
             Column(
                 modifier = Modifier
-                    .heightIn(max = 560.dp)
+                    .heightIn(
+                        max = ToolbarSpec.MENU_PANEL_MAX_HEIGHT_DP.dp
+                    )
                     .verticalScroll(rememberScrollState())
-                    .padding(vertical = 8.dp),
+                    // Extra bottom padding (v0.191.0): the
+                    // last row used to sit shaved in half
+                    // against the panel's bottom edge when
+                    // the list scrolled; the padding lets it
+                    // come fully into view with air under it.
+                    .padding(top = 8.dp, bottom = 16.dp),
                 content = content
             )
         }
@@ -110,14 +127,23 @@ internal fun MenuPanelCircleRow(
     )
 }
 
-/** Hairline between the panel's groups, inset like the rows. */
+/**
+ * Divider between the panel's groups, inset like the rows.
+ * Deepened (v0.191.0): the full-strength outline colour at
+ * 1dp, not the faint default hairline — group boundaries
+ * in menus and expanded areas were too light to read (the
+ * user's divider pass; settings groups use the even deeper
+ * tinted GroupDivider).
+ */
 @Composable
 internal fun MenuPanelDivider() {
     HorizontalDivider(
         modifier = Modifier.padding(
             horizontal = 16.dp,
             vertical = 4.dp
-        )
+        ),
+        thickness = 1.dp,
+        color = MaterialTheme.colorScheme.outline
     )
 }
 

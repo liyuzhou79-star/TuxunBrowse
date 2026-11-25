@@ -160,8 +160,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.material3.Text
 import androidx.compose.material3.Surface
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.TextButton
@@ -7245,7 +7243,6 @@ private fun BrowserScreen(
                     .fillMaxWidth()
                     .height(56.dp)
                     .background(MaterialTheme.colorScheme.surface)
-                    .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(horizontal = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(0.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -7262,52 +7259,37 @@ private fun BrowserScreen(
                 // themselves, and on the real device the pill
                 // read as sunk below the button line (user's
                 // screenshot, 2026-11-25 19:50).
-                IconButton(onClick = onGoHome) {
+                IconButton(
+                    onClick = onGoHome,
+                    modifier = Modifier.expandedTouchTarget(40.dp, 48.dp)
+                ) {
                     Icon(
                         Icons.Filled.Home,
                         contentDescription = "主页"
                     )
                 }
-                TextField(
+                // The pill is the shared PillTextField
+                // (v0.191.0): the stock filled TextField
+                // measured against its own 56dp minimum height
+                // inside this pinned 48dp box and let the text
+                // line sink until the glyphs clipped on the
+                // real device (user's screenshots). The shared
+                // pill centres its line by construction; see
+                // PillTextField.kt. The status icon at its head
+                // and the bookmark star at its tail ride along
+                // unchanged.
+                PillTextField(
                     value = addressValue,
                     onValueChange = { addressValue = it },
                     modifier = Modifier
                         .weight(1f)
-                        .height(48.dp)
                         .onFocusChanged { addressFocused = it.isFocused },
-                    singleLine = true,
-                    // The pill (v0.180.0): fully rounded filled
-                    // shape, no indicator line in any state.
-                    shape = RoundedCornerShape(percent = 50),
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor =
-                            MaterialTheme.colorScheme
-                                .surfaceContainerHigh,
-                        unfocusedContainerColor =
-                            MaterialTheme.colorScheme
-                                .surfaceContainerHigh,
-                        focusedIndicatorColor =
-                            androidx.compose.ui.graphics.Color
-                                .Transparent,
-                        unfocusedIndicatorColor =
-                            androidx.compose.ui.graphics.Color
-                                .Transparent,
-                        disabledIndicatorColor =
-                            androidx.compose.ui.graphics.Color
-                                .Transparent
-                    ),
-                    placeholder = {
-                        // Never wrap: a wrapped placeholder in a
-                        // squeezed field renders one character per
-                        // line (the vertical-text bug from the user's
-                        // screenshot).
-                        Text("输入网址或搜索", maxLines = 1, softWrap = false)
-                    },
+                    placeholder = "输入网址或搜索",
                     leadingIcon = {
-                        // Tapping the status icon opens the site-info
-                        // sheet (for the home page it shows the
-                        // internal-page info, so the icon always does
-                        // something when tapped).
+                        // Tapping the status icon opens the
+                        // site-info sheet (for the home page it
+                        // shows the internal-page info, so the
+                        // icon always does something).
                         IconButton(
                             onClick = { showSiteInfo = true },
                             modifier = Modifier.expandedTouchTarget(40.dp, 48.dp)
@@ -7323,21 +7305,15 @@ private fun BrowserScreen(
                         }
                     },
                     trailingIcon = {
-                        // The bookmark star moved into the
-                        // field itself in the v0.92.0 toolbar
-                        // merge: still one tap, still always
-                        // visible, no separate title bar needed.
+                        // The bookmark star inside the pill's
+                        // tail (v0.92.0): still one tap, still
+                        // always visible. The filled/border
+                        // swap crossfades (v0.111.0 motion
+                        // audit, 200ms on the shared easing).
                         IconButton(
                             onClick = onToggleBookmark,
                             modifier = Modifier.expandedTouchTarget(40.dp, 48.dp)
                         ) {
-                            // Star state crossfade (v0.111.0
-                            // motion audit): the filled/border
-                            // swap used to be instant, the one
-                            // state change in the merged toolbar
-                            // with no motion at all. A plain fade
-                            // on the shared easing, 200ms — inside
-                            // the established 180–250ms range.
                             Crossfade(
                                 targetState = isBookmarked,
                                 animationSpec = tween(
@@ -7353,13 +7329,10 @@ private fun BrowserScreen(
                             }
                         }
                     },
-                    // Keyboard fit (v0.138.0 input audit): this
-                    // field held only an IME action until now, so
-                    // it got the plain text keyboard WITH auto-
-                    // correct — an IME could "fix" a typed host
-                    // name into a dictionary word. Uri type asks
-                    // the IME for its URL layout and auto-correct
-                    // is off, like other browsers' address bars.
+                    // Keyboard fit (v0.138.0 input audit): a
+                    // URL keyboard with autocorrect off, so the
+                    // IME cannot "fix" a typed host name into a
+                    // dictionary word.
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Uri,
                         autoCorrectEnabled = false,
@@ -7369,13 +7342,17 @@ private fun BrowserScreen(
                         onGo = { submitAddress() }
                     )
                 )
+
                 if (activeTab != null) {
                     // A narrow icon button, not a labelled chip: the
                     // chip's text ate the address field's width on
                     // narrow screens and squeezed its placeholder into
                     // a vertical strip. The switch dialog still shows
                     // which engine is current.
-                    IconButton(onClick = { showEngineSwitch = true }) {
+                    IconButton(
+                        onClick = { showEngineSwitch = true },
+                        modifier = Modifier.expandedTouchTarget(40.dp, 48.dp)
+                    ) {
                         Icon(
                             Icons.Filled.SwapHoriz,
                             contentDescription = "切换内核（现在是" +
@@ -7386,7 +7363,7 @@ private fun BrowserScreen(
                 Box {
                     Box(
                         modifier = Modifier
-                            .size(48.dp)
+                            .size(40.dp)
                             .combinedClickable(
                                 onClick = onNewTab,
                                 onLongClick = {
@@ -7475,34 +7452,16 @@ private fun BrowserScreen(
                 // The semantics wrapper names it for TalkBack;
                 // the tap does exactly what the old bottom-bar
                 // tabs item did, query reset included.
-                IconButton(
+                TabCountButton(
+                    count = tabs.size,
                     onClick = {
                         onTabsOpened(); tabQuery = ""; showTabs = true
-                    },
-                    modifier = Modifier.semantics {
-                        contentDescription =
-                            "标签页，共 ${tabs.size} 个，点按打开标签页列表"
                     }
+                )
+                IconButton(
+                    onClick = { showMenu = true },
+                    modifier = Modifier.expandedTouchTarget(40.dp, 48.dp)
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(24.dp)
-                            .border(
-                                2.dp,
-                                MaterialTheme.colorScheme.onSurface,
-                                RoundedCornerShape(6.dp)
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            "${tabs.size}",
-                            style = MaterialTheme.typography
-                                .labelMedium,
-                            maxLines = 1
-                        )
-                    }
-                }
-                IconButton(onClick = { showMenu = true }) {
                     Icon(Icons.Filled.MoreVert, contentDescription = "菜单")
                 }
             }
@@ -7525,20 +7484,29 @@ private fun BrowserScreen(
             // height exactly as the v0.92.0 bar did, so nothing
             // slides under the system buttons.
             Surface(
-                modifier = Modifier
-                    .windowInsetsPadding(
-                        WindowInsets.navigationBars.only(
-                            WindowInsetsSides.Bottom
-                        )
-                    )
-                    .height(56.dp),
+                // Bar zone (v0.191.0): the surface spans the
+                // 56dp bar PLUS the navigation-bar inset, and
+                // the row fills the whole zone centred, so the
+                // icons sit in the middle of the full strip
+                // instead of riding its top with a blank
+                // coloured band underneath (user's "too much
+                // empty space below" report). The spread is
+                // SpaceEvenly: equal gaps everywhere, no
+                // half-size end gaps reading as a ghost slot.
+                modifier = Modifier.height(
+                    with(LocalDensity.current) {
+                        ToolbarSpec.BOTTOM_BAR_HEIGHT_DP.dp +
+                            WindowInsets.navigationBars
+                                .getBottom(this).toDp()
+                    }
+                ),
                 color = MaterialTheme.colorScheme.surfaceContainer,
                 tonalElevation = 3.dp
             ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxSize(),
                     horizontalArrangement =
-                        Arrangement.SpaceAround,
+                        Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(
@@ -8732,42 +8700,23 @@ private fun BrowserScreen(
                                     contentDescription = "新增分页"
                                 )
                             }
-                            TextField(
+                            PillTextField(
                                 value = tabQuery,
                                 onValueChange = { tabQuery = it },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(48.dp),
-                                singleLine = true,
-                                placeholder = {
-                                    Text("搜寻分页", maxLines = 1)
-                                },
+                                modifier = Modifier.weight(1f),
+                                placeholder = "搜寻分页",
                                 leadingIcon = {
                                     Icon(
                                         Icons.Filled.Search,
                                         contentDescription = null
                                     )
                                 },
-                                shape = RoundedCornerShape(percent = 50),
-                                colors = TextFieldDefaults.colors(
-                                    focusedContainerColor =
-                                        MaterialTheme.colorScheme
-                                            .surfaceContainerHigh,
-                                    unfocusedContainerColor =
-                                        MaterialTheme.colorScheme
-                                            .surfaceContainerHigh,
-                                    focusedIndicatorColor =
-                                        Color.Transparent,
-                                    unfocusedIndicatorColor =
-                                        Color.Transparent,
-                                    disabledIndicatorColor =
-                                        Color.Transparent
-                                ),
                                 keyboardOptions = KeyboardOptions(
                                     autoCorrectEnabled = false,
                                     imeAction = ImeAction.Search
                                 )
                             )
+
                             TabCountButton(
                                 count = tabs.size,
                                 onClick = {}
@@ -13456,7 +13405,23 @@ private fun FingerprintShell(
             addressText = if (activeTab == null || activeTab.isHome) {
                 ""
             } else {
-                activeTab.url
+                // Host-only display while unfocused, the
+                // normal shell's rule (v0.191.0): the full
+                // URL in this narrow pill used to scroll to
+                // its own tail and show a path fragment
+                // ("/inni…") instead of the site's name.
+                displayHostFor(activeTab.url)
+            }
+        }
+    }
+    // Focus gain swaps the host-only display back to the
+    // full URL for editing, the normal shell's behaviour
+    // (v0.191.0); focus loss restores it via the effect above.
+    LaunchedEffect(addressFocused) {
+        if (addressFocused) {
+            val tab = activeTab
+            if (tab != null && !tab.isHome) {
+                addressText = tab.url
             }
         }
     }
@@ -13525,20 +13490,29 @@ private fun FingerprintShell(
             // fingerprint set is the mode's own high-frequency
             // actions — back / forward / reload / profile.
             Surface(
-                modifier = Modifier
-                    .windowInsetsPadding(
-                        WindowInsets.navigationBars.only(
-                            WindowInsetsSides.Bottom
-                        )
-                    )
-                    .height(56.dp),
+                // Bar zone (v0.191.0): the surface spans the
+                // 56dp bar PLUS the navigation-bar inset, and
+                // the row fills the whole zone centred, so the
+                // icons sit in the middle of the full strip
+                // instead of riding its top with a blank
+                // coloured band underneath (user's "too much
+                // empty space below" report). The spread is
+                // SpaceEvenly: equal gaps everywhere, no
+                // half-size end gaps reading as a ghost slot.
+                modifier = Modifier.height(
+                    with(LocalDensity.current) {
+                        ToolbarSpec.BOTTOM_BAR_HEIGHT_DP.dp +
+                            WindowInsets.navigationBars
+                                .getBottom(this).toDp()
+                    }
+                ),
                 color = MaterialTheme.colorScheme.surfaceContainer,
                 tonalElevation = 3.dp
             ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxSize(),
                     horizontalArrangement =
-                        Arrangement.SpaceAround,
+                        Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(
@@ -13600,6 +13574,14 @@ private fun FingerprintShell(
             // layout): the tertiary colour lives on this slim
             // strip now, so the toolbar row below can share
             // the normal shell's exact geometry and surface.
+            // Height is exactly 48dp (v0.191.0): the strip
+            // used to add its own status-bar inset padding on
+            // top of the 48dp, but the Scaffold's content
+            // padding already carries that inset, so the
+            // strip rendered at 48 + inset with the title
+            // sunk to its bottom edge and a blank band above
+            // it (user's screenshot 4118). One inset, one
+            // owner: the Scaffold's.
             Surface(
                 color = MaterialTheme.colorScheme.tertiaryContainer,
                 contentColor =
@@ -13608,7 +13590,6 @@ private fun FingerprintShell(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .windowInsetsPadding(WindowInsets.statusBars)
                         .height(48.dp)
                         .padding(horizontal = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -13649,48 +13630,28 @@ private fun FingerprintShell(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(
-                    onClick = { activeTab?.load(HOME_URL) }
+                    onClick = { activeTab?.load(HOME_URL) },
+                    modifier = Modifier.expandedTouchTarget(40.dp, 48.dp)
                 ) {
                     Icon(
                         Icons.Filled.Home,
                         contentDescription = "指纹模式主页"
                     )
                 }
-                TextField(
+                // The shared pill (v0.191.0), same object as
+                // the normal shell's — see PillTextField.kt
+                // for why the stock filled TextField had to
+                // go (its text line sank and clipped inside
+                // the pinned 48dp height).
+                PillTextField(
                     value = addressText,
                     onValueChange = { addressText = it },
                     modifier = Modifier
                         .weight(1f)
-                        .height(48.dp)
                         .onFocusChanged {
                             addressFocused = it.isFocused
                         },
-                    singleLine = true,
-                    shape = RoundedCornerShape(percent = 50),
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor =
-                            MaterialTheme.colorScheme
-                                .surfaceContainerHigh,
-                        unfocusedContainerColor =
-                            MaterialTheme.colorScheme
-                                .surfaceContainerHigh,
-                        focusedIndicatorColor =
-                            androidx.compose.ui.graphics.Color
-                                .Transparent,
-                        unfocusedIndicatorColor =
-                            androidx.compose.ui.graphics.Color
-                                .Transparent,
-                        disabledIndicatorColor =
-                            androidx.compose.ui.graphics.Color
-                                .Transparent
-                    ),
-                    placeholder = {
-                        Text(
-                            "搜索或输入网址",
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                    },
+                    placeholder = "搜索或输入网址",
                     leadingIcon = {
                         Box(
                             modifier = Modifier.size(40.dp),
@@ -13740,9 +13701,8 @@ private fun FingerprintShell(
                         }
                     },
                     // Same input spec as the normal shell's
-                    // address bar (v0.138.0): a URL keyboard with
-                    // autocorrect off, so the IME cannot
-                    // "correct" a domain into a dictionary word.
+                    // address bar (v0.138.0): a URL keyboard
+                    // with autocorrect off.
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Uri,
                         autoCorrectEnabled = false,
@@ -13752,17 +13712,21 @@ private fun FingerprintShell(
                         onGo = { submitAddress() }
                     )
                 )
+
                 // Engine switch, greyed but tappable
                 // (v0.187.0, the fingerprint-conflict rule):
                 // the seat stays in the unified row, the action
                 // does not run — tapping explains that
                 // switching engines would break the profile's
                 // disguise and could leak the fingerprint.
-                IconButton(onClick = {
-                    fpConflictToast(
-                        "指纹模式只用系统 WebView，切换内核会让伪装失效"
-                    )
-                }) {
+                IconButton(
+                    onClick = {
+                        fpConflictToast(
+                            "指纹模式只用系统 WebView，切换内核会让伪装失效"
+                        )
+                    },
+                    modifier = Modifier.expandedTouchTarget(40.dp, 48.dp)
+                ) {
                     Icon(
                         Icons.Filled.SwapHoriz,
                         contentDescription =
@@ -13771,38 +13735,24 @@ private fun FingerprintShell(
                             .copy(alpha = 0.38f)
                     )
                 }
-                IconButton(onClick = onNewTab) {
+                IconButton(
+                    onClick = onNewTab,
+                    modifier = Modifier.expandedTouchTarget(40.dp, 48.dp)
+                ) {
                     Icon(
                         Icons.Filled.Add,
                         contentDescription = "新建标签页"
                     )
                 }
+                TabCountButton(
+                    count = tabs.size,
+                    onClick = { showTabs = true }
+                )
+
                 IconButton(
-                    onClick = { showTabs = true },
-                    modifier = Modifier.semantics {
-                        contentDescription =
-                            "标签页，共 ${tabs.size} 个，点按打开标签页列表"
-                    }
+                    onClick = { showFpMenu = true },
+                    modifier = Modifier.expandedTouchTarget(40.dp, 48.dp)
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(24.dp)
-                            .border(
-                                2.dp,
-                                MaterialTheme.colorScheme.onSurface,
-                                RoundedCornerShape(6.dp)
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            "${tabs.size}",
-                            style = MaterialTheme.typography
-                                .labelMedium,
-                            maxLines = 1
-                        )
-                    }
-                }
-                IconButton(onClick = { showFpMenu = true }) {
                     Icon(
                         Icons.Filled.MoreVert,
                         contentDescription = "菜单"
@@ -14225,42 +14175,23 @@ private fun FingerprintShell(
                                 contentDescription = "新增指纹分页"
                             )
                         }
-                        TextField(
+                        PillTextField(
                             value = fpTabQuery,
                             onValueChange = { fpTabQuery = it },
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(48.dp),
-                            singleLine = true,
-                            placeholder = {
-                                Text("搜寻分页", maxLines = 1)
-                            },
+                            modifier = Modifier.weight(1f),
+                            placeholder = "搜寻分页",
                             leadingIcon = {
                                 Icon(
                                     Icons.Filled.Search,
                                     contentDescription = null
                                 )
                             },
-                            shape = RoundedCornerShape(percent = 50),
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor =
-                                    MaterialTheme.colorScheme
-                                        .surfaceContainerHigh,
-                                unfocusedContainerColor =
-                                    MaterialTheme.colorScheme
-                                        .surfaceContainerHigh,
-                                focusedIndicatorColor =
-                                    Color.Transparent,
-                                unfocusedIndicatorColor =
-                                    Color.Transparent,
-                                disabledIndicatorColor =
-                                    Color.Transparent
-                            ),
                             keyboardOptions = KeyboardOptions(
                                 autoCorrectEnabled = false,
                                 imeAction = ImeAction.Search
                             )
                         )
+
                         TabCountButton(
                             count = tabs.size,
                             onClick = {}
@@ -14657,6 +14588,16 @@ private fun FingerprintShell(
                     )
                 }
                 if (tzExpanded) {
+                    item {
+                        // Expanded-area divider (v0.191.0):
+                        // the deeper group line marks where
+                        // the expanded list begins.
+                        HorizontalDivider(
+                            thickness = 1.dp,
+                            color =
+                                MaterialTheme.colorScheme.outline
+                        )
+                    }
                     items(profile.timezones) { candidate ->
                         ElevatedCard(
                             onClick = {
@@ -15035,9 +14976,11 @@ private fun fpSelfCheckProbe(expJson: String): String = """
 private fun TabCountButton(count: Int, onClick: () -> Unit) {
     IconButton(
         onClick = onClick,
-        modifier = Modifier.semantics {
-            contentDescription = "标签页，共 $count 个"
-        }
+        modifier = Modifier
+            .semantics {
+                contentDescription = "标签页，共 $count 个"
+            }
+            .expandedTouchTarget(40.dp, 48.dp)
     ) {
         Box(
             modifier = Modifier
@@ -15058,6 +15001,25 @@ private fun TabCountButton(count: Int, onClick: () -> Unit) {
             )
         }
     }
+}
+
+/**
+ * The settings group divider (v0.191.0): a thicker,
+ * primary-tinted style line between settings groups. The
+ * plain hairline was too faint to see where one group ended
+ * and the next began (user's report); item-level dividers
+ * stay the faint official hairline, and the two weights are
+ * the hierarchy — group lines deeper and tinted, item lines
+ * light. Visible in dark mode too (it is the primary colour,
+ * not a grey).
+ */
+@Composable
+internal fun GroupDivider() {
+    HorizontalDivider(
+        modifier = Modifier.padding(vertical = 8.dp),
+        thickness = 2.dp,
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -15910,6 +15872,7 @@ private fun SettingsScreen(
                 }
             }
             if (targetPage == "engine") {
+            item { GroupDivider() }
             item {
                 Text("主内核", style = MaterialTheme.typography.titleMedium)
                 Text(
@@ -15941,6 +15904,7 @@ private fun SettingsScreen(
                     )
                 }
             }
+            item { GroupDivider() }
             item {
                 Text("无痕内核", style = MaterialTheme.typography.titleMedium)
                 Text(
@@ -15972,6 +15936,7 @@ private fun SettingsScreen(
                     )
                 }
             }
+            item { GroupDivider() }
             item {
                 Text("搜索引擎", style = MaterialTheme.typography.titleMedium)
                 Text(
@@ -16004,6 +15969,7 @@ private fun SettingsScreen(
                     )
                 }
             }
+            item { GroupDivider() }
             item {
                 Text("兼容模式记住的网站", style = MaterialTheme.typography.titleMedium)
                 Text(
@@ -16034,6 +16000,7 @@ private fun SettingsScreen(
                     HorizontalDivider()
                 }
             }
+            item { GroupDivider() }
             item {
                 Text("桌面版站点", style = MaterialTheme.typography.titleMedium)
                 Text(
@@ -16071,6 +16038,7 @@ private fun SettingsScreen(
             }
             }
             if (targetPage == "adblock") {
+            item { GroupDivider() }
             item {
                 Text("广告拦截", style = MaterialTheme.typography.titleMedium)
             }
@@ -16147,6 +16115,7 @@ private fun SettingsScreen(
             }
             }
             if (targetPage == "download") {
+            item { GroupDivider() }
             item {
                 Text("下载", style = MaterialTheme.typography.titleMedium)
                 Text(
@@ -16187,6 +16156,7 @@ private fun SettingsScreen(
             }
             }
             if (targetPage == "appearance") {
+            item { GroupDivider() }
             item {
                 Text("外观", style = MaterialTheme.typography.titleMedium)
             }
@@ -16222,6 +16192,7 @@ private fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+            item { GroupDivider() }
             item {
                 Text("显示", style = MaterialTheme.typography.titleMedium)
                 Text(
@@ -16280,6 +16251,7 @@ private fun SettingsScreen(
                     }
                 )
             }
+            item { GroupDivider() }
             item {
                 Text("阅读模式", style = MaterialTheme.typography.titleMedium)
                 Text(
@@ -16346,6 +16318,7 @@ private fun SettingsScreen(
             }
             }
             if (targetPage == "privacy") {
+            item { GroupDivider() }
             item {
                 Text("启动", style = MaterialTheme.typography.titleMedium)
             }
@@ -16374,6 +16347,7 @@ private fun SettingsScreen(
             }
             }
             if (targetPage == "engine") {
+            item { GroupDivider() }
             item {
                 Text("默认浏览器", style = MaterialTheme.typography.titleMedium)
                 Text(
@@ -16444,6 +16418,7 @@ private fun SettingsScreen(
                     Text("重新检测默认浏览器状态")
                 }
             }
+            item { GroupDivider() }
             item {
                 Text("两个内核的差别", style = MaterialTheme.typography.titleMedium)
             }
@@ -16546,6 +16521,7 @@ private fun SettingsScreen(
             }
             }
             if (targetPage == "privacy") {
+            item { GroupDivider() }
             item {
                 Text("跟踪保护", style = MaterialTheme.typography.titleMedium)
             }
@@ -16664,6 +16640,7 @@ private fun SettingsScreen(
                     }
                 )
             }
+            item { GroupDivider() }
             item {
                 Text("指纹模式", style = MaterialTheme.typography.titleMedium)
             }
@@ -16695,6 +16672,7 @@ private fun SettingsScreen(
                     )
                 }
             }
+            item { GroupDivider() }
             item {
                 Text("隐私", style = MaterialTheme.typography.titleMedium)
                 Text(
@@ -16726,6 +16704,7 @@ private fun SettingsScreen(
                     )
                 }
             }
+            item { GroupDivider() }
             item {
                 Text("打开网站", style = MaterialTheme.typography.titleMedium)
             }
@@ -16757,6 +16736,7 @@ private fun SettingsScreen(
                     }
                 )
             }
+            item { GroupDivider() }
             item {
                 Text("数据", style = MaterialTheme.typography.titleMedium)
             }
@@ -16779,6 +16759,7 @@ private fun SettingsScreen(
             if (showCleared) {
                 item { Text("历史记录已清除。") }
             }
+            item { GroupDivider() }
             item {
                 Text("备份与恢复", style = MaterialTheme.typography.titleMedium)
                 Text(

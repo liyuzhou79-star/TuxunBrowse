@@ -40,6 +40,30 @@ internal object ToolbarSpec {
     const val TAB_COUNT_BOX_DP: Int = 24
     const val TAB_COUNT_RADIUS_DP: Int = 6
 
+    /**
+     * Toolbar buttons' layout size (v0.191.0 width budget):
+     * the glyphs lay out at 40dp while expandedTouchTarget
+     * keeps the full 48dp hit area, so the six-slot row
+     * leaves the pill a usable width at 360dp. The tab-count
+     * box above is drawn inside one of these buttons and is
+     * the same shared TabCountButton composable in every
+     * shell and sheet — there are no per-shell copies.
+     */
+    const val BUTTON_COMPACT_DP: Int = 40
+
+    /**
+     * Menu panel geometry (v0.191.0): the panel used to be
+     * min(320, screen − 32)dp wide and at most 560dp tall,
+     * which on the real device read as a wide, squat sheet
+     * with its last row shaved in half at the bottom edge.
+     * It is now at most 300dp and at most 78% of the screen
+     * wide, and up to 640dp tall — narrower and longer, the
+     * shape the user asked for.
+     */
+    const val MENU_PANEL_MAX_WIDTH_DP: Int = 300
+    const val MENU_PANEL_WIDTH_FRACTION: Float = 0.78f
+    const val MENU_PANEL_MAX_HEIGHT_DP: Int = 640
+
     /** The one toolbar order, by slot name, for the record. */
     val SLOT_ORDER: List<String> = listOf(
         "home", "pill", "engineSwitch", "newTab", "tabCount", "menu"
