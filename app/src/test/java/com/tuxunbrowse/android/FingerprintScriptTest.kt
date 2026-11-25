@@ -149,6 +149,26 @@ class FingerprintScriptTest {
     }
 
     @Test
+    fun payloadCarriesTheWebGpuIdentity() {
+        // v0.159.0: the WebGPU section ships in every payload,
+        // with the picked device's GPU family — a Mali profile
+        // must not carry the Qualcomm strings, and vice versa.
+        val jp = FingerprintScript.payload(
+            FingerprintProfiles.resolve("JP", null)
+        )
+        assertTrue(jp.contains("requestAdapter"))
+        assertTrue(jp.contains("'arm'"))
+        assertTrue(jp.contains("'valhall'"))
+        assertFalse(jp.contains("qualcomm"))
+        val us = FingerprintScript.payload(
+            FingerprintProfiles.resolve("US", null)
+        )
+        assertTrue(us.contains("'qualcomm'"))
+        assertTrue(us.contains("'adreno-7xx'"))
+        assertFalse(us.contains("valhall"))
+    }
+
+    @Test
     fun chargingStoryMatchesTheProfile() {
         val sg = FingerprintScript.payload(
             FingerprintProfiles.resolve("SG", null)

@@ -85,6 +85,19 @@ data class FpDevice(
     val webGlVendor: String,
     val webGlRenderer: String,
     val webGl: FpWebGlParams,
+    /**
+     * The WebGPU adapter identity (v0.159.0): what
+     * GPUAdapterInfo.vendor / .architecture report for this
+     * device's GPU family in Chrome. Without developer features
+     * those two strings are the ONLY adapter fields a page can
+     * read, and they must name the same GPU family as the WebGL
+     * renderer string or the two APIs cross-examine each other
+     * into a contradiction. Dawn's family names: Qualcomm GPUs
+     * report vendor "qualcomm" / architecture "adreno-7xx";
+     * ARM Mali G6xx/G7xx report "arm" / "valhall".
+     */
+    val webGpuVendor: String,
+    val webGpuArchitecture: String,
     val seedDelta: Int
 )
 
@@ -246,7 +259,9 @@ object FingerprintProfiles {
         userAgent = ua(model), screenWidth = 360, screenHeight = 780,
         devicePixelRatio = 3.0, hardwareConcurrency = 8, deviceMemory = 8,
         webGlVendor = "Qualcomm", webGlRenderer = "Adreno (TM) 750",
-        webGl = GL_ADRENO_750, seedDelta = delta
+        webGl = GL_ADRENO_750,
+        webGpuVendor = "qualcomm", webGpuArchitecture = "adreno-7xx",
+        seedDelta = delta
     )
 
     private fun galaxyS23(model: String, delta: Int) = FpDevice(
@@ -254,7 +269,9 @@ object FingerprintProfiles {
         userAgent = ua(model), screenWidth = 360, screenHeight = 780,
         devicePixelRatio = 3.0, hardwareConcurrency = 8, deviceMemory = 8,
         webGlVendor = "Qualcomm", webGlRenderer = "Adreno (TM) 740",
-        webGl = GL_ADRENO_740, seedDelta = delta
+        webGl = GL_ADRENO_740,
+        webGpuVendor = "qualcomm", webGpuArchitecture = "adreno-7xx",
+        seedDelta = delta
     )
 
     private fun pixel8(delta: Int) = FpDevice(
@@ -264,7 +281,9 @@ object FingerprintProfiles {
         hardwareConcurrency = 8, deviceMemory = 8,
         webGlVendor = "ARM",
         webGlRenderer = "ANGLE (ARM, Mali-G715s MC10, OpenGL ES 3.2)",
-        webGl = GL_MALI_G715, seedDelta = delta
+        webGl = GL_MALI_G715,
+        webGpuVendor = "arm", webGpuArchitecture = "valhall",
+        seedDelta = delta
     )
 
     private fun pixel8Pro(delta: Int) = FpDevice(
@@ -276,7 +295,9 @@ object FingerprintProfiles {
         hardwareConcurrency = 8, deviceMemory = 8,
         webGlVendor = "ARM",
         webGlRenderer = "ANGLE (ARM, Mali-G715s MC10, OpenGL ES 3.2)",
-        webGl = GL_MALI_G715, seedDelta = delta
+        webGl = GL_MALI_G715,
+        webGpuVendor = "arm", webGpuArchitecture = "valhall",
+        seedDelta = delta
     )
 
     private fun pixel7a(delta: Int) = FpDevice(
@@ -289,7 +310,9 @@ object FingerprintProfiles {
         // The G710 is the G715's immediate predecessor class; the
         // capability table is carried over (recorded in the
         // v0.146.0 checkpoint chapter, not diffed on hardware).
-        webGl = GL_MALI_G715, seedDelta = delta
+        webGl = GL_MALI_G715,
+        webGpuVendor = "arm", webGpuArchitecture = "valhall",
+        seedDelta = delta
     )
 
     private fun galaxyA54(delta: Int) = FpDevice(
@@ -299,7 +322,9 @@ object FingerprintProfiles {
         hardwareConcurrency = 8, deviceMemory = 8,
         webGlVendor = "ARM",
         webGlRenderer = "ANGLE (ARM, Mali-G68, OpenGL ES 3.2)",
-        webGl = GL_MALI_G68, seedDelta = delta
+        webGl = GL_MALI_G68,
+        webGpuVendor = "arm", webGpuArchitecture = "valhall",
+        seedDelta = delta
     )
 
     val UNITED_STATES = FingerprintProfile(

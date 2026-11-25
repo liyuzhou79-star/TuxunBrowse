@@ -97,6 +97,36 @@ class FingerprintConsistencyTest {
     }
 
     @Test
+    fun webGpuIdentityAgreesWithTheWebGlRenderer() {
+        // v0.159.0: the WebGPU adapter info must name the same
+        // GPU family as the WebGL renderer string — a detector
+        // reads both, one probe apart.
+        for (profile in FingerprintProfiles.all) {
+            for (device in profile.devices) {
+                if (device.webGlRenderer.contains("Adreno")) {
+                    assertEquals(
+                        "${device.id} vendor",
+                        "qualcomm", device.webGpuVendor
+                    )
+                    assertTrue(
+                        device.webGpuArchitecture.startsWith("adreno")
+                    )
+                } else if (device.webGlRenderer.contains("Mali")) {
+                    assertEquals(
+                        "${device.id} vendor",
+                        "arm", device.webGpuVendor
+                    )
+                    assertEquals("valhall", device.webGpuArchitecture)
+                } else {
+                    throw AssertionError(
+                        "unclassified GPU family: ${device.webGlRenderer}"
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
     fun timezoneNamesCoverTheDaylightStory() {
         for (profile in FingerprintProfiles.all) {
             for (zone in profile.timezones) {

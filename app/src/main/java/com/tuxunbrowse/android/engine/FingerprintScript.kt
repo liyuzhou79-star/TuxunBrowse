@@ -20,6 +20,10 @@ package com.tuxunbrowse.android.engine
  * AudioBuffer noise, ClientRects jitter, a fixed battery story,
  * and a hard WebRTC block (stricter than the opt-in normal-mode
  * switch: fingerprint mode never negotiates real ICE candidates).
+ * WebGPU adapter identity joined in v0.159.0: requestAdapter's
+ * info answers vendor/architecture from the profile's GPU
+ * family, so the third graphics API tells the same story as
+ * the WebGL strings and capability table.
  *
  * v0.145.0 additions, same profile-driven rule: the region's
  * speech-synthesis voice list, matchMedia color-gamut /
@@ -422,6 +426,64 @@ object FingerprintScript {
           };
         }
       });
+  });
+
+  section(function () {
+    // WebGPU (v0.159.0): navigator.gpu was the one graphics API
+    // still answering with the HOST GPU. A page asking
+    // requestAdapter() gets an adapter whose .info names the
+    // real chip family — Qualcomm on a host wearing a Mali
+    // profile (or the reverse) is a flat contradiction with
+    // the WebGL renderer string one probe earlier. Chrome only
+    // exposes vendor/architecture (plus subgroup sizes and the
+    // fallback flag) on GPUAdapterInfo without developer
+    // features, so those two fields answer from the profile;
+    // everything else on the info object — and everything else
+    // on the adapter — passes through to the real object, with
+    // methods bound to it so requestDevice & friends keep
+    // working. The legacy requestAdapterInfo() is wrapped the
+    // same way when the engine still has it.
+    if (!navigator.gpu || !navigator.gpu.requestAdapter) return;
+    var gpuObj = navigator.gpu;
+    var origRequestAdapter = gpuObj.requestAdapter.bind(gpuObj);
+    function wrapGpuInfo(info) {
+      if (!info) return info;
+      return new Proxy(info, {
+        get: function (t, prop) {
+          if (prop === 'vendor') return ${jsStr(d.webGpuVendor)};
+          if (prop === 'architecture') {
+            return ${jsStr(d.webGpuArchitecture)};
+          }
+          var v = t[prop];
+          return (typeof v === 'function') ? v.bind(t) : v;
+        }
+      });
+    }
+    function wrapGpuAdapter(adapter) {
+      if (!adapter) return adapter;
+      return new Proxy(adapter, {
+        get: function (t, prop) {
+          if (prop === 'info') {
+            try { return wrapGpuInfo(t.info); } catch (e) {
+              return t.info;
+            }
+          }
+          if (prop === 'requestAdapterInfo' &&
+              typeof t[prop] === 'function') {
+            return function () {
+              return t.requestAdapterInfo.apply(t, arguments)
+                .then(wrapGpuInfo);
+            };
+          }
+          var v = t[prop];
+          return (typeof v === 'function') ? v.bind(t) : v;
+        }
+      });
+    }
+    gpuObj.requestAdapter = function () {
+      return origRequestAdapter.apply(null, arguments)
+        .then(wrapGpuAdapter);
+    };
   });
 
   section(function () {
