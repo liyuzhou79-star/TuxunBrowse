@@ -6505,11 +6505,30 @@ private fun BrowserScreen(
                         // frequency items only. The ad-block status
                         // line moved to the settings ad-block page;
                         // low-frequency tools live under "更多工具".
-                        DropdownMenuItem(
-                            text = { Text("重新加载") },
-                            leadingIcon = { Icon(Icons.Filled.Refresh, contentDescription = null) },
-                            onClick = { showMenu = false; activeTab?.reload() }
-                        )
+                        // While a load is live this slot offers
+                        // stop instead of reload (v0.139.0 network
+                        // audit): a slow or hung page used to be
+                        // uncancellable — reload only restarted the
+                        // wait. The tab's loading state covers both
+                        // engines, so the entry is in place for
+                        // WebView and Gecko tabs alike.
+                        if (activeTab?.loading == true) {
+                            DropdownMenuItem(
+                                text = { Text("停止加载") },
+                                leadingIcon = {
+                                    Icon(Icons.Filled.Close, contentDescription = null)
+                                },
+                                onClick = { showMenu = false; activeTab?.stopLoading() }
+                            )
+                        } else {
+                            DropdownMenuItem(
+                                text = { Text("重新加载") },
+                                leadingIcon = {
+                                    Icon(Icons.Filled.Refresh, contentDescription = null)
+                                },
+                                onClick = { showMenu = false; activeTab?.reload() }
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text("前进") },
                             leadingIcon = {

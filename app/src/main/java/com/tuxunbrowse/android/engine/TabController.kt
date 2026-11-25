@@ -892,6 +892,23 @@ class BrowserTab(
     var url by mutableStateOf(startUrl)
     var title by mutableStateOf("")
     var progress by mutableIntStateOf(100)
+
+    /**
+     * True while this tab's engine is working on a page load
+     * (v0.139.0 network audit). [progress] alone cannot say this:
+     * it sits at 100 until the first progress callback arrives, so
+     * a connection that hangs before any byte comes back looked
+     * exactly like a finished page — no progress bar and, worse,
+     * no way to cancel. This flag is set when a load starts (app
+     * [load] / [reload] and both engines' page-start callbacks,
+     * which also cover navigations a page starts itself) and
+     * cleared at every point a load can end: page finish, main-
+     * frame error, an app-side interception that cancels the
+     * navigation, engine sleep, engine-creation failure, and
+     * [stopLoading]. The toolbar menu reads it to offer
+     * 「停止加载」 instead of 「重新加载」 while a load is live.
+     */
+    var loading by mutableStateOf(false)
     var canGoBack by mutableStateOf(false)
     var canGoForward by mutableStateOf(false)
     var readerActive by mutableStateOf(false)
@@ -1187,7 +1204,11 @@ class BrowserTab(
         url = target
         // The native home page is rendered by the app itself; the web
         // engines must never try to load its internal URL.
-        if (target == HOME_URL) return
+        if (target == HOME_URL) {
+            loading = false
+            return
+        }
+        loading = true
         when (engine) {
             Engine.WEBVIEW -> {
                 // Privacy headers (v0.92.0): loads the APP initiates
@@ -1224,10 +1245,33 @@ class BrowserTab(
     
     
     fun reload() {
+        if (url != HOME_URL) loading = true
         when (engine) {
             Engine.WEBVIEW -> webView?.reload()
             Engine.GECKO -> geckoSession?.reload()
         }
+    }
+
+    /**
+     * Stop the load currently in flight (v0.139.0 network audit):
+     * until this version the engines' stop calls were only used
+     * internally when an engine slept or was destroyed, so a page
+     * stuck on a slow or hung connection could not be cancelled —
+     * the only remedy was reloading, which started the wait over.
+     * Whatever part of the page already arrived stays on screen
+     * (both engines keep the partially rendered document); no
+     * error state is raised, because the user stopping a load is
+     * not a failure. Progress is closed out at 100 like the error
+     * path does, so the progress bar never hangs over the stopped
+     * page.
+     */
+    fun stopLoading() {
+        when (engine) {
+            Engine.WEBVIEW -> webView?.stopLoading()
+            Engine.GECKO -> geckoSession?.stop()
+        }
+        loading = false
+        progress = 100
     }
 
     fun findInPage(query: String, forward: Boolean) {
@@ -1589,6 +1633,7 @@ class BrowserTab(
         geckoSession = null
         geckoView = null
         progress = 100
+        loading = false
         canGoBack = false
         canGoForward = false
         readerActive = false
@@ -1685,6 +1730,8 @@ class BrowserTab(
             }
             webView = null
             engineUnavailable = true
+            // No load can be in flight without an engine (v0.139.0).
+            loading = false
             null
         }
     }
@@ -1955,6 +2002,9 @@ class BrowserTab(
                             wv.post { wv.loadUrl(fallback) }
                         }
                     }
+                    // The navigation is cancelled here (v0.139.0):
+                    // no page load remains in flight on its account.
+                    loading = false
                     return true
                 }
                 if (request.isForMainFrame && request.hasGesture() &&
@@ -1963,6 +2013,9 @@ class BrowserTab(
                     isDirectDownloadUrl(target)
                 ) {
                     onDirectDownload(target)
+                    // Cancelled into a download (v0.139.0), same
+                    // reasoning as the special-link branch above.
+                    loading = false
                     return true
                 }
                 return false
@@ -1974,6 +2027,10 @@ class BrowserTab(
                 favicon: android.graphics.Bitmap?
             ) {
                 super.onPageStarted(wv, startedUrl, favicon)
+                // A load is under way (v0.139.0): also covers
+                // navigations the page started itself, which never
+                // pass through the app's load().
+                loading = true
                 // Page-guard script (v0.91.0): reconcile the
                 // injection channels with the user's switch.
                 syncGuardScript(wv)
@@ -2009,7 +2066,9 @@ class BrowserTab(
                 // HTTP errors (404/500) never arrive here — the server
                 // answers those itself and its page is shown as-is.
                 if (!request.isForMainFrame) return
-                // The load is over, failed: close out the progress
+                // The load is over, failed (v0.139.0 loading state).
+                loading = false
+                // Close out the progress
                 // bar too (v0.103.0). WebView progress is driven
                 // only by onProgressChanged, and a fast failure can
                 // leave it parked mid-way, which would keep the bar
@@ -2102,6 +2161,8 @@ class BrowserTab(
 
             override fun onPageFinished(wv: WebView, finishedUrl: String?) {
                 super.onPageFinished(wv, finishedUrl)
+                // The load is over (v0.139.0 loading state).
+                loading = false
                 // HTTPS-first marker (v0.77.0): a load that finished
                 // without an error state has succeeded, so the tab
                 // is no longer "showing an upgraded page that
@@ -2549,6 +2610,10 @@ class BrowserTab(
                 val target = request.uri
                 if (target.startsWith("http") && shouldUseWebView(target)) {
                     onCompatRedirect(target)
+                    // Denied here (v0.139.0): this session's load
+                    // does not proceed; the WebView tab that takes
+                    // over tracks its own loading state.
+                    loading = false
                     return GeckoResult.fromValue(AllowOrDeny.DENY)
                 }
                 // Navigation-level ad blocking for Gecko (subresource
@@ -2556,6 +2621,9 @@ class BrowserTab(
                 if (target.startsWith("http") && isAdBlockEnabled() &&
                     AdBlocker.isAdRequest(target)
                 ) {
+                    // A denied navigation ends this load attempt
+                    // (v0.139.0 loading state).
+                    loading = false
                     return GeckoResult.fromValue(AllowOrDeny.DENY)
                 }
                 // Special links (tel:/mailto:/sms:/geo:/market:/
@@ -2578,6 +2646,9 @@ class BrowserTab(
                             ).post { load(fallback) }
                         }
                     }
+                    // Denied either way (v0.139.0 loading state);
+                    // a fallback load re-raises it through load().
+                    loading = false
                     return GeckoResult.fromValue(AllowOrDeny.DENY)
                 }
                 // A tap on a direct file link: same determination
@@ -2595,6 +2666,8 @@ class BrowserTab(
                     !request.isRedirect && isDirectDownloadUrl(target)
                 ) {
                     onDirectDownload(target)
+                    // Cancelled into a download (v0.139.0).
+                    loading = false
                     return GeckoResult.fromValue(AllowOrDeny.DENY)
                 }
                 return null
@@ -2634,6 +2707,8 @@ class BrowserTab(
                 // the tab's own error state, which the app renders as
                 // its error page. HTTP errors (404/500) never arrive
                 // here; the server's own page is shown for those.
+                // The load is over, failed (v0.139.0 loading state).
+                loading = false
                 loadError = TabLoadError(
                     failedUrl = uri ?: url,
                     reason = geckoErrorReason(error),
@@ -2646,6 +2721,9 @@ class BrowserTab(
             override fun onPageStart(s: GeckoSession, startUrl: String) {
                 // A fresh load is under way; any earlier failure is over.
                 loadError = null
+                // Loading state (v0.139.0): also covers navigations
+                // the page started itself.
+                loading = true
                 // Same find-state reset as the WebView side
                 // (v0.124.0): a new page kills the find session.
                 resetFindState()
@@ -2656,6 +2734,8 @@ class BrowserTab(
             }
 
             override fun onPageStop(s: GeckoSession, success: Boolean) {
+                // The load is over either way (v0.139.0).
+                loading = false
                 progress = 100
                 // HTTPS-first marker (v0.77.0): cleared on a
                 // successful stop with no error state, kept when
@@ -3043,7 +3123,11 @@ class BrowserTab(
         } catch (t: Throwable) {
             null
         }
-        if (view == null) engineUnavailable = true
+        if (view == null) {
+            engineUnavailable = true
+            // No load can be in flight without an engine (v0.139.0).
+            loading = false
+        }
         return view
     }
 

@@ -1258,31 +1258,45 @@ class Store(context: Context) {
     // hits are accumulated in memory and flushed to preferences only
     // every BLOCKED_FLUSH_EVERY hits or when a few seconds have
     // passed — never one preferences write per blocked request.
+    //
+    // Threading (v0.139.0 network audit): every access to the three
+    // fields below is guarded by [blockedCounterLock]. The count
+    // path itself is posted to the main thread today, but the
+    // restore path runs on a background IO thread and the reset /
+    // flush paths run wherever the UI or lifecycle calls them —
+    // the old unguarded read-modify-write in noteBlocked could
+    // lose hits (or resurrect a restored/reset value) whenever two
+    // of those paths overlapped. The lock is uncontended in the
+    // common case and held only for field updates plus an async
+    // preferences apply, so the per-request cost stays negligible.
+    private val blockedCounterLock = Any()
     private var totalBlockedMemory: Long = -1L
     private var blockedPendingFlush: Int = 0
     private var blockedLastFlushAt: Long = 0L
 
     /** Lifetime total of blocked requests (WebView tabs only). */
     val totalBlocked: Long
-        get() {
+        get() = synchronized(blockedCounterLock) {
             if (totalBlockedMemory < 0) {
                 totalBlockedMemory = safeLong(KEY_TOTAL_BLOCKED, 0L)
             }
-            return totalBlockedMemory
+            totalBlockedMemory
         }
 
     /** Count one more blocked request (same call path as the per-page count). */
     fun noteBlocked() {
-        val now = System.currentTimeMillis()
-        val updated = totalBlocked + 1
-        totalBlockedMemory = updated
-        blockedPendingFlush++
-        if (blockedPendingFlush >= BLOCKED_FLUSH_EVERY ||
-            now - blockedLastFlushAt >= BLOCKED_FLUSH_MS
-        ) {
-            blockedPendingFlush = 0
-            blockedLastFlushAt = now
-            prefs.edit().putLong(KEY_TOTAL_BLOCKED, updated).apply()
+        synchronized(blockedCounterLock) {
+            val now = System.currentTimeMillis()
+            val updated = totalBlocked + 1
+            totalBlockedMemory = updated
+            blockedPendingFlush++
+            if (blockedPendingFlush >= BLOCKED_FLUSH_EVERY ||
+                now - blockedLastFlushAt >= BLOCKED_FLUSH_MS
+            ) {
+                blockedPendingFlush = 0
+                blockedLastFlushAt = now
+                prefs.edit().putLong(KEY_TOTAL_BLOCKED, updated).apply()
+            }
         }
     }
 
@@ -1295,11 +1309,13 @@ class Store(context: Context) {
      * see the restored value at once.
      */
     fun restoreBlockedStats(total: Long) {
-        val cleanTotal = total.coerceAtLeast(0L)
-        totalBlockedMemory = cleanTotal
-        blockedPendingFlush = 0
-        blockedLastFlushAt = System.currentTimeMillis()
-        prefs.edit().putLong(KEY_TOTAL_BLOCKED, cleanTotal).apply()
+        synchronized(blockedCounterLock) {
+            val cleanTotal = total.coerceAtLeast(0L)
+            totalBlockedMemory = cleanTotal
+            blockedPendingFlush = 0
+            blockedLastFlushAt = System.currentTimeMillis()
+            prefs.edit().putLong(KEY_TOTAL_BLOCKED, cleanTotal).apply()
+        }
     }
 
     /**
@@ -1310,18 +1326,22 @@ class Store(context: Context) {
      * background, which is where process death normally follows.
      */
     fun flushBlockedCounter() {
-        if (blockedPendingFlush <= 0) return
-        blockedPendingFlush = 0
-        blockedLastFlushAt = System.currentTimeMillis()
-        prefs.edit().putLong(KEY_TOTAL_BLOCKED, totalBlocked).apply()
+        synchronized(blockedCounterLock) {
+            if (blockedPendingFlush <= 0) return
+            blockedPendingFlush = 0
+            blockedLastFlushAt = System.currentTimeMillis()
+            prefs.edit().putLong(KEY_TOTAL_BLOCKED, totalBlocked).apply()
+        }
     }
 
     /** Reset the lifetime blocked counter, effective at once. */
     fun resetTotalBlocked() {
-        totalBlockedMemory = 0L
-        blockedPendingFlush = 0
-        blockedLastFlushAt = System.currentTimeMillis()
-        prefs.edit().putLong(KEY_TOTAL_BLOCKED, 0L).apply()
+        synchronized(blockedCounterLock) {
+            totalBlockedMemory = 0L
+            blockedPendingFlush = 0
+            blockedLastFlushAt = System.currentTimeMillis()
+            prefs.edit().putLong(KEY_TOTAL_BLOCKED, 0L).apply()
+        }
     }
 
     fun loadCompatSites(): MutableSet<String> =
