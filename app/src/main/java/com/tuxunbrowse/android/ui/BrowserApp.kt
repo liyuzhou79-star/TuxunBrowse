@@ -4528,15 +4528,22 @@ fun BrowserApp(
                             context, "先打开一个网页再打印",
                             android.widget.Toast.LENGTH_SHORT
                         ).show()
-                        tab.engine == Engine.GECKO -> android.widget.Toast.makeText(
-                            context,
-                            "火狐标签不能打印，请切换到系统 WebView 再试",
-                            android.widget.Toast.LENGTH_LONG
-                        ).show()
-                        !tab.printPage(context) -> android.widget.Toast.makeText(
-                            context, "打印没能打开，请重试",
-                            android.widget.Toast.LENGTH_SHORT
-                        ).show()
+                        else -> {
+                            // Both engines print since v0.216.0 (the
+                            // Gecko path renders its PDF
+                            // asynchronously), so the synchronous
+                            // failure and a later async failure share
+                            // the one retry toast.
+                            val showRetry = {
+                                android.widget.Toast.makeText(
+                                    context, "打印没能打开，请重试",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                            if (!tab.printPage(context, showRetry)) {
+                                showRetry()
+                            }
+                        }
                     }
                 },
                 onOpenSniffer = {
@@ -17625,7 +17632,6 @@ private fun SettingsScreen(
                         ListItem(headlineContent = { Text("资源嗅探") })
                         ListItem(headlineContent = { Text("阅读模式与排版设置") })
                         ListItem(headlineContent = { Text("广告位隐藏") })
-                        ListItem(headlineContent = { Text("打印 / 存为 PDF") })
                         ListItem(headlineContent = { Text("内置净化脚本") })
                         ListItem(headlineContent = { Text("不要追踪") })
                         ListItem(headlineContent = { Text("停用 WebRTC") })
@@ -17683,6 +17689,15 @@ private fun SettingsScreen(
                             }
                         )
                         ListItem(headlineContent = { Text("页内查找（含计数）") })
+                        ListItem(
+                            headlineContent = { Text("打印 / 存为 PDF") },
+                            supportingContent = {
+                                Text(
+                                    "通路不同：火狐由内核先生成 PDF，" +
+                                        "再交给系统打印"
+                                )
+                            }
+                        )
                         ListItem(headlineContent = { Text("网页截图（当前屏幕）") })
                         ListItem(headlineContent = { Text("标签预览图") })
                         ListItem(

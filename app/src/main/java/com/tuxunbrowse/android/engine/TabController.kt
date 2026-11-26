@@ -52,6 +52,7 @@ import org.mozilla.geckoview.GeckoSession.PermissionDelegate
 import org.mozilla.geckoview.GeckoSession.PromptDelegate
 import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.GeckoView
+import org.mozilla.geckoview.GeckoViewPrintDocumentAdapter
 import org.mozilla.geckoview.StorageController
 import org.mozilla.geckoview.WebRequestError
 import org.mozilla.geckoview.WebResponse
@@ -1476,15 +1477,92 @@ class BrowserTab(
         }
     }
 
-    /** Print the page (or save as PDF) through the system print service. */
-    fun printPage(context: Context): Boolean {
-        val view = webView ?: return false
+    /**
+     * Print the page (or save as PDF) through the system print
+     * service.
+     *
+     * The WebView path is synchronous: the view's own print
+     * adapter goes straight to the print manager. A Gecko tab
+     * has no view adapter — instead the engine renders the PDF
+     * itself. GeckoSession.saveAsPdf() and the stock
+     * GeckoViewPrintDocumentAdapter both exist in the pinned
+     * GeckoView 132 AAR (method tables read out of the real
+     * classes.jar in the v0.216.0 old-conclusion review, second
+     * batch; the first weeks' "Gecko tabs cannot print" note
+     * does not hold). That call is asynchronous, so for a Gecko
+     * tab a `true` return only means the request was accepted;
+     * [onAsyncFailure] reports a later failure so the caller
+     * can show the same retry toast the synchronous path gets.
+     * No PrintDelegate is installed: the menu entry is the one
+     * print entry point in both engines, and window.print()
+     * stays as it is (the WebView side ignores it too).
+     */
+    fun printPage(
+        context: Context,
+        onAsyncFailure: (() -> Unit)? = null
+    ): Boolean {
+        val view = webView
+        if (view != null) {
+            return try {
+                val manager = context.getSystemService(
+                    Context.PRINT_SERVICE
+                ) as android.print.PrintManager
+                val jobName = title.ifBlank { "TuxunBrowse 网页" }
+                manager.print(
+                    jobName, view.createPrintDocumentAdapter(jobName), null
+                )
+                true
+            } catch (t: Throwable) {
+                false
+            }
+        }
+        val session = geckoSession ?: return false
         return try {
-            val manager = context.getSystemService(
-                Context.PRINT_SERVICE
-            ) as android.print.PrintManager
             val jobName = title.ifBlank { "TuxunBrowse 网页" }
-            manager.print(jobName, view.createPrintDocumentAdapter(jobName), null)
+            val mainHandler =
+                android.os.Handler(android.os.Looper.getMainLooper())
+            session.saveAsPdf().accept(
+                { stream ->
+                    mainHandler.post {
+                        // The tab may have been destroyed, slept
+                        // or rebuilt while the engine rendered;
+                        // a stale stream must not print over
+                        // whatever the user is looking at now —
+                        // same liveness guard as the thumbnail
+                        // and context-menu paths. Drop it quietly.
+                        if (geckoSession !== session) {
+                            try {
+                                stream?.close()
+                            } catch (t: Throwable) {
+                                // Nothing to salvage.
+                            }
+                        } else {
+                            try {
+                                if (stream == null) {
+                                    throw IllegalStateException(
+                                        "empty pdf"
+                                    )
+                                }
+                                val manager = context.getSystemService(
+                                    Context.PRINT_SERVICE
+                                ) as android.print.PrintManager
+                                manager.print(
+                                    jobName,
+                                    GeckoViewPrintDocumentAdapter(
+                                        stream, context
+                                    ),
+                                    null
+                                )
+                            } catch (t: Throwable) {
+                                onAsyncFailure?.invoke()
+                            }
+                        }
+                    }
+                },
+                {
+                    mainHandler.post { onAsyncFailure?.invoke() }
+                }
+            )
             true
         } catch (t: Throwable) {
             false
