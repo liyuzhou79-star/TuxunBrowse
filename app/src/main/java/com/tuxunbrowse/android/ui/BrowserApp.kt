@@ -15365,6 +15365,25 @@ private fun fpSelfCheckProbe(expJson: String): String = """
     }
     return h;
   }
+  // Voices arrival order (v0.222.0): captured before any
+  // other probe runs — how many voices the FIRST read of
+  // this page sees, and whether a voiceschanged arrives
+  // during the run. Chrome delivers the list WITH the
+  // event: a cold page reads [], the event fires, then
+  // the list is there. A list already complete before
+  // any event is the table-served shape. The row itself
+  // is graded where the voices row settles (below); a
+  // warm first read (event already gone before this
+  // probe started) proves nothing and grades 'na'.
+  var voiceColdCount = -1;
+  var voiceEventSeen = false;
+  try {
+    if (window.speechSynthesis) {
+      voiceColdCount = speechSynthesis.getVoices().length;
+      speechSynthesis.addEventListener('voiceschanged',
+        function () { voiceEventSeen = true; });
+    }
+  } catch (e) {}
   try {
     row('语言', navigator.language === EXP.language
       ? 'ok' : 'bad', String(navigator.language));
@@ -15836,6 +15855,78 @@ private fun fpSelfCheckProbe(expJson: String): String = """
       typeof RTCPeerConnection === 'function' ? 'ok' : 'bad',
       typeof RTCPeerConnection);
   } catch (e) { row('WebRTC 在场', 'bad', '读取失败'); }
+  try {
+    // RTC codec capabilities (v0.222.0): the Sender /
+    // Receiver statics answer with the host engine's real
+    // codec list — the same list the connection's own SDP
+    // offers carry, so the two agree by construction. A
+    // fabricated per-model list would contradict the SDP
+    // a page can read from createOffer, so the payload
+    // leaves this face alone; with no public per-model
+    // baseline to grade against, the row reports the
+    // counts as 'na', never dressed up as a pass.
+    if (typeof RTCRtpSender !== 'undefined' &&
+        RTCRtpSender.getCapabilities) {
+      var vCaps = RTCRtpSender.getCapabilities('video');
+      var aCaps = RTCRtpSender.getCapabilities('audio');
+      var vNames = ((vCaps && vCaps.codecs) || []).map(
+        function (c) { return c.mimeType; }).join('、');
+      row('RTC 编解码能力', 'na',
+        '视频 ' + ((vCaps && vCaps.codecs.length) || 0) +
+        ' 项（' + vNames + '），音频 ' +
+        ((aCaps && aCaps.codecs.length) || 0) +
+        ' 项（与协商同源的真机清单，无逐机型基线可判）');
+    } else {
+      row('RTC 编解码能力', 'na', '无 getCapabilities');
+    }
+  } catch (e) { row('RTC 编解码能力', 'na', '读取失败'); }
+  try {
+    // Media-device constraints (v0.222.0): the supported-
+    // constraints table is a property of the engine
+    // build, not of the phone model — the persona and
+    // the host are both Chromium on Android, and there
+    // is no per-model table to answer from. The payload
+    // leaves it alone; the row reports the key count.
+    if (navigator.mediaDevices &&
+        navigator.mediaDevices.getSupportedConstraints) {
+      var cons =
+        navigator.mediaDevices.getSupportedConstraints();
+      var consCount = Object.keys(cons).filter(
+        function (k) { return cons[k]; }).length;
+      row('媒体设备约束', 'na',
+        '共 ' + consCount + ' 项（引擎级清单，' +
+        '不是机型面）');
+    } else {
+      row('媒体设备约束', 'na', '无 getSupportedConstraints');
+    }
+  } catch (e) { row('媒体设备约束', 'na', '读取失败'); }
+  try {
+    // Timer precision (v0.222.0): the step of
+    // performance.now() is an engine property — Chromium
+    // clamps it to 100us (5us on cross-origin-isolated
+    // pages) and the WebView shares the clamp, so the
+    // persona inherits the host's step untouched and it
+    // is the CHROME step either way. Measure the smallest
+    // positive step over a tight loop and grade against
+    // the two documented Chromium values.
+    var step = Infinity;
+    var prevT = performance.now();
+    for (var ti = 0; ti < 3000; ti++) {
+      var tNow = performance.now();
+      if (tNow > prevT && tNow - prevT < step) {
+        step = tNow - prevT;
+      }
+      prevT = tNow;
+    }
+    var stepOk = (step >= 0.08 && step <= 0.12) ||
+      (step >= 0.003 && step <= 0.007);
+    row('计时精度',
+      step === Infinity ? 'na' : (stepOk ? 'ok' : 'bad'),
+      step === Infinity ? '时钟未推进，测不到步长'
+        : 'performance.now 最小步长约 ' +
+          step.toFixed(4) + 'ms（Chromium 口径 0.1ms，' +
+          '隔离页 0.005ms）');
+  } catch (e) { row('计时精度', 'bad', '读取失败'); }
   var gpuSettled = false;
   var uaSettled = false;
   var mediaSettled = false;
@@ -15844,10 +15935,14 @@ private fun fpSelfCheckProbe(expJson: String): String = """
   var oriSettled = false;
   var battSettled = false;
   var permSettled = false;
+  var capsSettled = false;
+  var voiceOrderSettled = false;
+  var sensorBeatSettled = false;
   function maybeReport() {
     if (gpuSettled && uaSettled && mediaSettled &&
         voicesSettled && geoSettled && oriSettled &&
-        battSettled && permSettled) {
+        battSettled && permSettled && capsSettled &&
+        voiceOrderSettled && sensorBeatSettled) {
       FpSelfCheck.report(JSON.stringify(rows));
     }
   }
@@ -16099,12 +16194,174 @@ private fun fpSelfCheckProbe(expJson: String): String = """
     permSettled = true;
   }
   try {
+    // Media capabilities (v0.222.0): decodingInfo is
+    // answered by the host's real media stack (codec
+    // blocks differ per SoC and no public per-model
+    // answer table exists), and its sibling surfaces —
+    // canPlayType, MediaSource.isTypeSupported, actual
+    // playback — answer from the same stack, so a
+    // fabricated answer here would contradict them. The
+    // payload leaves the face alone; the row reports
+    // what the stack says about one canonical config
+    // as 'na', never dressed up as a pass.
+    if (navigator.mediaCapabilities &&
+        navigator.mediaCapabilities.decodingInfo) {
+      var capsDone = false;
+      setTimeout(function () {
+        if (capsDone) return;
+        capsDone = true;
+        row('媒体能力', 'na', '查询超时');
+        capsSettled = true; maybeReport();
+      }, 3000);
+      navigator.mediaCapabilities.decodingInfo({
+        type: 'file',
+        video: {
+          contentType: 'video/mp4; codecs="avc1.640028"',
+          width: 1920, height: 1080,
+          bitrate: 8000000, framerate: 30
+        }
+      }).then(function (info) {
+        if (capsDone) return;
+        capsDone = true;
+        row('媒体能力', 'na',
+          'H.264 1080p：supported=' + info.supported +
+          '，smooth=' + info.smooth +
+          '，powerEfficient=' + info.powerEfficient +
+          '（答复由真机解码栈给出，无逐机型基线可判）');
+        capsSettled = true; maybeReport();
+      }).catch(function () {
+        if (capsDone) return;
+        capsDone = true;
+        row('媒体能力', 'na', '查询被拒绝');
+        capsSettled = true; maybeReport();
+      });
+    } else {
+      row('媒体能力', 'na', '无 mediaCapabilities');
+      capsSettled = true;
+    }
+  } catch (e) {
+    row('媒体能力', 'na', '读取失败');
+    capsSettled = true;
+  }
+  try {
+    // Sensor cadence (v0.222.0): a page can time the
+    // motion stream it is served. Chromium's own nominal
+    // rate is public — kInertialSensorIntervalMillis
+    // = 50, the browser-side minimal interval between
+    // sensor data updates, with the renderer pump delay
+    // matched to it — so the mean gap between the first
+    // two dozen events grades against 50ms. The stream's
+    // perfect periodicity has no public jitter baseline
+    // and is not graded here.
+    if (EXP.sensorsOff) {
+      row('传感器节拍', 'off', '传感器保护已关闭');
+      sensorBeatSettled = true;
+    } else if (window.DeviceMotionEvent) {
+      var beatStamps = [];
+      var beatDone = false;
+      var beatListener = function () {
+        beatStamps.push(Date.now());
+        if (beatStamps.length >= 24 && !beatDone) {
+          beatDone = true;
+          finishBeat();
+        }
+      };
+      function finishBeat() {
+        try {
+          window.removeEventListener(
+            'devicemotion', beatListener);
+        } catch (e) {}
+        var gaps = [];
+        for (var bi = 1; bi < beatStamps.length; bi++) {
+          gaps.push(beatStamps[bi] - beatStamps[bi - 1]);
+        }
+        if (gaps.length < 8) {
+          row('传感器节拍', 'na',
+            '样本不足（' + gaps.length + ' 个间隔）');
+        } else {
+          var mean = gaps.reduce(function (a, b) {
+            return a + b;
+          }, 0) / gaps.length;
+          row('传感器节拍',
+            (mean >= 35 && mean <= 75) ? 'ok' : 'bad',
+            '平均间隔约 ' + mean.toFixed(0) +
+            'ms（Chromium 名义泵间隔 50ms）');
+        }
+        sensorBeatSettled = true; maybeReport();
+      }
+      window.addEventListener('devicemotion', beatListener);
+      setTimeout(function () {
+        if (beatDone) return;
+        beatDone = true;
+        if (beatStamps.length >= 2) {
+          finishBeat();
+        } else {
+          row('传感器节拍', 'na', '未收到运动事件');
+          sensorBeatSettled = true; maybeReport();
+        }
+      }, 4000);
+    } else {
+      row('传感器节拍', 'na', '无 DeviceMotionEvent');
+      sensorBeatSettled = true;
+    }
+  } catch (e) {
+    row('传感器节拍', 'bad', '读取失败');
+    sensorBeatSettled = true;
+  }
+  try {
     // Speech voices (v0.201.0): the list must be the PROFILE
     // region's TTS set, in count and in languages — a host
     // engine's voices (or an empty list where the payload
     // claims several) both read as 'bad'. getVoices can lag
     // behind voiceschanged, so an empty first read waits for
     // the event before judging.
+    // Arrival order (v0.222.0): graded from the cold
+    // read captured at the top of this probe. Cold-empty
+    // then populated-with-the-event is Chrome's form;
+    // complete-before-the-event is the table-served
+    // shape; a warm read whose event already went by
+    // before this probe started proves nothing ('na').
+    function settleVoiceOrder(how) {
+      if (voiceOrderSettled) return;
+      if (how === 'none') {
+        voiceOrderSettled = true;
+        row('语音到达顺序', 'na', '无 speechSynthesis');
+        return;
+      }
+      if (how === 'never') {
+        voiceOrderSettled = true;
+        row('语音到达顺序', 'na',
+          '列表始终未到达，无从判定顺序');
+        return;
+      }
+      if (voiceColdCount === 0) {
+        voiceOrderSettled = true;
+        row('语音到达顺序',
+          voiceEventSeen ? 'ok' : 'bad',
+          voiceEventSeen
+            ? '首读为空，列表随 voiceschanged 到达'
+            : '列表在无 voiceschanged 的情况下出现');
+        return;
+      }
+      if (voiceColdCount > 0 && voiceEventSeen) {
+        voiceOrderSettled = true;
+        row('语音到达顺序', 'bad',
+          '首读即有完整列表，其后才收到 voiceschanged' +
+          '（表格直出形态）');
+        return;
+      }
+      setTimeout(function () {
+        if (voiceOrderSettled) return;
+        voiceOrderSettled = true;
+        row('语音到达顺序',
+          voiceEventSeen ? 'bad' : 'na',
+          voiceEventSeen
+            ? '首读即有完整列表，其后才收到 ' +
+              'voiceschanged（表格直出形态）'
+            : '探针启动时列表已就绪，无法判定到达顺序');
+        maybeReport();
+      }, 400);
+    }
     if (window.speechSynthesis) {
       var voicesDone = false;
       function judgeVoices() {
@@ -16123,6 +16380,7 @@ private fun fpSelfCheckProbe(expJson: String): String = """
           row('语音列表', vOk ? 'ok' : 'bad',
             vs.length + ' 个语音：' + vlangs);
         } catch (e) { row('语音列表', 'bad', '读取失败'); }
+        settleVoiceOrder('arrived');
         voicesSettled = true; maybeReport();
         return true;
       }
@@ -16138,16 +16396,19 @@ private fun fpSelfCheckProbe(expJson: String): String = """
             row('语音列表', 'bad',
               '语音列表为空，与档案声称的 ' + EXP.voiceCount +
               ' 个对不上');
+            settleVoiceOrder('never');
             voicesSettled = true; maybeReport();
           }
         }, 3000);
       }
     } else {
       row('语音列表', 'na', '无 speechSynthesis');
+      settleVoiceOrder('none');
       voicesSettled = true;
     }
   } catch (e) {
     row('语音列表', 'bad', '读取失败');
+    settleVoiceOrder('none');
     voicesSettled = true;
   }
   try {

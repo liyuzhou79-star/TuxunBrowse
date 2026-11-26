@@ -1311,9 +1311,23 @@ object FingerprintScript {
       return v;
     });
     var origGetVoices = speechSynthesis.getVoices;
+    // Delivery form (v0.222.0): Chrome does not hand the
+    // catalogue to the first synchronous call — the list is
+    // owned by the browser process, a cold page's first
+    // getVoices() returns [], and the voiceschanged event
+    // is what delivers it. Serving the full list from the
+    // first instant was a shape no real Chrome cold page
+    // produces, so the list stays gated until the same
+    // timer that fires the event flips it ready; a handler
+    // calling getVoices() inside voiceschanged already
+    // sees the list, exactly like the real delivery.
+    var voicesReady = false;
     setMethodOn(speechSynthesis, 'getVoices',
-      fixFn(function () { return list.slice(); }, origGetVoices));
+      fixFn(function () {
+        return voicesReady ? list.slice() : [];
+      }, origGetVoices));
     setTimeout(function () {
+      voicesReady = true;
       try {
         var evt = new Event('voiceschanged');
         speechSynthesis.dispatchEvent(evt);
@@ -1964,12 +1978,28 @@ object FingerprintScript {
       var ph = propHandlers[type];
       if (ph) { try { ph.call(window, ev); } catch (e) {} }
     }
+    // Cadence (v0.222.0): the stream ticks at Chromium's
+    // own nominal sensor rate — kInertialSensorInterval
+    // Millis = 50 in the Chromium source (the browser-side
+    // minimal interval between sensor data updates, with
+    // the renderer pump delay matched to it). The stream
+    // used to tick at 100 ms, twice the engine's nominal
+    // rate, and the devicemotion interval field said the
+    // same 100; both now say 50. The wobble divisors and
+    // the compass drift step are halved with the tick so
+    // the motion story's wall-clock shape is unchanged —
+    // only the cadence moved. Recorded residual: the tick
+    // is perfectly periodic and the drift perfectly
+    // linear, where a real sensor stream jitters; no
+    // public dataset describes that jitter's distribution,
+    // and inventing one would be fabrication, so the
+    // periodicity stays as the known limit of this face.
     setInterval(function () {
       tick++;
-      var beta = betaBase + Math.sin(tick / 9) * 0.6;
-      var gamma = gammaBase + Math.cos(tick / 13) * 0.5;
+      var beta = betaBase + Math.sin(tick / 18) * 0.6;
+      var gamma = gammaBase + Math.cos(tick / 26) * 0.5;
       if (window.DeviceOrientationEvent) {
-        var alphaNow = (alphaBase + tick * 0.02) % 360;
+        var alphaNow = (alphaBase + tick * 0.01) % 360;
         dispatch('deviceorientation',
           new DeviceOrientationEvent('deviceorientation', {
             alpha: alphaNow,
@@ -1997,10 +2027,10 @@ object FingerprintScript {
               z: Math.cos(br) * Math.cos(gr) * 9.81
             },
             rotationRate: { alpha: 0, beta: 0, gamma: 0 },
-            interval: 100
+            interval: 50
           }));
       }
-    }, 100);
+    }, 50);
   });
 
   section(function () {
