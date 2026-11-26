@@ -205,6 +205,12 @@ object FingerprintScript {
   var FP_OPT_SENSORS = ${protection.sensors};
   var FP_OPT_BATTERY = ${protection.battery};
   var FP_OPT_CHROME = ${protection.chromeObject};
+  var FP_OPT_TIMEZONE = ${protection.timezone};
+  var FP_OPT_LANGUAGE = ${protection.language};
+  var FP_OPT_GEO = ${protection.geolocation};
+  var FP_OPT_SCREEN = ${protection.screen};
+  var FP_OPT_IDENTITY = ${protection.deviceIdentity};
+  var FP_OPT_CONNECTION = ${protection.connection};
   var LANG = ${jsStr(resolved.language)};
   var TZ = ${jsStr(tz.id)};
   var ZONE_NAME = ${jsStr(tz.zoneName)};
@@ -372,21 +378,35 @@ object FingerprintScript {
 
   section(function () {
     var nav = window.Navigator ? Navigator.prototype : navigator;
+    // Device identity (v0.224.0): the UA string, the platform,
+    // UA-CH and the hardware numbers are ONE switch — half
+    // profile, half host inside a single read would contradict
+    // itself, so they install together or not at all. Language
+    // rides its own switch beside them.
+    if (FP_OPT_IDENTITY) {
     def(nav, 'userAgent', ${jsStr(d.userAgent)});
     def(nav, 'platform', ${jsStr(FingerprintProfiles.PLATFORM)});
+    }
+    if (FP_OPT_LANGUAGE) {
     def(nav, 'language', LANG);
     def(nav, 'languages', Object.freeze([$languages]));
+    }
     // Belt and braces (v0.145.0): some detectors read the values
     // off the navigator instance in ways that bypass the prototype
     // getter, so pin the same answers on the instance itself.
+    if (FP_OPT_LANGUAGE) {
     def(navigator, 'language', LANG);
     def(navigator, 'languages', Object.freeze([$languages]));
+    }
     // Platform joins the instance pinning (v0.192.0): the
     // prototype def above already covers ordinary reads,
     // but a detector that grabbed the instance early (or a
     // realm where the prototype def was refused) should
     // still meet the profile's answer, not the host's.
+    if (FP_OPT_IDENTITY) {
     def(navigator, 'platform', ${jsStr(FingerprintProfiles.PLATFORM)});
+    }
+    if (FP_OPT_IDENTITY) {
     def(nav, 'hardwareConcurrency', ${d.hardwareConcurrency});
     def(nav, 'deviceMemory', ${d.deviceMemory});
     var brands = [$brandsJs];
@@ -429,9 +449,11 @@ object FingerprintScript {
       return { brands: brands, mobile: true, platform: '${FingerprintProfiles.UA_PLATFORM}' };
     });
     def(nav, 'userAgentData', uaData);
+    }
   });
 
   section(function () {
+    if (!FP_OPT_SCREEN) return;
     var scr = window.Screen ? Screen.prototype : screen;
     // Screen geometry follows posture (v0.192.0,
     // borrowed-table item 7): the stored pair is the
@@ -529,6 +551,7 @@ object FingerprintScript {
       (asUTC - Math.floor(date.getTime() / 1000) * 1000) / 60000);
   }
   section(function () {
+    if (!FP_OPT_TIMEZONE && !FP_OPT_LANGUAGE) return;
     // supportedLocalesOf without .bind (v0.220.0): a bound
     // function reports name 'bound supportedLocalesOf' and
     // stringifies as 'function () { [native code] }' — the
@@ -542,9 +565,11 @@ object FingerprintScript {
     }
     function FpDTF(locales, options) {
       var opts = options ? Object.assign({}, options) : {};
-      if (!opts.timeZone) opts.timeZone = TZ;
-      var loc = (locales === undefined || locales === null ||
-        (Array.isArray(locales) && locales.length === 0)) ? LANG : locales;
+      if (!opts.timeZone && FP_OPT_TIMEZONE) opts.timeZone = TZ;
+      var loc = (FP_OPT_LANGUAGE &&
+        (locales === undefined || locales === null ||
+        (Array.isArray(locales) && locales.length === 0)))
+        ? LANG : locales;
       return new OrigDTF(loc, opts);
     }
     FpDTF.prototype = OrigDTF.prototype;
@@ -557,6 +582,7 @@ object FingerprintScript {
     });
     fixFn(FpDTF, OrigDTF);
     setMethod(Intl, 'DateTimeFormat', FpDTF);
+    if (FP_OPT_LANGUAGE) {
     var OrigNF = Intl.NumberFormat;
     function FpNF(locales, options) {
       var loc = (locales === undefined || locales === null ||
@@ -603,8 +629,10 @@ object FingerprintScript {
         fixFn(FpIntlCtor, Orig);
         setMethod(Intl, name, FpIntlCtor);
       });
+    }
   });
   section(function () {
+    if (!FP_OPT_TIMEZONE) return;
     setMethod(Date.prototype, 'getTimezoneOffset',
       fixFn(function () {
         return -tzOffsetMinutes(this);
@@ -850,6 +878,7 @@ object FingerprintScript {
   });
 
   section(function () {
+    if (!FP_OPT_GEO) return;
     if (!navigator.geolocation) return;
     var proto = Object.getPrototypeOf(navigator.geolocation);
     // Position shape (v0.208.0): the answer used to be a plain
@@ -1299,10 +1328,23 @@ object FingerprintScript {
     // the device TTS engine, so it must name the PROFILE region's
     // engine, not the host's. Voice objects are built on the real
     // SpeechSynthesisVoice prototype so instanceof checks hold.
-    if (!window.speechSynthesis || !window.SpeechSynthesisVoice) return;
+    // The interface guard changed in v0.224.0: a real-device
+    // CreepJS report showed the whole Speech block empty, and
+    // the section's own guard was the suspect — on a WebView
+    // build that does not expose the SpeechSynthesisVoice
+    // interface the section died silently and pages read the
+    // engine's own (still-empty) list inside CreepJS's 300 ms
+    // patience, reported as blocked. The geolocation section
+    // learned this shape in v0.208.0: build on the real
+    // prototype when it exists, on Object.prototype when it
+    // does not — a page cannot instanceof against an interface
+    // its own engine never exposed either.
+    if (!FP_OPT_LANGUAGE) return;
+    if (!window.speechSynthesis) return;
     var defs = [$voices];
     var list = defs.map(function (d) {
-      var v = Object.create(SpeechSynthesisVoice.prototype);
+      var v = Object.create(window.SpeechSynthesisVoice
+        ? SpeechSynthesisVoice.prototype : Object.prototype);
       def(v, 'name', d.name);
       def(v, 'voiceURI', d.name);
       def(v, 'lang', d.lang);
@@ -1344,6 +1386,7 @@ object FingerprintScript {
     // Only whole single-feature queries are intercepted — the
     // shape detectors probe with; compound queries fall through
     // to the real matchMedia untouched.
+    if (!FP_OPT_SCREEN) return;
     if (!window.matchMedia) return;
     var GAMUT = ${jsStr(p.colorGamut)};
     var HDR = ${p.dynamicRangeHigh};
@@ -1433,6 +1476,7 @@ object FingerprintScript {
     // Network story (v0.145.0): a healthy 4g link in the
     // profile's region, on the real NetworkInformation
     // prototype, instead of whatever radio the host is on.
+    if (!FP_OPT_CONNECTION) return;
     var proto = window.NetworkInformation
       ? NetworkInformation.prototype : null;
     var conn = proto ? Object.create(proto) : {};
@@ -2140,7 +2184,7 @@ object FingerprintScript {
           ? 'prompt' : Notification.permission;
         return fpPermissionStatus('notifications', state);
       }
-      if (desc && desc.name === 'geolocation') {
+      if (desc && desc.name === 'geolocation' && FP_OPT_GEO) {
         // Agreement with the geolocation section (v0.208.0):
         // the engine's own state can never tell this story —
         // the app disables geolocation at the settings level

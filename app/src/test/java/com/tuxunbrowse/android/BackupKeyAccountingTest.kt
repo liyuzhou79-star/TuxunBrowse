@@ -73,6 +73,7 @@ class BackupKeyAccountingTest {
         "fp_timezone" to Disposition.DEVICE_LOCAL,
         "fp_device" to Disposition.DEVICE_LOCAL,
         "fp_language" to Disposition.DEVICE_LOCAL,
+        "fp_seed" to Disposition.DEVICE_LOCAL,
         "fp_protect" to Disposition.DEVICE_LOCAL,
         "fp_proxy" to Disposition.DEVICE_LOCAL,
         "fp_proxies" to Disposition.DEVICE_LOCAL,

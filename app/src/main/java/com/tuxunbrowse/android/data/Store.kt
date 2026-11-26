@@ -261,12 +261,7 @@ fun customFingerprintAdmission(
     entry: com.tuxunbrowse.android.engine.CustomFingerprint
 ): Boolean {
     if (current.size >= MAX_CUSTOM_FINGERPRINTS) return false
-    return current.none {
-        it.regionId == entry.regionId &&
-            it.deviceId == entry.deviceId &&
-            it.timezoneId == entry.timezoneId &&
-            it.language == entry.language
-    }
+    return current.none { it.sameCombinationAs(entry) }
 }
 
 /** One address-bar suggestion row, from a bookmark or a history entry. */
@@ -1308,6 +1303,18 @@ class Store(private val context: Context) {
         set(value) = prefs.edit().putString(KEY_FP_LANGUAGE, value).apply()
 
     /**
+     * The live selection's per-entry noise seed (v0.224.0):
+     * 0 = the region+device table seed (every picker-picked
+     * combination); a non-zero value belongs to the applied
+     * random-device entry and is stored with that entry, so
+     * re-applying the entry restores the same identity. Same
+     * fp_* family: device-local, never in backups.
+     */
+    var fingerprintSeed: Int
+        get() = safeInt(KEY_FP_SEED, 0)
+        set(value) = prefs.edit().putInt(KEY_FP_SEED, value).apply()
+
+    /**
      * The host WebView's own Chrome version (v0.176.0), read
      * once per process — the system WebView's version cannot
      * change under a running app. Null when unreadable; the
@@ -1329,16 +1336,20 @@ class Store(private val context: Context) {
 
     /** The live fingerprint combination the mode runs with. */
     fun resolvedFingerprint():
-        com.tuxunbrowse.android.engine.ResolvedFingerprint =
-        com.tuxunbrowse.android.engine.FingerprintProfiles
-            .withHostChrome(
-                com.tuxunbrowse.android.engine.FingerprintProfiles
-                    .resolve(
-                        fingerprintRegionId, fingerprintTimezoneId,
-                        fingerprintDeviceId, fingerprintLanguage
-                    ),
-                hostChrome
+        com.tuxunbrowse.android.engine.ResolvedFingerprint {
+        val base = com.tuxunbrowse.android.engine.FingerprintProfiles
+            .resolve(
+                fingerprintRegionId, fingerprintTimezoneId,
+                fingerprintDeviceId, fingerprintLanguage
             )
+        val seeded = if (fingerprintSeed != 0) {
+            base.copy(seedOverride = fingerprintSeed)
+        } else {
+            base
+        }
+        return com.tuxunbrowse.android.engine.FingerprintProfiles
+            .withHostChrome(seeded, hostChrome)
+    }
 
     /**
      * The user's saved fingerprint combinations (v0.146.0,
@@ -1357,7 +1368,8 @@ class Store(private val context: Context) {
                 deviceId = obj.optString("d"),
                 timezoneId = obj.optString("t"),
                 language = obj.optString("l"),
-                label = obj.optString("label")
+                label = obj.optString("label"),
+                seed = obj.optInt("s", 0)
             )
         }
 
@@ -1388,8 +1400,16 @@ class Store(private val context: Context) {
      */
     fun fingerprintComboKey(): String {
         val resolved = resolvedFingerprint()
-        return com.tuxunbrowse.android.engine.FpStorageNames
+        val base = com.tuxunbrowse.android.engine.FpStorageNames
             .keyOf(resolved.profile.regionId, resolved.device.id)
+        // A seeded (random-device) selection is its own persona
+        // unit: its proxy config must not bleed into the plain
+        // combination's slot, nor the other way round.
+        return if (resolved.seedOverride != null) {
+            base + "|s" + resolved.seedOverride
+        } else {
+            base
+        }
     }
 
     /**
@@ -1471,6 +1491,14 @@ class Store(private val context: Context) {
         val resolved = resolvedFingerprint()
         val regionId = resolved.profile.regionId
         val deviceId = resolved.device.id
+        // Seeded selections (v0.224.0) bind their own jar by
+        // construction; they never take part in the legacy
+        // owner settlement below, which is about the one
+        // pre-isolation identity only.
+        resolved.seedOverride?.let { seed ->
+            return com.tuxunbrowse.android.engine.FpStorageNames
+                .nameForSeeded(regionId, deviceId, seed)
+        }
         var owner = safeString(KEY_FP_STORAGE_OWNER, null)
         if (owner == null) {
             owner = if (
@@ -1576,21 +1604,19 @@ class Store(private val context: Context) {
                     .put("t", item.timezoneId)
                     .put("l", item.language)
                     .put("label", item.label)
+                    .put("s", item.seed)
             )
         }
         prefs.edit().putString(KEY_FP_CUSTOM, arr.toString()).apply()
         return true
     }
 
-    /** Drop the saved combination with the same four ids. */
+    /** Drop the saved combination with the same ids and seed. */
     fun removeCustomFingerprint(
         entry: com.tuxunbrowse.android.engine.CustomFingerprint
     ) {
         val kept = customFingerprints().filterNot {
-            it.regionId == entry.regionId &&
-                it.deviceId == entry.deviceId &&
-                it.timezoneId == entry.timezoneId &&
-                it.language == entry.language
+            it.sameCombinationAs(entry)
         }
         val arr = JSONArray()
         for (item in kept) {
@@ -1601,6 +1627,7 @@ class Store(private val context: Context) {
                     .put("t", item.timezoneId)
                     .put("l", item.language)
                     .put("label", item.label)
+                    .put("s", item.seed)
             )
         }
         prefs.edit().putString(KEY_FP_CUSTOM, arr.toString()).apply()
@@ -1982,6 +2009,7 @@ class Store(private val context: Context) {
         private const val KEY_FP_TIMEZONE = "fp_timezone"
         private const val KEY_FP_DEVICE = "fp_device"
         private const val KEY_FP_LANGUAGE = "fp_language"
+        private const val KEY_FP_SEED = "fp_seed"
         private const val KEY_FP_CUSTOM = "fp_custom"
         private const val KEY_FP_PROTECT = "fp_protect"
         private const val KEY_FP_PROXY = "fp_proxy"

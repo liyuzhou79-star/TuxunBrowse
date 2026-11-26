@@ -390,7 +390,10 @@ class FingerprintConsistencyTest {
     fun protectionJsonRoundTrips() {
         val p = FingerprintProtection(
             canvasNoise = false, sensors = false,
-            chromeObject = false
+            chromeObject = false,
+            timezone = false, language = false,
+            geolocation = false, screen = false,
+            deviceIdentity = false, connection = false
         )
         val back = FingerprintProtection.fromJson(p.toJson())
         assertEquals(p, back)
@@ -446,5 +449,78 @@ class FingerprintConsistencyTest {
         )
         assertTrue(noSensors.contains("var FP_OPT_SENSORS = false;"))
         assertTrue(noSensors.contains("var FP_OPT_CANVAS = true;"))
+    }
+
+    @Test
+    fun coreSurfaceSwitchesGateTheirOwnPayloadSections() {
+        // v0.224.0: the six always-on core surfaces became
+        // real switches. Each flag exists in the default
+        // payload, each gated section checks its flag, and
+        // turning one off flips exactly its own flag.
+        val resolved = FingerprintProfiles.resolve(
+            "jp", "Asia/Tokyo", "pixel8", "ja-JP"
+        )
+        val allOn = FingerprintScript.payload(resolved)
+        for (flag in listOf(
+            "FP_OPT_TIMEZONE", "FP_OPT_LANGUAGE", "FP_OPT_GEO",
+            "FP_OPT_SCREEN", "FP_OPT_IDENTITY",
+            "FP_OPT_CONNECTION"
+        )) {
+            assertTrue(
+                "default payload must carry $flag on",
+                allOn.contains("var $flag = true;")
+            )
+        }
+        // Section guards, in the established shape.
+        assertTrue(allOn.contains("if (!FP_OPT_TIMEZONE) return;"))
+        assertTrue(allOn.contains("if (!FP_OPT_GEO) return;"))
+        assertTrue(allOn.contains("if (!FP_OPT_SCREEN) return;"))
+        assertTrue(allOn.contains("if (!FP_OPT_CONNECTION) return;"))
+        assertTrue(allOn.contains("if (!FP_OPT_LANGUAGE) return;"))
+        // The Intl section serves two switches and stands
+        // down only when both are off; its DateTimeFormat
+        // wrapper defaults each half under its own flag.
+        assertTrue(
+            allOn.contains(
+                "if (!FP_OPT_TIMEZONE && !FP_OPT_LANGUAGE) return;"
+            )
+        )
+        assertTrue(
+            allOn.contains(
+                "if (!opts.timeZone && FP_OPT_TIMEZONE)"
+            )
+        )
+        // Identity is one switch for the whole navigator
+        // face, UA-CH included.
+        assertTrue(allOn.contains("if (FP_OPT_IDENTITY) {"))
+        // The permissions section's geolocation branch
+        // follows the geolocation switch, so the two
+        // surfaces can never disagree about the grant.
+        assertTrue(
+            allOn.contains(
+                "desc.name === 'geolocation' && FP_OPT_GEO"
+            )
+        )
+        val noTimezone = FingerprintScript.payload(
+            resolved,
+            FingerprintProtection(timezone = false)
+        )
+        assertTrue(
+            noTimezone.contains("var FP_OPT_TIMEZONE = false;")
+        )
+        assertTrue(
+            noTimezone.contains("var FP_OPT_LANGUAGE = true;")
+        )
+        assertTrue(noTimezone != allOn)
+        val noIdentity = FingerprintScript.payload(
+            resolved,
+            FingerprintProtection(deviceIdentity = false)
+        )
+        assertTrue(
+            noIdentity.contains("var FP_OPT_IDENTITY = false;")
+        )
+        assertTrue(
+            noIdentity.contains("var FP_OPT_TIMEZONE = true;")
+        )
     }
 }

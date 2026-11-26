@@ -2323,12 +2323,20 @@ fun BrowserApp(
         regionId: String,
         timezoneId: String,
         deviceId: String,
-        language: String
+        language: String,
+        seed: Int? = null
     ) {
         store.fingerprintRegionId = regionId
         store.fingerprintTimezoneId = timezoneId
         store.fingerprintDeviceId = deviceId
         store.fingerprintLanguage = language
+        // Seed (v0.224.0): null keeps the live entry's seed (the
+        // protection-toggle rebuild path); an explicit value —
+        // 0 for picker picks, the entry's own for saved and
+        // random-device entries — becomes the live seed BEFORE
+        // the per-combination proxy read below, whose key is
+        // seed-aware.
+        if (seed != null) store.fingerprintSeed = seed
         // The proxy is saved per combination (v0.198.0): with
         // the selection now pointing at the new combination,
         // store.fpProxy reads THAT combination's config, and
@@ -4365,8 +4373,36 @@ fun BrowserApp(
                     onExit = { exitFingerprintMode() },
                     onProfileChange = { regionId, tzId, deviceId, language ->
                         applyFingerprintProfile(
-                            regionId, tzId, deviceId, language
+                            regionId, tzId, deviceId, language,
+                            seed = 0
                         )
+                    },
+                    onApplyCustomProfile = { entry ->
+                        applyFingerprintProfile(
+                            entry.regionId, entry.timezoneId,
+                            entry.deviceId, entry.language,
+                            seed = entry.seed
+                        )
+                    },
+                    onApplyRandomDevice = { entry ->
+                        // Save-then-switch as one step
+                        // (v0.224.0): an entry already in the
+                        // library counts as saved; a full
+                        // library refuses WITHOUT switching, so
+                        // the reset flow can say so honestly.
+                        val saved = store.customFingerprints()
+                            .any { it.sameCombinationAs(entry) } ||
+                            store.addCustomFingerprint(entry)
+                        if (saved) {
+                            applyFingerprintProfile(
+                                entry.regionId, entry.timezoneId,
+                                entry.deviceId, entry.language,
+                                seed = entry.seed
+                            )
+                            true
+                        } else {
+                            false
+                        }
                     },
                     customProfiles = store.customFingerprints(),
                     onSaveCustomProfile = { store.addCustomFingerprint(it) },
@@ -13718,6 +13754,15 @@ private fun FingerprintShell(
         { false },
     onDeleteCustomProfile: (com.tuxunbrowse.android.engine.CustomFingerprint) -> Unit =
         {},
+    // Applying a SAVED entry (v0.224.0): carries the entry's
+    // own seed, unlike a picker pick, which clears it.
+    onApplyCustomProfile: (com.tuxunbrowse.android.engine.CustomFingerprint) -> Unit =
+        {},
+    // The random-device flow's final step (v0.224.0): save the
+    // chosen candidate and switch to it as one step; false
+    // means the library is full and nothing was switched.
+    onApplyRandomDevice: (com.tuxunbrowse.android.engine.CustomFingerprint) -> Boolean =
+        { false },
     isBookmarked: Boolean = false,
     onToggleBookmark: () -> Unit = {},
     onOpenDownloads: () -> Unit = {},
@@ -13809,10 +13854,7 @@ private fun FingerprintShell(
                     var refusedByCap = 0
                     for (entry in parsed) {
                         if (customs.none {
-                                it.regionId == entry.regionId &&
-                                    it.deviceId == entry.deviceId &&
-                                    it.timezoneId == entry.timezoneId &&
-                                    it.language == entry.language
+                                it.sameCombinationAs(entry)
                             }
                         ) {
                             // The store is the authority: it
@@ -14297,6 +14339,47 @@ private fun FingerprintShell(
                         onProtectionChange = onProtectionChange,
                         proxyConfig = proxyConfig,
                         onProxyChange = onProxyChange,
+                        onSaveCurrentToLibrary = {
+                            // The reset flow's promise keeper
+                            // (v0.224.0): the CURRENT combination
+                            // (with its seed, when it is itself a
+                            // random-device entry) lands in
+                            // 「我的档案」 before any switch, so
+                            // "you can switch back" is true.
+                            val entry =
+                                com.tuxunbrowse.android.engine
+                                    .CustomFingerprint(
+                                        regionId = profile.regionId,
+                                        deviceId = device.id,
+                                        timezoneId = zone.id,
+                                        language = resolved.language,
+                                        label = "${profile.regionLabel} · " +
+                                            "${device.deviceModel} · " +
+                                            zone.city,
+                                        seed = resolved.seedOverride
+                                            ?: 0
+                                    )
+                            when {
+                                customs.any {
+                                    it.sameCombinationAs(entry)
+                                } -> true
+                                onSaveCustomProfile(entry) -> {
+                                    customs = customs + entry
+                                    true
+                                }
+                                else -> false
+                            }
+                        },
+                        onApplyRandomDevice = { entry ->
+                            val applied = onApplyRandomDevice(entry)
+                            if (applied && customs.none {
+                                    it.sameCombinationAs(entry)
+                                }
+                            ) {
+                                customs = customs + entry
+                            }
+                            applied
+                        },
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
@@ -15184,13 +15267,12 @@ private fun FingerprintShell(
                                         language = resolved.language,
                                         label = "${profile.regionLabel} · " +
                                             "${device.deviceModel} · " +
-                                            zone.city
+                                            zone.city,
+                                        seed = resolved.seedOverride
+                                            ?: 0
                                     )
                             if (customs.none {
-                                    it.regionId == entry.regionId &&
-                                        it.deviceId == entry.deviceId &&
-                                        it.timezoneId == entry.timezoneId &&
-                                        it.language == entry.language
+                                    it.sameCombinationAs(entry)
                                 } &&
                                 onSaveCustomProfile(entry)
                             ) {
@@ -15233,10 +15315,7 @@ private fun FingerprintShell(
                 items(customs) { entry ->
                     ElevatedCard(
                         onClick = {
-                            onProfileChange(
-                                entry.regionId, entry.timezoneId,
-                                entry.deviceId, entry.language
-                            )
+                            onApplyCustomProfile(entry)
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -15385,8 +15464,11 @@ private fun fpSelfCheckProbe(expJson: String): String = """
     }
   } catch (e) {}
   try {
-    row('语言', navigator.language === EXP.language
-      ? 'ok' : 'bad', String(navigator.language));
+    row('语言', EXP.languageOff ? 'off'
+      : (navigator.language === EXP.language
+        ? 'ok' : 'bad'),
+      EXP.languageOff ? '已在保护选项里关闭'
+        : String(navigator.language));
   } catch (e) { row('语言', 'bad', '读取失败'); }
   try {
     // The full fallback chain (v0.194.0): a real-device report
@@ -15394,8 +15476,9 @@ private fun fpSelfCheckProbe(expJson: String): String = """
     // primary language is part of the claim, so the probe
     // compares the whole list, not just its head.
     var langs = (navigator.languages || []).join(',');
-    row('语言列表', langs === EXP.languages ? 'ok' : 'bad',
-      langs);
+    row('语言列表', EXP.languageOff ? 'off'
+      : (langs === EXP.languages ? 'ok' : 'bad'),
+      EXP.languageOff ? '已在保护选项里关闭' : langs);
   } catch (e) { row('语言列表', 'bad', '读取失败'); }
   // The request-header language (v0.201.0): Accept-Language is
   // the one language surface a local probe CANNOT read — a page
@@ -15413,7 +15496,9 @@ private fun fpSelfCheckProbe(expJson: String): String = """
     // link on the real NetworkInformation prototype; compare
     // all four fields the profile claims.
     var conn = navigator.connection;
-    if (conn) {
+    if (EXP.connectionOff) {
+      row('网络信息', 'off', '已在保护选项里关闭');
+    } else if (conn) {
       // downlinkMax joins the comparison (v0.210.0): the
       // payload pins it to Infinity for the claimed wifi
       // story; unpinned it read as an exception/undefined
@@ -15449,7 +15534,9 @@ private fun fpSelfCheckProbe(expJson: String): String = """
   } catch (e) { row('手柄', 'bad', '读取失败'); }
   try {
     var tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    row('时区', tz === EXP.tz ? 'ok' : 'bad', String(tz));
+    row('时区', EXP.timezoneOff ? 'off'
+      : (tz === EXP.tz ? 'ok' : 'bad'),
+      EXP.timezoneOff ? '已在保护选项里关闭' : String(tz));
   } catch (e) { row('时区', 'bad', '读取失败'); }
   try {
     // Local time + zone name (v0.207.0): the component
@@ -15481,20 +15568,26 @@ private fun fpSelfCheckProbe(expJson: String): String = """
       return p.type === 'timeZoneName';
     })[0].value;
     var nameOk = !!inString && inString[1] === longName;
-    row('本地时间与时区名', localOk && nameOk ? 'ok' : 'bad',
-      '本地 ' + now.getHours() + ' 点 ' + now.getMinutes() +
+    row('本地时间与时区名', EXP.timezoneOff ? 'off'
+      : (localOk && nameOk ? 'ok' : 'bad'),
+      EXP.timezoneOff ? '已在保护选项里关闭'
+      : ('本地 ' + now.getHours() + ' 点 ' + now.getMinutes() +
       ' 分，时区名 ' + (inString ? inString[1] : '（无）') +
       (nameOk ? '' : '，Intl 报 ' + longName) +
-      (localOk ? '' : '，本地分量与 Intl 对不上'));
+      (localOk ? '' : '，本地分量与 Intl 对不上')));
   } catch (e) { row('本地时间与时区名', 'bad', '读取失败'); }
   try {
-    row('机型（UA）',
-      navigator.userAgent.indexOf(EXP.uaModel) >= 0
-        ? 'ok' : 'bad', EXP.uaModel);
+    row('机型（UA）', EXP.identityOff ? 'off'
+      : (navigator.userAgent.indexOf(EXP.uaModel) >= 0
+        ? 'ok' : 'bad'),
+      EXP.identityOff ? '已在保护选项里关闭' : EXP.uaModel);
   } catch (e) { row('机型（UA）', 'bad', '读取失败'); }
   try {
-    row('平台标识', navigator.platform === EXP.platform
-      ? 'ok' : 'bad', String(navigator.platform));
+    row('平台标识', EXP.identityOff ? 'off'
+      : (navigator.platform === EXP.platform
+        ? 'ok' : 'bad'),
+      EXP.identityOff ? '已在保护选项里关闭'
+        : String(navigator.platform));
   } catch (e) { row('平台标识', 'bad', '读取失败'); }
   try {
     // UA brand list (v0.210.0): spelling, GREASE version
@@ -15508,8 +15601,9 @@ private fun fpSelfCheckProbe(expJson: String): String = """
     var ubs = ub.map(function (b) {
       return b.brand + ';' + b.version;
     }).join(',');
-    row('UA 品牌列表', ubs === EXP.brands ? 'ok' : 'bad',
-      ubs);
+    row('UA 品牌列表', EXP.identityOff ? 'off'
+      : (ubs === EXP.brands ? 'ok' : 'bad'),
+      EXP.identityOff ? '已在保护选项里关闭' : ubs);
   } catch (e) { row('UA 品牌列表', 'bad', '读取失败'); }
   try {
     var land = !!(screen.orientation &&
@@ -15521,9 +15615,11 @@ private fun fpSelfCheckProbe(expJson: String): String = """
       screen.height === eh &&
       screen.availWidth <= screen.width &&
       screen.availHeight <= screen.height;
-    row('屏幕尺寸', scrOk ? 'ok' : 'bad',
-      screen.width + '×' + screen.height +
-      (land ? '（横屏）' : '（竖屏）'));
+    row('屏幕尺寸', EXP.screenOff ? 'off'
+      : (scrOk ? 'ok' : 'bad'),
+      EXP.screenOff ? '已在保护选项里关闭'
+      : (screen.width + '×' + screen.height +
+      (land ? '（横屏）' : '（竖屏）')));
   } catch (e) { row('屏幕尺寸', 'bad', '读取失败'); }
   try {
     // Orientation agreement (v0.208.0): the payload never
@@ -15544,8 +15640,10 @@ private fun fpSelfCheckProbe(expJson: String): String = """
       var shapeOk = isLand
         ? screen.width >= screen.height
         : screen.height >= screen.width;
-      row('屏幕方向', pairOk && shapeOk ? 'ok' : 'bad',
-        String(ori.type) + '／' + ori.angle + '°');
+      row('屏幕方向', EXP.screenOff ? 'off'
+        : (pairOk && shapeOk ? 'ok' : 'bad'),
+        EXP.screenOff ? '已在保护选项里关闭'
+        : (String(ori.type) + '／' + ori.angle + '°'));
     } else {
       row('屏幕方向', 'na', '无 orientation');
     }
@@ -15561,9 +15659,11 @@ private fun fpSelfCheckProbe(expJson: String): String = """
       ? uaStr.substring(8) : null;
     var avOk = expectAv !== null &&
       navigator.appVersion === expectAv;
-    row('UA 派生值', avOk ? 'ok' : 'bad',
-      avOk ? 'appVersion 与 UA 同源'
-        : 'appVersion 与 UA 对不上');
+    row('UA 派生值', EXP.identityOff ? 'off'
+      : (avOk ? 'ok' : 'bad'),
+      EXP.identityOff ? '已在保护选项里关闭'
+      : (avOk ? 'appVersion 与 UA 同源'
+        : 'appVersion 与 UA 对不上'));
   } catch (e) { row('UA 派生值', 'bad', '读取失败'); }
   try {
     // Clock agreement (v0.208.0): the profile zone moves
@@ -16129,7 +16229,10 @@ private fun fpSelfCheckProbe(expJson: String): String = """
     // the payload answers 'granted' there, because the
     // engine's own state (geolocation disabled app-wide)
     // would otherwise contradict a delivered position.
-    if (navigator.geolocation &&
+    if (EXP.geoOff) {
+      row('定位形态', 'off', '已在保护选项里关闭');
+      geoSettled = true;
+    } else if (navigator.geolocation &&
         navigator.geolocation.getCurrentPosition) {
       var geoDone = false;
       function geoRow(okState, detail) {
@@ -16536,7 +16639,12 @@ private fun fpSelfCheckProbe(expJson: String): String = """
         maybeReport();
       }, 400);
     }
-    if (window.speechSynthesis) {
+    if (EXP.languageOff) {
+      row('语音列表', 'off', '已在保护选项里关闭');
+      row('语音到达顺序', 'off', '已在保护选项里关闭');
+      voiceOrderSettled = true;
+      voicesSettled = true;
+    } else if (window.speechSynthesis) {
       var voicesDone = false;
       function judgeVoices() {
         if (voicesDone) return;
@@ -16729,6 +16837,13 @@ private fun FingerprintHome(
         com.tuxunbrowse.android.engine.FpProxyConfig(),
     onProxyChange: (com.tuxunbrowse.android.engine.FpProxyConfig) -> Unit =
         {},
+    // Random-device reset flow (v0.224.0): save the CURRENT
+    // combination into 「我的档案」 (false = library full), and
+    // save + switch to a chosen candidate as one step (false =
+    // library full, nothing switched).
+    onSaveCurrentToLibrary: () -> Boolean = { false },
+    onApplyRandomDevice: (com.tuxunbrowse.android.engine.CustomFingerprint) -> Boolean =
+        { false },
     modifier: Modifier = Modifier
 ) {
     val profile = resolved.profile
@@ -16736,6 +16851,24 @@ private fun FingerprintHome(
     val fpHomeContext = LocalContext.current
     var query by remember { mutableStateOf("") }
     var showProxyDialog by remember { mutableStateOf(false) }
+    // Device-fingerprint identity + reset flow state
+    // (v0.224.0). The identity is a pure function of the
+    // resolved combination; the expanded form is view state
+    // only — never persisted, and it re-masks whenever the
+    // identity changes or the page is left (plain remember).
+    val deviceIdentityId = remember(resolved) {
+        com.tuxunbrowse.android.engine.FingerprintIdentity
+            .idOf(resolved)
+    }
+    var idExpanded by remember { mutableStateOf(false) }
+    LaunchedEffect(deviceIdentityId) { idExpanded = false }
+    var resetStage by remember { mutableStateOf(0) }
+    var resetCandidates by remember {
+        mutableStateOf<
+            List<com.tuxunbrowse.android.engine.CustomFingerprint>
+        >(emptyList())
+    }
+    val resetRandom = remember { java.security.SecureRandom() }
     // Built-in fingerprint self-check (v0.184.0): a local-only
     // probe run. A throwaway WebView loads about:blank, the
     // CURRENT profile's payload is evaluated into it, and a
@@ -16821,6 +16954,12 @@ private fun FingerprintHome(
             .put("webglOff", !protection.webglDisguise)
             .put("fontOff", !protection.fontSet)
             .put("sensorsOff", !protection.sensors)
+            .put("timezoneOff", !protection.timezone)
+            .put("languageOff", !protection.language)
+            .put("geoOff", !protection.geolocation)
+            .put("screenOff", !protection.screen)
+            .put("identityOff", !protection.deviceIdentity)
+            .put("connectionOff", !protection.connection)
             .put("brands",
                 FingerprintProfiles.uaBrandList(
                     resolved.chromeMajor.toIntOrNull()
@@ -16976,7 +17115,205 @@ private fun FingerprintHome(
                 Text("时区：${zone.label} · ${zone.city}")
                 Text("定位：${zone.latitude}，${zone.longitude}")
                 Text("日期格式：${profile.dateFormatSample}")
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        "设备指纹：" +
+                            if (idExpanded) {
+                                deviceIdentityId
+                            } else {
+                                com.tuxunbrowse.android.engine
+                                    .FingerprintIdentity
+                                    .masked(deviceIdentityId)
+                            },
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(
+                        onClick = { idExpanded = !idExpanded }
+                    ) {
+                        Icon(
+                            if (idExpanded) {
+                                Icons.Filled.VisibilityOff
+                            } else {
+                                Icons.Filled.Visibility
+                            },
+                            contentDescription =
+                                if (idExpanded) {
+                                    "收起设备指纹"
+                                } else {
+                                    "展开设备指纹"
+                                }
+                        )
+                    }
+                    IconButton(
+                        onClick = { resetStage = 1 }
+                    ) {
+                        Icon(
+                            Icons.Filled.Refresh,
+                            contentDescription = "重置设备指纹"
+                        )
+                    }
+                }
             }
+        }
+        // Reset flow (v0.224.0): two confirmations, then a
+        // three-candidate pick. Cancelling at any stage changes
+        // nothing — the current combination is only written to
+        // 「我的档案」 at the moment a candidate is picked, in
+        // the same step that saves and switches to it.
+        if (resetStage == 1) {
+            AlertDialog(
+                onDismissRequest = { resetStage = 0 },
+                title = { Text("是否重置设备指纹？") },
+                text = {
+                    Text(
+                        "重置后会生成三个全新指纹供你选一个，" +
+                            "网站会把你认成一台全新的设备。" +
+                            "新指纹用它自己的存储，当前指纹的" +
+                            "登录和站点数据不会带过去。当前档案" +
+                            "会存进「我的档案」，随时能切回来。"
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = { resetStage = 2 }
+                    ) { Text("继续") }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = { resetStage = 0 }
+                    ) { Text("取消") }
+                }
+            )
+        }
+        if (resetStage == 2) {
+            AlertDialog(
+                onDismissRequest = { resetStage = 0 },
+                title = { Text("确认重置设备指纹？") },
+                text = {
+                    Text("确认后会随机生成三个新设备指纹供你选一个。")
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            resetCandidates =
+                                com.tuxunbrowse.android.engine
+                                    .FingerprintIdentity
+                                    .randomCandidates(
+                                        profile, zone.id,
+                                        resolved.language,
+                                        resolved,
+                                        nextRandom = {
+                                            resetRandom.nextInt()
+                                        }
+                                    )
+                            resetStage = 3
+                        }
+                    ) { Text("确认重置") }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = { resetStage = 0 }
+                    ) { Text("取消") }
+                }
+            )
+        }
+        if (resetStage == 3) {
+            AlertDialog(
+                onDismissRequest = { resetStage = 0 },
+                title = { Text("选一个新的设备指纹") },
+                text = {
+                    Column(
+                        verticalArrangement =
+                            Arrangement.spacedBy(8.dp)
+                    ) {
+                        resetCandidates.forEach { candidate ->
+                            val candidateProfile =
+                                com.tuxunbrowse.android.engine
+                                    .FingerprintProfiles
+                                    .region(candidate.regionId)
+                            val candidateDevice =
+                                candidateProfile.device(
+                                    candidate.deviceId
+                                )
+                            val candidateId =
+                                com.tuxunbrowse.android.engine
+                                    .FingerprintIdentity.idOf(
+                                        com.tuxunbrowse.android.engine
+                                            .FingerprintProfiles
+                                            .resolve(
+                                                candidate.regionId,
+                                                candidate.timezoneId,
+                                                candidate.deviceId,
+                                                candidate.language
+                                            ).copy(
+                                                seedOverride =
+                                                    candidate.seed
+                                            )
+                                    )
+                            ElevatedCard(
+                                onClick = {
+                                    resetStage = 0
+                                    if (!onSaveCurrentToLibrary()) {
+                                        android.widget.Toast
+                                            .makeText(
+                                                fpHomeContext,
+                                                "档案已满（最多 200 条），" +
+                                                    "先删掉不用的档案再重置",
+                                                android.widget.Toast
+                                                    .LENGTH_LONG
+                                            ).show()
+                                    } else if (
+                                        !onApplyRandomDevice(candidate)
+                                    ) {
+                                        android.widget.Toast
+                                            .makeText(
+                                                fpHomeContext,
+                                                "档案已满（最多 200 条），" +
+                                                    "先删掉不用的档案再重置",
+                                                android.widget.Toast
+                                                    .LENGTH_LONG
+                                            ).show()
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier =
+                                        Modifier.padding(16.dp),
+                                    verticalArrangement =
+                                        Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        candidateDevice.deviceModel,
+                                        style = MaterialTheme
+                                            .typography.titleMedium
+                                    )
+                                    Text(
+                                        "${candidateProfile.regionLabel}" +
+                                            " · ${candidateProfile.timezone(candidate.timezoneId).city}"
+                                    )
+                                    Text(
+                                        "指纹：" +
+                                            com.tuxunbrowse
+                                                .android.engine
+                                                .FingerprintIdentity
+                                                .prefixOf(candidateId)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(
+                        onClick = { resetStage = 0 }
+                    ) { Text("取消") }
+                }
+            )
         }
         OutlinedTextField(
             value = query,
@@ -17048,6 +17385,36 @@ private fun FingerprintHome(
                         "Chrome 对象",
                         "补上真 Chrome 带的 window.chrome 对象",
                         protection.chromeObject
+                    ),
+                    Triple(
+                        "时区与时间",
+                        "网页读到的时区和本地时间按档案回答",
+                        protection.timezone
+                    ),
+                    Triple(
+                        "语言与区域格式",
+                        "网页语言、日期数字格式和语音列表按档案回答",
+                        protection.language
+                    ),
+                    Triple(
+                        "定位",
+                        "网页定位按档案城市回答",
+                        protection.geolocation
+                    ),
+                    Triple(
+                        "屏幕与方向",
+                        "屏幕尺寸、像素比和面板参数按档案回答",
+                        protection.screen
+                    ),
+                    Triple(
+                        "设备标识",
+                        "机型、系统版本和浏览器标识按档案回答",
+                        protection.deviceIdentity
+                    ),
+                    Triple(
+                        "网络信息",
+                        "网络类型和速度按档案回答",
+                        protection.connection
                     )
                 )
                 protectionRows.forEachIndexed { index, row ->
@@ -17081,8 +17448,26 @@ private fun FingerprintHome(
                                             6 -> protection.copy(
                                                 battery = value
                                             )
-                                            else -> protection.copy(
+                                            7 -> protection.copy(
                                                 chromeObject = value
+                                            )
+                                            8 -> protection.copy(
+                                                timezone = value
+                                            )
+                                            9 -> protection.copy(
+                                                language = value
+                                            )
+                                            10 -> protection.copy(
+                                                geolocation = value
+                                            )
+                                            11 -> protection.copy(
+                                                screen = value
+                                            )
+                                            12 -> protection.copy(
+                                                deviceIdentity = value
+                                            )
+                                            else -> protection.copy(
+                                                connection = value
                                             )
                                         }
                                     )

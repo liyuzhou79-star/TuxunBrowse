@@ -18,6 +18,23 @@ import org.json.JSONObject
  * header, storage isolation): a toggle for those would be a
  * fake switch.
  *
+ * v0.224.0 adds the six core surfaces that used to be always
+ * on: timezone & time, language & regional formats,
+ * geolocation, screen & orientation, device identity and
+ * network info. They were split only where the split stays
+ * self-consistent: the UA string, UA-CH, platform and the
+ * hardware numbers are ONE switch (deviceIdentity) because
+ * answering half of them from the profile and half from the
+ * host would contradict itself inside a single read; the
+ * speech voice list rides the language switch because the
+ * voices ARE a language surface; matchMedia's display
+ * queries ride the screen switch because they describe the
+ * same panel. Surfaces that stay always on because they
+ * cannot be split without contradiction are the noise seeds
+ * themselves and the Intl/Date plumbing shared by the
+ * timezone and language switches (each constructor still
+ * gates its own half).
+ *
  * The switches ride into [FingerprintScript.payload] as
  * FP_OPT_* flags, and the consistency tests pin that turning
  * one off changes exactly its own flag. The self-check page
@@ -32,7 +49,19 @@ data class FingerprintProtection(
     val webrtcRelay: Boolean = true,
     val sensors: Boolean = true,
     val battery: Boolean = true,
-    val chromeObject: Boolean = true
+    val chromeObject: Boolean = true,
+    /** Date/Intl timezone answers (v0.224.0). */
+    val timezone: Boolean = true,
+    /** Intl formats, navigator.languages, speech voices. */
+    val language: Boolean = true,
+    /** Geolocation answers. */
+    val geolocation: Boolean = true,
+    /** Screen geometry, DPR, matchMedia display queries. */
+    val screen: Boolean = true,
+    /** UA, UA-CH, platform, cores/memory — one switch. */
+    val deviceIdentity: Boolean = true,
+    /** navigator.connection story. */
+    val connection: Boolean = true
 ) {
     fun toJson(): String = JSONObject()
         .put("canvas", canvasNoise)
@@ -43,6 +72,12 @@ data class FingerprintProtection(
         .put("sensors", sensors)
         .put("battery", battery)
         .put("chrome", chromeObject)
+        .put("tz", timezone)
+        .put("lang", language)
+        .put("geo", geolocation)
+        .put("screen", screen)
+        .put("identity", deviceIdentity)
+        .put("conn", connection)
         .toString()
 
     companion object {
@@ -63,7 +98,13 @@ data class FingerprintProtection(
                     webrtcRelay = o.optBoolean("webrtc", true),
                     sensors = o.optBoolean("sensors", true),
                     battery = o.optBoolean("battery", true),
-                    chromeObject = o.optBoolean("chrome", true)
+                    chromeObject = o.optBoolean("chrome", true),
+                    timezone = o.optBoolean("tz", true),
+                    language = o.optBoolean("lang", true),
+                    geolocation = o.optBoolean("geo", true),
+                    screen = o.optBoolean("screen", true),
+                    deviceIdentity = o.optBoolean("identity", true),
+                    connection = o.optBoolean("conn", true)
                 )
             } catch (e: Exception) {
                 FingerprintProtection()

@@ -2236,9 +2236,16 @@ class BrowserTab(
         // tab's native UA too, so HTTP headers and navigator
         // reads tell the same story. Fingerprint tabs are never
         // desktop-mode tabs; if both somehow applied, the
-        // profile wins by coming last.
+        // profile wins by coming last. The device-identity
+        // switch (v0.224.0) gates this together with the
+        // payload's navigator face: off means the UA header
+        // AND the navigator reads both fall back to the host,
+        // never one without the other.
         fingerprintProfileProvider()?.let { resolved ->
-            view.settings.userAgentString = resolved.device.userAgent
+            if (fingerprintProtectionProvider().deviceIdentity) {
+                view.settings.userAgentString =
+                    resolved.device.userAgent
+            }
         }
         view.setOnLongClickListener { v ->
             val wv = v as WebView

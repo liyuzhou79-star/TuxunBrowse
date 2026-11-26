@@ -15,8 +15,11 @@ import androidx.webkit.WebViewFeature
  * and language are presentation settings of the same persona
  * (a real owner changes their phone's zone or language
  * without losing a single login), so they deliberately do
- * NOT split the jar: the jar count is bounded by the library
- * itself (4 regions × 4 devices = 16) plus the legacy jar.
+ * NOT split the jar: the plain jar count is bounded by the
+ * library itself (4 regions × 4 devices = 16) plus the legacy
+ * jar. Seeded random-device entries (v0.224.0) are the one
+ * exception: each carries its own seed and its own jar
+ * ([nameForSeeded]), bounded by the saved-entries cap.
  *
  * Pure string work, no Android calls, so the naming contract
  * is unit-testable: names use only [a-z0-9_], always carry
@@ -70,6 +73,27 @@ object FpStorageNames {
         }
         return PREFIX + "_" + slug(regionId) + "_" + slug(deviceId)
     }
+
+    /**
+     * The storage profile name for one SEEDED combination
+     * (v0.224.0): a random-device entry is its own persona, so
+     * its jar carries the seed as an unsigned hex suffix. The
+     * shape stays inside the [isFpProfileName] family (prefix
+     * + underscores), so clear-data keeps covering it, and it
+     * can never collide with a plain combination name — plain
+     * names are exactly prefix + two slugs, and no device id
+     * slugs to a trailing "_s<hex>" segment of this form
+     * because the seed segment is appended AFTER the full
+     * device slug and device ids contain no such suffix
+     * (pinned by unit test over the whole library).
+     */
+    fun nameForSeeded(
+        regionId: String,
+        deviceId: String,
+        seed: Int
+    ): String =
+        PREFIX + "_" + slug(regionId) + "_" + slug(deviceId) +
+            "_s" + seed.toUInt().toString(16)
 
     /** True for names this app created for fingerprint mode. */
     fun isFpProfileName(name: String): Boolean =

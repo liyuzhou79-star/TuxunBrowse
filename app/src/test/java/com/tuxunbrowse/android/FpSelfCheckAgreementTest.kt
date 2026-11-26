@@ -113,42 +113,56 @@ class FpSelfCheckAgreementTest {
     }
 
     /**
-     * Off-state agreement (v0.205.0 audit): a protection
-     * switch turned off must read as 已关闭 (off) in the
-     * self-check, never as an anomaly — and ONLY the rows
-     * whose surfaces a switch actually gates may have an off
-     * state. The payload gates exactly three probed surfaces
-     * by switch (WebGL/WebGPU via webglDisguise, the font
-     * shelf via fontSet, and — since v0.210.0 — the
-     * orientation pair via sensors); the v0.201.0 rows
-     * （网络信息 / 设备列表 / 语音列表） are ungated in the
-     * payload — no FP_OPT flag exists for them — so their
-     * rows must not grow an off state either, or the page
-     * would claim a switch exists that does not. 请求头语言
-     * stays permanently 'na' by design.
+     * Off-state agreement (v0.205.0 audit, extended
+     * v0.224.0): a protection switch turned off must read as
+     * 已关闭 (off) in the self-check, never as an anomaly —
+     * and ONLY the rows whose surfaces a switch actually
+     * gates may have an off state. The original gated set
+     * was WebGL/WebGPU (webglDisguise), the font shelf
+     * (fontSet) and the orientation pair (sensors).
+     * v0.224.0 split six always-on core surfaces into real
+     * switches, and their rows grew off states in the same
+     * step: 时区 + 本地时间与时区名 (timezone), 语言 +
+     * 语言列表 + 语音列表 + 语音到达顺序 (language), 定位形态
+     * (geolocation), 屏幕尺寸 + 屏幕方向 (screen), 机型（UA）+
+     * 平台标识 + UA 品牌列表 + UA 派生值 (deviceIdentity),
+     * 网络信息 (connection). Rows still have NO off state
+     * where no switch gates the surface （设备列表， 请求头语言
+     * stays permanently 'na' by design, 电池/画布/音频 rows
+     * keep their v0.220.0 no-off-state ruling).
      */
     @Test
     fun offStateExistsExactlyOnTheSwitchGatedRows() {
         val app = browserAppSource()
         val probe = app.substringAfter("private fun fpSelfCheckProbe")
             .substringBefore("The tab-count box")
-        // Four rows report off through the ternary shape:
-        // WebGL 厂商 / WebGL 型号 / WebGPU 厂商 (webglOff)
-        // and 字体清单 (fontOff). The fifth off-aware row —
-        // 方向事件 (sensorsOff, v0.210.0) — reports through
-        // an if-branch, so the ternary count stays four and
-        // the flag SET is the invariant that grows.
+        // Fourteen rows report off through the ternary
+        // shape: the original four (WebGL 厂商 / WebGL 型号 /
+        // WebGPU 厂商 via webglOff, 字体清单 via fontOff) plus
+        // the ten v0.224.0 core-surface rows （语言 / 语言列表 /
+        // 时区 / 本地时间与时区名 / 机型（UA）/ 平台标识 /
+        // UA 品牌列表 / UA 派生值 / 屏幕尺寸 / 屏幕方向）. The
+        // remaining off-aware rows — 方向事件 (sensorsOff),
+        // 定位形态 (geoOff), 网络信息 (connectionOff) and the
+        // two voice rows (languageOff) — report through
+        // if-branches, so the flag SET is the invariant.
         assertEquals(
             "exactly the switch-gated rows may report 'off'",
-            4, probe.split("? 'off'").size - 1
+            14, probe.split("? 'off'").size - 1
         )
         assertEquals(
-            setOf("webglOff", "fontOff", "sensorsOff"),
+            setOf(
+                "webglOff", "fontOff", "sensorsOff",
+                "timezoneOff", "languageOff", "geoOff",
+                "screenOff", "identityOff", "connectionOff"
+            ),
             Regex("""EXP\.(\w+Off)""").findAll(probe)
                 .map { it.groupValues[1] }.toSet()
         )
         assertTrue(probe.contains("row('方向事件', 'off'"))
         assertTrue(probe.contains("EXP.sensorsOff"))
+        assertTrue(probe.contains("row('定位形态', 'off'"))
+        assertTrue(probe.contains("row('语音列表', 'off'"))
         // The EXP builder writes the flags, from the same
         // protection state the payload was built with.
         val builder = app.substringAfter("fun runSelfCheck")
@@ -156,6 +170,12 @@ class FpSelfCheckAgreementTest {
         assertTrue(builder.contains(".put(\"webglOff\", !protection.webglDisguise)"))
         assertTrue(builder.contains(".put(\"fontOff\", !protection.fontSet)"))
         assertTrue(builder.contains(".put(\"sensorsOff\", !protection.sensors)"))
+        assertTrue(builder.contains(".put(\"timezoneOff\", !protection.timezone)"))
+        assertTrue(builder.contains(".put(\"languageOff\", !protection.language)"))
+        assertTrue(builder.contains(".put(\"geoOff\", !protection.geolocation)"))
+        assertTrue(builder.contains(".put(\"screenOff\", !protection.screen)"))
+        assertTrue(builder.contains(".put(\"identityOff\", !protection.deviceIdentity)"))
+        assertTrue(builder.contains(".put(\"connectionOff\", !protection.connection)"))
         // The ungated v0.201.0 rows are all present and none
         // of them references an off flag (checked above by
         // the identifier set); the header-language row is

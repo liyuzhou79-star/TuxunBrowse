@@ -201,14 +201,26 @@ data class ResolvedFingerprint(
      */
     val chromeMajor: String = FingerprintProfiles.CHROME_MAJOR,
     val chromeFullVersion: String =
-        FingerprintProfiles.CHROME_FULL_VERSION
+        FingerprintProfiles.CHROME_FULL_VERSION,
+    /**
+     * Per-entry noise seed override (v0.224.0, random-device
+     * entries): null keeps the region+device table seed; a
+     * saved custom entry carries its own fixed seed so two
+     * entries on the same device model still present as two
+     * different devices. The seed is chosen once (SecureRandom
+     * at creation) and stored with the entry — it never
+     * re-rolls across restarts.
+     */
+    val seedOverride: Int? = null
 ) {
     /** navigator.languages for [language]: primary + fallbacks. */
     val languages: List<String> =
         FingerprintProfiles.languagesFor(language)
 
-    /** The stable noise seed for this region+device pair. */
-    val seed: Int = profile.noiseSeed * 100 + device.seedDelta
+    /** The stable noise seed for this combination. */
+    val seed: Int
+        get() = seedOverride
+            ?: (profile.noiseSeed * 100 + device.seedDelta)
 }
 
 /**
@@ -222,8 +234,29 @@ data class CustomFingerprint(
     val deviceId: String,
     val timezoneId: String,
     val language: String,
-    val label: String
-)
+    val label: String,
+    /**
+     * Fixed per-entry noise seed (v0.224.0). 0 = no override:
+     * the entry resolves with the region+device table seed,
+     * exactly like entries saved before this field existed.
+     * A non-zero seed marks a random-device entry: same ids,
+     * different device identity.
+     */
+    val seed: Int = 0
+) {
+    /**
+     * Combination identity for dedupe (v0.224.0): the four ids
+     * plus the seed. The label is display text and never part
+     * of identity — the same combination under another label
+     * is still a duplicate.
+     */
+    fun sameCombinationAs(other: CustomFingerprint): Boolean =
+        regionId == other.regionId &&
+            deviceId == other.deviceId &&
+            timezoneId == other.timezoneId &&
+            language == other.language &&
+            seed == other.seed
+}
 
 object FingerprintProfiles {
 
@@ -930,6 +963,7 @@ object FingerprintProfiles {
                     .put("t", item.timezoneId)
                     .put("l", item.language)
                     .put("label", item.label)
+                    .put("s", item.seed)
             )
         }
         return org.json.JSONObject()
@@ -994,11 +1028,13 @@ object FingerprintProfiles {
                 deviceId = obj.optString("d"),
                 timezoneId = obj.optString("t"),
                 language = obj.optString("l"),
-                label = obj.optString("label")
+                label = obj.optString("label"),
+                seed = obj.optInt("s", 0)
             )
             val key = listOf(
                 entry.regionId, entry.deviceId,
-                entry.timezoneId, entry.language
+                entry.timezoneId, entry.language,
+                entry.seed.toString()
             ).joinToString("")
             if (!seen.add(key)) continue
             out += entry
