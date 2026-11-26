@@ -20407,8 +20407,7 @@ private fun SettingsScreen(
                                     .fillMaxWidth()
                                     .clickable {
                                         translateTarget = lang.code
-                                        store.translateTargetLanguage =
-                                            lang.code
+                                        store.translateTargetLanguage = lang.code
                                         showTranslateTargetPicker = false
                                     }
                             )

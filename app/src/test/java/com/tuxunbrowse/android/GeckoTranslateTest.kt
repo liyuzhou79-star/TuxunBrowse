@@ -182,7 +182,8 @@ class GeckoTranslateTest {
         val body = segment(
             src, "fun translatePage(", "fun captureThumbnail()"
         )
-        assertTrue(body.contains("sessionTranslation.translate"))
+        assertTrue(body.contains("session.sessionTranslation"))
+        assertTrue(body.contains("translation.translate("))
         assertTrue(body.contains("TranslationPair("))
         assertTrue(body.contains(".downloadModel(true)"))
         assertTrue(body.contains("restoreOriginalPage()"))
