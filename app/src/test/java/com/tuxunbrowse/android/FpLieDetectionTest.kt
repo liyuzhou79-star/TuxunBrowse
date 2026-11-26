@@ -170,4 +170,99 @@ class FpLieDetectionTest {
         // honestly instead of dressing it up as a pass.
         assertTrue(probe.contains("未检出噪声（保护关闭或噪声未生效）"))
     }
+
+    @Test
+    fun webGlParameterKeysAreTheRealEnums() {
+        // Round 24 (v0.221.0): four GLP keys were wrong from
+        // the table's first version — cube-map size sat on
+        // 34076 instead of 34067 (0x8513), and the
+        // uniform/varying trio sat on 35801-35803 instead of
+        // 36347-36349 (0x8DFB-0x8DFD) — so those parameters
+        // silently fell through to the HOST GPU's answers.
+        // The keys are the decimal WebGL enum values; pin
+        // every one of them inside the GLP block itself.
+        val p = payload()
+        val glp = p.substringAfter("var GLP = {")
+            .substringBefore("};")
+        for (key in listOf(
+            "3379:", "34067:", "34024:", "3386:", "33901:",
+            "33902:", "34921:", "34930:", "35660:", "35661:",
+            "36347:", "36348:", "36349:", "34047:"
+        )) {
+            assertTrue(
+                "GLP must key $key",
+                glp.contains(key)
+            )
+        }
+        for (key in listOf("34076:", "35801:", "35802:", "35803:")) {
+            assertFalse(
+                "GLP must not key the wrong enum $key",
+                glp.contains(key)
+            )
+        }
+    }
+
+    @Test
+    fun audioNoiseSkipsExactZeros() {
+        // A silent render is exactly zero on a real engine;
+        // perturbing it is the silence trap detectors probe
+        // for. The stride loop leaves exact zeros untouched.
+        val p = payload()
+        assertTrue(p.contains("if (data[i] === 0) continue;"))
+    }
+
+    @Test
+    fun audioCopyDoorSharesTheNoiseStory() {
+        // copyFromChannel reads the same store without going
+        // through getChannelData; both doors now run the one
+        // once-only noise routine, whichever opens first.
+        val p = payload()
+        assertTrue(p.contains("function noiseAudioChannel("))
+        assertTrue(p.contains(
+            "setMethod(AudioBuffer.prototype, 'copyFromChannel',"
+        ))
+        assertTrue(p.contains(
+            "noiseAudioChannel(this, channelNumber)"
+        ))
+        assertTrue(p.contains(
+            "return noiseAudioChannel(this, channel);"
+        ))
+    }
+
+    @Test
+    fun matchMediaResolutionAnswersFromProfileRatio() {
+        // devicePixelRatio is pinned to the profile; exact
+        // single-value dppx resolution queries must agree
+        // with it instead of falling through to the host.
+        val p = payload()
+        assertTrue(p.contains(
+            "resolution:([0-9]*\\.?[0-9]+)dppx"
+        ))
+        assertTrue(p.contains(
+            "Math.abs(parseFloat(res[1]) - DPR) < 0.001"
+        ))
+    }
+
+    @Test
+    fun selfCheckCarriesTheRound24Rows() {
+        val app = browserAppSource()
+        val probe = app.substringAfter("private fun fpSelfCheckProbe")
+            .substringBefore("\nprivate fun")
+        for (name in listOf("音频出口一致", "媒体双口径")) {
+            assertTrue(
+                "self-check row $name must exist",
+                probe.contains("row('$name'")
+            )
+        }
+        // The media-agreement row needs the profile ratio as
+        // its expectation; the EXP builder must supply it
+        // from the resolved device, not a second copy.
+        assertTrue(app.contains(
+            ".put(\"dpr\", device.devicePixelRatio)"
+        ))
+        // The new rows carry no 'off' state (the agreement
+        // test's off-count invariant stays at four).
+        assertFalse(probe.contains("row('音频出口一致', 'off'"))
+        assertFalse(probe.contains("row('媒体双口径', 'off'"))
+    }
 }

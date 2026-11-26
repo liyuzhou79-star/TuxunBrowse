@@ -15709,6 +15709,109 @@ private fun fpSelfCheckProbe(expJson: String): String = """
     }
   } catch (e) { row('画布噪声形态', 'bad', '读取失败'); }
   try {
+    // Audio exits (v0.221.0): a zero-filled buffer must read
+    // back exactly zero (the silence trap — a real engine's
+    // silent render is all zeros, and detectors render
+    // silence to catch injectors), and the two read doors
+    // must agree: a copyFromChannel taken before any
+    // getChannelData must match the later getChannelData
+    // sample for sample.
+    var mkAudio = function () {
+      try {
+        return new AudioBuffer(
+          { length: 5000, sampleRate: 44100 });
+      } catch (e) {
+        return new OfflineAudioContext(1, 5000, 44100)
+          .createBuffer(1, 5000, 44100);
+      }
+    };
+    var abZ = mkAudio();
+    var zd = abZ.getChannelData(0);
+    var nz = 0;
+    for (var zi = 0; zi < zd.length; zi++) {
+      if (zd[zi] !== 0) nz++;
+    }
+    var sig = new Float32Array(5000);
+    for (var si = 0; si < 5000; si++) {
+      sig[si] = Math.sin(si * 0.7) * 0.8;
+    }
+    var abS = mkAudio();
+    abS.copyToChannel(sig, 0);
+    var copied = new Float32Array(5000);
+    abS.copyFromChannel(copied, 0);
+    var readBack = abS.getChannelData(0);
+    var agree = true;
+    for (var ci = 0; ci < 5000; ci++) {
+      if (copied[ci] !== readBack[ci]) { agree = false; break; }
+    }
+    row('音频出口一致', nz === 0 && agree ? 'ok' : 'bad',
+      nz !== 0
+        ? '静默渲染出现 ' + nz + ' 个非零样本'
+        : (agree ? '静默纯净，两条读出口一致'
+          : 'copyFromChannel 与 getChannelData 不一致'));
+  } catch (e) { row('音频出口一致', 'bad', '读取失败'); }
+  try {
+    // CSS vs JS media answers (v0.221.0): matchMedia is
+    // answered for the profile, but stylesheet @media rules
+    // are evaluated by the engine against the HOST panel
+    // and OS settings. Where the two sides disagree, this
+    // row says so — that boundary is structural (no JS
+    // surface reaches CSS evaluation), and the row exists
+    // so the leak is visible on the actual device instead
+    // of staying silent.
+    if (window.matchMedia && document.createElement) {
+      var st = document.createElement('style');
+      st.textContent =
+        '#fpCssP{--g:0;--h:0;--r:0;--f:0;--d:0}' +
+        '@media (color-gamut: p3){#fpCssP{--g:1}}' +
+        '@media (dynamic-range: high){#fpCssP{--h:1}}' +
+        '@media (prefers-reduced-motion: reduce)' +
+          '{#fpCssP{--r:1}}' +
+        '@media (forced-colors: active){#fpCssP{--f:1}}' +
+        '@media (resolution: ' + EXP.dpr + 'dppx)' +
+          '{#fpCssP{--d:1}}';
+      document.documentElement.appendChild(st);
+      var cel = document.createElement('div');
+      cel.id = 'fpCssP';
+      document.documentElement.appendChild(cel);
+      var cs = window.getComputedStyle(cel);
+      function cssOn(name) {
+        return cs.getPropertyValue(name).trim() === '1';
+      }
+      var diffs = [];
+      if (cssOn('--g') !==
+          window.matchMedia('(color-gamut: p3)').matches) {
+        diffs.push('色域');
+      }
+      if (cssOn('--h') !==
+          window.matchMedia('(dynamic-range: high)').matches) {
+        diffs.push('动态范围');
+      }
+      if (cssOn('--r') !==
+          window.matchMedia(
+            '(prefers-reduced-motion: reduce)').matches) {
+        diffs.push('减动效');
+      }
+      if (cssOn('--f') !==
+          window.matchMedia('(forced-colors: active)').matches) {
+        diffs.push('强制色');
+      }
+      if (cssOn('--d') !==
+          window.matchMedia(
+            '(resolution: ' + EXP.dpr + 'dppx)').matches) {
+        diffs.push('分辨率');
+      }
+      cel.remove(); st.remove();
+      row('媒体双口径', diffs.length === 0 ? 'ok' : 'bad',
+        diffs.length === 0
+          ? 'CSS 与 JS 媒体答复一致'
+          : 'CSS 侧与 JS 侧不一致：' + diffs.join('、') +
+            '（样式表按真机面板/系统求值，结构性）');
+    } else {
+      row('媒体双口径', 'na', '无 matchMedia');
+    }
+  } catch (e) { row('媒体双口径', 'bad', '读取失败'); }
+  try {
     // The pair must agree with each other AND with the value
     // the persona claims (v0.194.0): every profile here is an
     // Android 14 device, where Chrome's inline PDF rollout
@@ -16212,7 +16315,11 @@ private fun FingerprintHome(
     // orientation pair, the UA-derivative (appVersion) row,
     // the clock-agreement row and the geolocation shape +
     // permission row; the run itself is creation-guarded and
-    // watchdog-timed now (see runSelfCheck). Nothing leaves
+    // watchdog-timed now (see runSelfCheck). v0.221.0 added
+    // the audio-exit agreement row (silence purity plus the
+    // copyFromChannel door) and the CSS-vs-JS media-agreement
+    // row, which reports the structural stylesheet boundary
+    // live on the device instead of hiding it. Nothing leaves
     // the device: the page is blank, the results land in this
     // state and nowhere else.
     var selfCheckRows by remember {
@@ -16275,6 +16382,7 @@ private fun FingerprintHome(
                     .FingerprintProfiles.UA_PLATFORM)
             .put("scrW", device.screenWidth)
             .put("scrH", device.screenHeight)
+            .put("dpr", device.devicePixelRatio)
             .put("webglOff", !protection.webglDisguise)
             .put("fontOff", !protection.fontSet)
             .put("sensorsOff", !protection.sensors)

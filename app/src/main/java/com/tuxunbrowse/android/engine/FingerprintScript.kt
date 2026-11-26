@@ -1114,9 +1114,21 @@ object FingerprintScript {
     // cross-check failure, so the commonly probed parameters
     // answer from the profile too. Arrays are copied per call —
     // real drivers hand out a fresh typed array each time.
+    // Keys are the DECIMAL WebGL enum values. Four of them
+    // were wrong from this table's first version until the
+    // v0.221.0 audit: cube-map size sat on 34076 instead of
+    // 34067 (0x8513), and the uniform/varying trio sat on
+    // 35801-35803 instead of 36347-36349 (0x8DFB-0x8DFD) —
+    // none of which are the enums pages actually query, so
+    // those four parameters silently fell through to the
+    // HOST GPU's real answers (a Mali persona reporting the
+    // host Adreno's 31 varying vectors). The audit harness
+    // caught it by giving the host different values and
+    // watching them leak through; FpLieDetectionTest pins
+    // the key set now.
     var GLP = {
       3379: ${d.webGl.maxTextureSize},
-      34076: ${d.webGl.maxCubeMapTextureSize},
+      34067: ${d.webGl.maxCubeMapTextureSize},
       34024: ${d.webGl.maxRenderbufferSize},
       3386: new Int32Array([${d.webGl.maxViewportDim}, ${d.webGl.maxViewportDim}]),
       33901: new Float32Array([1, ${d.webGl.aliasedPointSizeMax}]),
@@ -1125,9 +1137,9 @@ object FingerprintScript {
       34930: ${d.webGl.maxTextureImageUnits},
       35660: ${d.webGl.maxVertexTextureImageUnits},
       35661: ${d.webGl.maxCombinedTextureImageUnits},
-      35803: ${d.webGl.maxFragmentUniformVectors},
-      35801: ${d.webGl.maxVertexUniformVectors},
-      35802: ${d.webGl.maxVaryingVectors},
+      36347: ${d.webGl.maxVertexUniformVectors},
+      36348: ${d.webGl.maxVaryingVectors},
+      36349: ${d.webGl.maxFragmentUniformVectors},
       34047: 16
     };
     [window.WebGLRenderingContext, window.WebGL2RenderingContext]
@@ -1321,6 +1333,7 @@ object FingerprintScript {
     if (!window.matchMedia) return;
     var GAMUT = ${jsStr(p.colorGamut)};
     var HDR = ${p.dynamicRangeHigh};
+    var DPR = ${d.devicePixelRatio};
     var order = { srgb: 0, p3: 1, rec2020: 2 };
     var origMM = window.matchMedia.bind(window);
     // The fake MediaQueryList is built on the real
@@ -1364,6 +1377,22 @@ object FingerprintScript {
         if (rm) return fakeMQL(query, rm[1] === 'no-preference');
         var fc = /^\(forced-colors:(active|none)\)$/.exec(q);
         if (fc) return fakeMQL(query, fc[1] === 'none');
+        // Resolution (v0.221.0): devicePixelRatio is pinned
+        // to the profile, but resolution queries fell through
+        // to the host's real ratio — two JS answers for one
+        // fact, contradicting each other inside the JS
+        // surface alone. Exact single-value dppx queries now
+        // answer from the profile ratio, like the panel
+        // queries above. Stylesheet @media evaluation is the
+        // engine's own and still answers for the host panel
+        // (no JS surface reaches it) — that boundary is
+        // structural, recorded in the checkpoint, and the
+        // self-check's media-agreement row reports it live
+        // instead of hiding it.
+        var res = /^\(resolution:([0-9]*\.?[0-9]+)dppx\)$/
+          .exec(q);
+        if (res) return fakeMQL(query,
+          Math.abs(parseFloat(res[1]) - DPR) < 0.001);
         return origMM(query);
       }, 'matchMedia', 1);
     // matchMedia is a Window-prototype method (v0.220.0):
@@ -1548,15 +1577,21 @@ object FingerprintScript {
     // which is itself a tell. A WeakMap of noised channels keeps
     // the first read's story final.
     var noised = new WeakMap();
-    setMethod(AudioBuffer.prototype, 'getChannelData',
-      fixFn(function (channel) {
-      var data = orig.call(this, channel);
+    function noiseAudioChannel(buf, channel) {
+      var data = orig.call(buf, channel);
       try {
-        var seen = noised.get(this);
-        if (!seen) { seen = {}; noised.set(this, seen); }
+        var seen = noised.get(buf);
+        if (!seen) { seen = {}; noised.set(buf, seen); }
         if (seen[channel]) return data;
         seen[channel] = true;
         for (var i = 0; i < data.length; i += 997) {
+          // Exact zeros stay zero (v0.221.0): a silent render —
+          // an oscillator at frequency 0, a compressor's
+          // lookahead prefix — is EXACTLY zero on a real engine,
+          // and lie detectors render silence precisely to catch
+          // injectors that perturb it. Skipping blanks costs
+          // the story nothing on real signals.
+          if (data[i] === 0) continue;
           // Content-keyed like the canvas rule (v0.220.0):
           // the hash mixes a coarse grid of the sample's own
           // value, and it decides BOTH whether this stride
@@ -1573,7 +1608,28 @@ object FingerprintScript {
         }
       } catch (e) {}
       return data;
+    }
+    setMethod(AudioBuffer.prototype, 'getChannelData',
+      fixFn(function (channel) {
+        return noiseAudioChannel(this, channel);
       }, orig));
+    // copyFromChannel is the second door to the same samples
+    // (v0.221.0): it reads the buffer's store WITHOUT going
+    // through getChannelData, so a checker copying first and
+    // reading second (or the reverse) watched the two doors
+    // disagree at every touched stride point. Run the same
+    // once-only noise before the copy, so both doors tell the
+    // one story whichever opens first.
+    if (AudioBuffer.prototype.copyFromChannel) {
+      var origCopy = AudioBuffer.prototype.copyFromChannel;
+      setMethod(AudioBuffer.prototype, 'copyFromChannel',
+        fixFn(function (destination, channelNumber) {
+          try {
+            noiseAudioChannel(this, channelNumber);
+          } catch (e) {}
+          return origCopy.apply(this, arguments);
+        }, origCopy));
+    }
   });
 
   section(function () {
