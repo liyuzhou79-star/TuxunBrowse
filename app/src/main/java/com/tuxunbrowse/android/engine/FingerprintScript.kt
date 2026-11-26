@@ -1121,8 +1121,8 @@ object FingerprintScript {
     // 35801-35803 instead of 36347-36349 (0x8DFB-0x8DFD) —
     // none of which are the enums pages actually query, so
     // those four parameters silently fell through to the
-    // HOST GPU's real answers (a Mali persona reporting the
-    // host Adreno's 31 varying vectors). The audit harness
+    // HOST GPU's real answers (a persona reporting the host
+    // chip's own varying-vector count instead of its own). The audit harness
     // caught it by giving the host different values and
     // watching them leak through; FpLieDetectionTest pins
     // the key set now.
