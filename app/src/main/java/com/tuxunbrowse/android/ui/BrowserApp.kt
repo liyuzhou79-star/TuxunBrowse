@@ -231,6 +231,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
@@ -16939,11 +16940,15 @@ private fun FingerprintHome(
     // Self-check summary + jump state (v0.225.0): the page's
     // scroll state is hoisted into a named value so the
     // summary at the top of the results can scroll the first
-    // abnormal row into view; row offsets are recorded as the
-    // rows compose, and a fresh run clears both.
+    // abnormal row into view. Positions ride on localToRoot
+    // window coordinates (this Compose version has no
+    // positionInParent): the column's own root Y is fixed,
+    // and every row re-reports its root Y whenever scrolling
+    // re-places it, so a row's content offset is always
+    // scrollState.value + rowRootY - columnRootY.
     val fpHomeScrollState = rememberScrollState()
     var highlightBadRows by remember { mutableStateOf(false) }
-    var checkCardTop by remember { mutableStateOf(0) }
+    var fpColumnRootY by remember { mutableStateOf(0) }
     val badRowTops = remember { mutableStateMapOf<Int, Int>() }
     LaunchedEffect(
         profile.regionId, zone.id, resolved.device.id,
@@ -17131,7 +17136,10 @@ private fun FingerprintHome(
     Column(
         modifier = modifier
             .verticalScroll(fpHomeScrollState)
-            .padding(16.dp),
+            .padding(16.dp)
+            .onGloballyPositioned {
+                fpColumnRootY = it.localToRoot(Offset.Zero).y.toInt()
+            },
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Card(
@@ -17661,12 +17669,7 @@ private fun FingerprintHome(
                 }
             }
         }
-        Card(
-            modifier = Modifier.fillMaxWidth()
-                .onGloballyPositioned {
-                    checkCardTop = it.positionInParent().y.toInt()
-                }
-        ) {
+        Card(modifier = Modifier.fillMaxWidth()) {
             Column(
                 modifier = Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -17720,8 +17723,10 @@ private fun FingerprintHome(
                                         ipScope.launch {
                                             fpHomeScrollState
                                                 .animateScrollTo(
-                                                    (checkCardTop +
-                                                        rowTop - 48)
+                                                    (fpHomeScrollState
+                                                        .value + rowTop -
+                                                        fpColumnRootY -
+                                                        48)
                                                         .coerceAtLeast(0)
                                                 )
                                         }
@@ -17751,7 +17756,7 @@ private fun FingerprintHome(
                                 .onGloballyPositioned {
                                     if (ok == "bad") {
                                         badRowTops[index] =
-                                            it.positionInParent()
+                                            it.localToRoot(Offset.Zero)
                                                 .y.toInt()
                                     }
                                 }
