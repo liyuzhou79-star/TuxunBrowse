@@ -6067,7 +6067,7 @@ fun BrowserApp(
  */
 @Composable
 internal fun TranslateLanguagePickerDialog(
-    languages: List<TranslationsController.Language>,
+    languages: List<TranslationsController.Language?>,
     currentCode: String?,
     onPick: (String) -> Unit,
     onDismiss: () -> Unit
@@ -6078,28 +6078,30 @@ internal fun TranslateLanguagePickerDialog(
         text = {
             LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
                 items(languages) { lang ->
-                    ListItem(
-                        headlineContent = {
-                            Text(
-                                lang.localizedDisplayName
-                                    .ifBlank { lang.code }
-                            )
-                        },
-                        trailingContent =
-                            if (lang.code == currentCode) {
-                                {
-                                    Icon(
-                                        Icons.Filled.Check,
-                                        contentDescription = "当前选择"
-                                    )
-                                }
-                            } else {
-                                null
+                    if (lang != null) {
+                        ListItem(
+                            headlineContent = {
+                                Text(
+                                    (lang.localizedDisplayName ?: "")
+                                        .ifBlank { lang.code }
+                                )
                             },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onPick(lang.code) }
-                    )
+                            trailingContent =
+                                if (lang.code == currentCode) {
+                                    {
+                                        Icon(
+                                            Icons.Filled.Check,
+                                            contentDescription = "当前选择"
+                                        )
+                                    }
+                                } else {
+                                    null
+                                },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onPick(lang.code) }
+                        )
+                    }
                 }
             }
         },
@@ -6156,16 +6158,18 @@ private fun TranslateSheet(
     val resolvedTarget = resolveTranslateTarget(
         targetOverride ?: store.translateTargetLanguage,
         systemTag,
-        toLanguages.map { it.code }
+        toLanguages.mapNotNull { it?.code }
     )
     val detected = tab.translateDetectedLanguage
     val detectedSupported = tab.translateDetectedSupported
     fun displayName(
         code: String?,
-        langs: List<TranslationsController.Language>
-    ): String = langs.firstOrNull { it.code == code }
-        ?.localizedDisplayName?.ifBlank { code }
-        ?: code ?: ""
+        langs: List<TranslationsController.Language?>
+    ): String {
+        val name = langs.firstOrNull { it?.code == code }
+            ?.localizedDisplayName
+        return if (!name.isNullOrBlank()) name else code ?: ""
+    }
 
     // Quote the pair's download size up front when either side's
     // model is missing (the progress itself cannot be quoted —
@@ -6177,10 +6181,10 @@ private fun TranslateSheet(
         val known = models
         if (from != null && to != null && known != null) {
             val fromReady = known.firstOrNull {
-                it.language.code == from
+                it.language?.code == from
             }?.isDownloaded == true
             val toReady = known.firstOrNull {
-                it.language.code == to
+                it.language?.code == to
             }?.isDownloaded == true
             if (!fromReady || !toReady) {
                 GeckoTranslateBridge.fetchPairDownloadSize(from, to) { size ->
@@ -8979,7 +8983,7 @@ private fun BrowserScreen(
             onClick = { showMenu = false; onToggleReaderMode() }
         )
         MenuPanelItem(
-            icon = Icons.Filled.Translate,
+            icon = Icons.Filled.Language,
             label = "翻译网页",
             onClick = { showMenu = false; onTranslatePage() }
         )
@@ -15149,7 +15153,7 @@ private fun FingerprintShell(
             }
         )
         MenuPanelItem(
-            icon = Icons.Filled.Translate,
+            icon = Icons.Filled.Language,
             label = "翻译网页",
             conflict = true,
             onClick = {
@@ -18627,25 +18631,6 @@ private fun SettingsScreen(
             >(null)
     }
     var showTranslateTargetPicker by remember { mutableStateOf(false) }
-    LaunchedEffect(settingsPage, translateModelsTick) {
-        if (settingsPage == "translate") {
-            if (GeckoHolder.ensure(settingsContext) == null) {
-                translateModelsFailed = true
-            } else {
-                GeckoTranslateBridge.fetchSupportedLanguages { s ->
-                    translateSupport = s
-                }
-                GeckoTranslateBridge.fetchModelStates { m ->
-                    if (m == null) {
-                        translateModelsFailed = true
-                    } else {
-                        translateModels = m
-                        translateModelsFailed = false
-                    }
-                }
-            }
-        }
-    }
     // Settings is a two-level menu now: a home list of six
     // categories, each opening its own sub-page. Back from a
     // sub-page returns here; back from home leaves settings.
@@ -18707,6 +18692,30 @@ private fun SettingsScreen(
             android.webkit.WebView.getCurrentWebViewPackage()
         } catch (t: Throwable) {
             null
+        }
+    }
+    // Translation page data (v0.226.0): loaded when the page
+    // opens — the static translations API needs a live Gecko
+    // runtime, ensured here; a runtime that will not start
+    // lands on the page's honest failure row instead of a
+    // spinner forever.
+    LaunchedEffect(settingsPage, translateModelsTick) {
+        if (settingsPage == "translate") {
+            if (GeckoHolder.ensure(settingsContext) == null) {
+                translateModelsFailed = true
+            } else {
+                GeckoTranslateBridge.fetchSupportedLanguages { s ->
+                    translateSupport = s
+                }
+                GeckoTranslateBridge.fetchModelStates { m ->
+                    if (m == null) {
+                        translateModelsFailed = true
+                    } else {
+                        translateModels = m
+                        translateModelsFailed = false
+                    }
+                }
+            }
         }
     }
     // App storage for the diagnostics card: the same three-part
@@ -18909,7 +18918,7 @@ private fun SettingsScreen(
                         Triple("privacy", "隐私与数据", Icons.Filled.Lock),
                         Triple("download", "下载", Icons.Filled.Download),
                         Triple("adblock", "广告拦截", Icons.Filled.VisibilityOff),
-                        Triple("translate", "翻译", Icons.Filled.Translate),
+                        Triple("translate", "翻译", Icons.Filled.Language),
                         Triple("about", "关于", Icons.Filled.Info)
                     )
                 ) { (key, label, icon) ->
@@ -19881,8 +19890,9 @@ private fun SettingsScreen(
                 val targetName = if (translateTarget.isBlank()) {
                     "跟随系统语言"
                 } else {
-                    toLangs.firstOrNull { it.code == translateTarget }
-                        ?.localizedDisplayName?.ifBlank { translateTarget }
+                    toLangs.firstOrNull { it?.code == translateTarget }
+                        ?.localizedDisplayName
+                        ?.takeIf { it.isNotBlank() }
                         ?: translateTarget
                 }
                 ListItem(
@@ -19957,8 +19967,11 @@ private fun SettingsScreen(
                         ListItem(
                             headlineContent = {
                                 Text(
-                                    model.language.localizedDisplayName
-                                        .ifBlank { model.language.code }
+                                    (model.language?.localizedDisplayName
+                                        ?: "")
+                                        .ifBlank {
+                                            model.language?.code ?: ""
+                                        }
                                 )
                             },
                             supportingContent = {
@@ -19979,12 +19992,13 @@ private fun SettingsScreen(
                             )
                         }
                         items(available) { model ->
-                            val code = model.language.code
+                            val code = model.language?.code ?: ""
                             val pending = modelBusy[code]
                             ListItem(
                                 headlineContent = {
                                     Text(
-                                        model.language.localizedDisplayName
+                                        (model.language
+                                            ?.localizedDisplayName ?: "")
                                             .ifBlank { code }
                                     )
                                 },
@@ -20370,32 +20384,35 @@ private fun SettingsScreen(
                         )
                     }
                     items(toLangs) { lang ->
-                        ListItem(
-                            headlineContent = {
-                                Text(
-                                    lang.localizedDisplayName
-                                        .ifBlank { lang.code }
-                                )
-                            },
-                            trailingContent =
-                                if (lang.code == translateTarget) {
-                                    {
-                                        Icon(
-                                            Icons.Filled.Check,
-                                            contentDescription = "当前选择"
-                                        )
-                                    }
-                                } else {
-                                    null
+                        if (lang != null) {
+                            ListItem(
+                                headlineContent = {
+                                    Text(
+                                        (lang.localizedDisplayName ?: "")
+                                            .ifBlank { lang.code }
+                                    )
                                 },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    translateTarget = lang.code
-                                    store.translateTargetLanguage = lang.code
-                                    showTranslateTargetPicker = false
-                                }
-                        )
+                                trailingContent =
+                                    if (lang.code == translateTarget) {
+                                        {
+                                            Icon(
+                                                Icons.Filled.Check,
+                                                contentDescription = "当前选择"
+                                            )
+                                        }
+                                    } else {
+                                        null
+                                    },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        translateTarget = lang.code
+                                        store.translateTargetLanguage =
+                                            lang.code
+                                        showTranslateTargetPicker = false
+                                    }
+                            )
+                        }
                     }
                 }
             },
@@ -20415,8 +20432,10 @@ private fun SettingsScreen(
             text = {
                 Text(
                     "会删掉" +
-                        (modelToDelete.language.localizedDisplayName
-                            .ifBlank { modelToDelete.language.code }) +
+                        ((modelToDelete.language?.localizedDisplayName
+                            ?: "").ifBlank {
+                                modelToDelete.language?.code ?: ""
+                            }) +
                         "的语言包（" +
                         formatStorageSize(modelToDelete.size) +
                         "），下次翻译这种语言时要重新下载。"
@@ -20426,7 +20445,7 @@ private fun SettingsScreen(
                 Button(onClick = {
                     pendingModelDelete = null
                     GeckoTranslateBridge.deleteLanguageModel(
-                        modelToDelete.language.code
+                        modelToDelete.language?.code ?: ""
                     ) { e ->
                         if (e == null) {
                             translateModelsTick++

@@ -1609,6 +1609,8 @@ class BrowserTab(
         onFailure: (String) -> Unit
     ): Boolean {
         val session = geckoSession ?: return false
+        // getSessionTranslation() is @Nullable in the AAR.
+        val translation = session.sessionTranslation ?: return false
         translatePhase = TranslatePhase.WORKING
         translateFailure = null
         return try {
@@ -1616,7 +1618,7 @@ class BrowserTab(
                 .TranslationOptions.Builder()
                 .downloadModel(true)
                 .build()
-            session.sessionTranslation.translate(
+            translation.translate(
                 TranslationsController.SessionTranslation
                     .TranslationPair(fromLanguage, toLanguage),
                 options
@@ -1657,8 +1659,9 @@ class BrowserTab(
      */
     fun restoreOriginalPage(onFailure: (String) -> Unit): Boolean {
         val session = geckoSession ?: return false
+        val translation = session.sessionTranslation ?: return false
         return try {
-            session.sessionTranslation.restoreOriginalPage().accept(
+            translation.restoreOriginalPage().accept(
                 {
                     if (geckoSession === session) {
                         translatePhase = TranslatePhase.IDLE
@@ -3455,8 +3458,12 @@ class BrowserTab(
                 override fun onTranslationStateChange(
                     s: GeckoSession,
                     state: TranslationsController.SessionTranslation
-                        .TranslationState
+                        .TranslationState?
                 ) {
+                    // The AAR annotates the state parameter
+                    // @Nullable (javap-verified): a null state
+                    // carries nothing to mirror.
+                    if (state == null) return
                     state.detectedLanguages?.let { detected ->
                         translateDetectedLanguage = detected.docLangTag
                         translateDetectedSupported =

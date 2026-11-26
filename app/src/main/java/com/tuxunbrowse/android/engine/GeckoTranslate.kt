@@ -121,7 +121,7 @@ object GeckoTranslateBridge {
 
     private fun <T> attach(
         result: GeckoResult<T>,
-        onOk: (T) -> Unit,
+        onOk: (T?) -> Unit,
         onError: (Throwable) -> Unit
     ) {
         val handler = mainHandler()
@@ -182,7 +182,7 @@ object GeckoTranslateBridge {
             attach(
                 TranslationsController.RuntimeTranslation
                     .listModelDownloadStates(),
-                { onResult(it ?: emptyList()) },
+                { onResult((it ?: emptyList()).filterNotNull()) },
                 { onResult(null) }
             )
         } catch (t: Throwable) {
