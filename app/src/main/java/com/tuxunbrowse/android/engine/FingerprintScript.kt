@@ -1749,10 +1749,45 @@ object FingerprintScript {
       var b = Object.create(
         window.BatteryManager ? BatteryManager.prototype
           : Object.prototype);
+      // Slow drift (v0.225.0): a level pinned to one number
+      // forever is its own tell — a page reading getBattery
+      // twice, hours apart, must not see the identical value,
+      // yet the drift has to stay a pure function of (seed,
+      // hour bucket): every read inside one bucket, on any
+      // page, returns the identical level (the manager above
+      // is a per-page singleton on top of that), and the step
+      // between neighbouring buckets stays within a few points
+      // (the three-bucket average bounds the raw drift to two
+      // points; percent rounding can add one more in the worst
+      // corner — the usual step is a single point). The story
+      // around the profile's base level: ±3 points while
+      // discharging; while charging, the level never reads
+      // BELOW the base — the charge only ever adds — and
+      // chargingTime derives from the drifted level, so the
+      // pair can never contradict itself. Date.now here is
+      // epoch time (FpDate delegates it to the real clock),
+      // so the bucket is the true hour, not a zone artefact.
+      var battBucket = Math.floor(Date.now() / 3600000);
+      function battHash01(bucket) {
+        return (hash(SEED ^ (bucket * 2654435761)) % 10000) /
+          10000;
+      }
+      var battSmooth = (battHash01(battBucket - 1) +
+        battHash01(battBucket) + battHash01(battBucket + 1)) / 3;
+      var battBase = ${p.batteryLevel};
+      var battLevel = ${p.batteryCharging}
+        ? Math.min(1,
+            Math.round((battBase + 0.03 * battSmooth) * 100) /
+              100)
+        : Math.max(0.05, Math.min(1,
+            Math.round(
+              (battBase + 0.03 * (2 * battSmooth - 1)) * 100) /
+              100));
       def(b, 'charging', ${p.batteryCharging});
-      def(b, 'chargingTime', ${if (p.batteryCharging) "Math.round((1 - " + p.batteryLevel + ") * 3600)" else "Infinity"});
+      def(b, 'chargingTime', ${p.batteryCharging}
+        ? Math.round((1 - battLevel) * 3600) : Infinity);
       def(b, 'dischargingTime', Infinity);
-      def(b, 'level', ${p.batteryLevel});
+      def(b, 'level', battLevel);
       defHandler(b, 'onchargingchange');
       defHandler(b, 'onchargingtimechange');
       defHandler(b, 'ondischargingtimechange');

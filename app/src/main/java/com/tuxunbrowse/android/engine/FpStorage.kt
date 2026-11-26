@@ -16,8 +16,8 @@ import androidx.webkit.WebViewFeature
  * (a real owner changes their phone's zone or language
  * without losing a single login), so they deliberately do
  * NOT split the jar: the plain jar count is bounded by the
- * library itself (4 regions × 4 devices = 16) plus the legacy
- * jar. Seeded random-device entries (v0.224.0) are the one
+ * library itself (4 regions × 8 devices = 32, expanded in
+ * v0.225.0) plus the legacy jar. Seeded random-device entries (v0.224.0) are the one
  * exception: each carries its own seed and its own jar
  * ([nameForSeeded]), bounded by the saved-entries cap.
  *

@@ -136,7 +136,7 @@ class FpPerCombinationTest {
         val combos = FingerprintProfiles.all.flatMap { region ->
             region.devices.map { region.regionId to it.id }
         }
-        assertEquals(16, combos.size)
+        assertEquals(32, combos.size)
         val noLegacy = combos.map {
             FpStorageNames.nameFor(it.first, it.second, null)
         }

@@ -37,7 +37,7 @@ class FingerprintIdentityTest {
     @Test
     fun identityIsDeterministicAndUniquePerCombination() {
         val resolved = allResolved()
-        assertEquals(16, resolved.size)
+        assertEquals(32, resolved.size)
         val ids = resolved.map { FingerprintIdentity.idOf(it) }
         // Deterministic: a second derivation agrees everywhere.
         assertEquals(
@@ -195,7 +195,7 @@ class FingerprintIdentityTest {
         val combos = FingerprintProfiles.all.flatMap { profile ->
             profile.devices.map { profile.regionId to it.id }
         }
-        assertEquals(16, combos.size)
+        assertEquals(32, combos.size)
         val plain = mutableSetOf(FpStorageNames.LEGACY_NAME)
         for ((regionId, deviceId) in combos) {
             plain += FpStorageNames.nameFor(regionId, deviceId, null)

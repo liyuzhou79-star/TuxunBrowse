@@ -163,6 +163,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -197,6 +198,7 @@ import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.input.pointer.pointerInput
@@ -15422,6 +15424,44 @@ private suspend fun fetchExitIpFrom(
  * of either.
  */
 /**
+ * The self-check summary counts (v0.225.0): a pure tally of
+ * one finished run's rows by state — ok / bad / na / off —
+ * plus the index of the first bad row, which is where the
+ * summary's jump action lands. This is deliberately only a
+ * tally of THIS app's own local probes; it is not a score
+ * and is never presented as one (the card says so in words).
+ */
+internal data class SelfCheckSummary(
+    val ok: Int,
+    val bad: Int,
+    val na: Int,
+    val off: Int,
+    val firstBadIndex: Int
+)
+
+internal fun selfCheckSummaryOf(
+    rows: List<Triple<String, String, String>>
+): SelfCheckSummary {
+    var ok = 0
+    var bad = 0
+    var na = 0
+    var off = 0
+    var firstBad = -1
+    for ((index, row) in rows.withIndex()) {
+        when (row.second) {
+            "ok" -> ok++
+            "bad" -> {
+                bad++
+                if (firstBad < 0) firstBad = index
+            }
+            "na" -> na++
+            "off" -> off++
+        }
+    }
+    return SelfCheckSummary(ok, bad, na, off, firstBad)
+}
+
+/**
  * The self-check probe (v0.184.0): runs INSIDE the throwaway
  * WebView after the current profile's payload has been
  * evaluated into it, compares what a page would read with
@@ -16896,6 +16936,15 @@ private fun FingerprintHome(
     var selfCheckRunning by remember { mutableStateOf(false) }
     var checkWebView by remember { mutableStateOf<WebView?>(null) }
     var checkStarted by remember { mutableStateOf(false) }
+    // Self-check summary + jump state (v0.225.0): the page's
+    // scroll state is hoisted into a named value so the
+    // summary at the top of the results can scroll the first
+    // abnormal row into view; row offsets are recorded as the
+    // rows compose, and a fresh run clears both.
+    val fpHomeScrollState = rememberScrollState()
+    var highlightBadRows by remember { mutableStateOf(false) }
+    var checkCardTop by remember { mutableStateOf(0) }
+    val badRowTops = remember { mutableStateMapOf<Int, Int>() }
     LaunchedEffect(
         profile.regionId, zone.id, resolved.device.id,
         resolved.language, protection
@@ -16912,6 +16961,8 @@ private fun FingerprintHome(
         if (selfCheckRunning) return
         selfCheckRunning = true
         selfCheckRows = null
+        highlightBadRows = false
+        badRowTops.clear()
         val device = resolved.device
         val fontIn = when {
             "SamsungOne" in device.fonts -> "SamsungOne"
@@ -17079,7 +17130,7 @@ private fun FingerprintHome(
     }
     Column(
         modifier = modifier
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(fpHomeScrollState)
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -17610,7 +17661,12 @@ private fun FingerprintHome(
                 }
             }
         }
-        Card(modifier = Modifier.fillMaxWidth()) {
+        Card(
+            modifier = Modifier.fillMaxWidth()
+                .onGloballyPositioned {
+                    checkCardTop = it.positionInParent().y.toInt()
+                }
+        ) {
             Column(
                 modifier = Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -17628,9 +17684,88 @@ private fun FingerprintHome(
                 }
                 val scRows = selfCheckRows
                 if (!selfCheckRunning && scRows != null) {
-                    for ((name, ok, detail) in scRows) {
+                    // Self-check summary (v0.225.0): a plain
+                    // tally of this run's own probe rows at the
+                    // top of the results — counts per state and
+                    // one sentence. It is NOT a detector score
+                    // and says so; while a run is in flight this
+                    // block does not exist (no rows, no verdict).
+                    val summary = selfCheckSummaryOf(scRows)
+                    Column(
+                        verticalArrangement =
+                            Arrangement.spacedBy(2.dp),
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    ) {
+                        Text(
+                            "自查总览",
+                            style = MaterialTheme
+                                .typography.titleSmall
+                        )
+                        Text(
+                            "通过 ${summary.ok} · " +
+                                "异常 ${summary.bad} · " +
+                                "无法检测 ${summary.na} · " +
+                                "已关闭 ${summary.off}"
+                        )
+                        if (summary.bad == 0) {
+                            Text("未发现异常。")
+                        } else {
+                            TextButton(
+                                onClick = {
+                                    highlightBadRows = true
+                                    val rowTop = badRowTops[
+                                        summary.firstBadIndex
+                                    ]
+                                    if (rowTop != null) {
+                                        ipScope.launch {
+                                            fpHomeScrollState
+                                                .animateScrollTo(
+                                                    (checkCardTop +
+                                                        rowTop - 48)
+                                                        .coerceAtLeast(0)
+                                                )
+                                        }
+                                    }
+                                },
+                                contentPadding = PaddingValues(0.dp)
+                            ) {
+                                Text(
+                                    "有 ${summary.bad} 处异常，" +
+                                        "点这里跳到第一处"
+                                )
+                            }
+                        }
+                        Text(
+                            "这是本机探针的汇总，" +
+                                "不是检测网站的评分。",
+                            style = MaterialTheme
+                                .typography.bodySmall,
+                            color = MaterialTheme
+                                .colorScheme.onSurfaceVariant
+                        )
+                    }
+                    for ((index, row) in scRows.withIndex()) {
+                        val (name, ok, detail) = row
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth()
+                                .onGloballyPositioned {
+                                    if (ok == "bad") {
+                                        badRowTops[index] =
+                                            it.positionInParent()
+                                                .y.toInt()
+                                    }
+                                }
+                                .background(
+                                    if (ok == "bad" &&
+                                        highlightBadRows
+                                    ) {
+                                        MaterialTheme.colorScheme
+                                            .errorContainer
+                                            .copy(alpha = 0.45f)
+                                    } else {
+                                        Color.Transparent
+                                    }
+                                ),
                             verticalAlignment =
                                 Alignment.CenterVertically
                         ) {

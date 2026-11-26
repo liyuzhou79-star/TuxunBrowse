@@ -345,15 +345,22 @@ class FingerprintScriptTest {
             FingerprintProfiles.resolve("SG", null)
         )
         assertTrue(sg.contains("def(b, 'charging', true)"))
-        // v0.158.0: chargingTime is derived from the level —
-        // 0 would only be true at a full battery, and SG's story
-        // is charging at 0.91.
-        assertTrue(sg.contains("Math.round((1 - 0.91) * 3600)"))
+        // v0.225.0: the level drifts slowly around the profile
+        // base by (seed, hour bucket); chargingTime derives
+        // from the DRIFTED level — 0 would only be true at a
+        // full battery, and SG's story is charging at 0.91.
+        assertTrue(sg.contains("var battBase = 0.91;"))
+        assertTrue(sg.contains("Math.round((1 - battLevel) * 3600)"))
+        assertTrue(sg.contains("battBucket"))
+        assertTrue(sg.contains("def(b, 'level', battLevel)"))
         val us = FingerprintScript.payload(
             FingerprintProfiles.resolve("US", null)
         )
         assertTrue(us.contains("def(b, 'charging', false)"))
-        assertTrue(us.contains("def(b, 'chargingTime', Infinity)"))
+        assertTrue(us.contains("var battBase = 0.82;"))
+        // A discharging profile never claims a finite
+        // chargingTime: the ternary's else arm is Infinity.
+        assertTrue(us.contains(": Infinity);"))
     }
 
     // v0.165.0 startup audit: the payload is memoised per

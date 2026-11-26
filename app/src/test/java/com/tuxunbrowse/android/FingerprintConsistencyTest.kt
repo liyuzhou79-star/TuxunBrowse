@@ -75,7 +75,7 @@ class FingerprintConsistencyTest {
                 )
             }
         }
-        assertEquals(16, seeds.size)
+        assertEquals(32, seeds.size)
     }
 
     @Test

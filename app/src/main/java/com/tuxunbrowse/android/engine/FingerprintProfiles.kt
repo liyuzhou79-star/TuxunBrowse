@@ -531,6 +531,29 @@ object FingerprintProfiles {
         seedDelta = delta
     )
 
+    private fun galaxyS24Plus(delta: Int) = FpDevice(
+        id = "SM-S926U", deviceModel = "Samsung Galaxy S24+",
+        uaModel = "SM-S926U", userAgent = ua("SM-S926U"),
+        // The Plus panel is 1440×3120, but the stock render
+        // mode is FHD+ (1080×2340) at density 450 (DPR 2.8125)
+        // — the browser-visible screen is 384×832 (public
+        // viewport references agree: Blisk / pxtovw device
+        // tables). The U build is the Snapdragon one (Adreno
+        // 750), carried in every region under the same
+        // imported-unit rationale as the base S24 above: the
+        // international S24+ is Exynos 2400 / Xclipse 940,
+        // whose detector-visible surface has no verified
+        // public values.
+        screenWidth = 384, screenHeight = 832,
+        devicePixelRatio = 2.8125, hardwareConcurrency = 8,
+        deviceMemory = 8,
+        webGlVendor = "Qualcomm", webGlRenderer = "Adreno (TM) 750",
+        webGl = GL_ADRENO_750,
+        webGpuVendor = "qualcomm", webGpuArchitecture = "adreno-7xx",
+        fonts = SAMSUNG_FONTS,
+        seedDelta = delta
+    )
+
     private fun galaxyS23(model: String, delta: Int) = FpDevice(
         id = model, deviceModel = "Samsung Galaxy S23", uaModel = model,
         userAgent = ua(model), screenWidth = 360, screenHeight = 780,
@@ -573,6 +596,65 @@ object FingerprintProfiles {
         hardwareConcurrency = 9, deviceMemory = 8,
         webGlVendor = "ARM",
         webGlRenderer = "ANGLE (ARM, Mali-G715s MC10, OpenGL ES 3.2)",
+        webGl = GL_MALI_G715,
+        webGpuVendor = "arm", webGpuArchitecture = "valhall",
+        fonts = GOOGLE_FONTS,
+        seedDelta = delta
+    )
+
+    private fun pixel8a(delta: Int) = FpDevice(
+        id = "Pixel 8a", deviceModel = "Google Pixel 8a",
+        uaModel = "Pixel 8a", userAgent = ua("Pixel 8a"),
+        // Same panel and density as the Pixel 8 (1080×2400 at
+        // DPR 2.625 → 412×915) and the same Tensor G3 silicon
+        // (nine cores, Mali-G715s MC10), so the whole surface
+        // is the Pixel 8's; only the model token differs.
+        // Public spec sheets (Google / GSMArena) agree on
+        // every number here.
+        screenWidth = 412, screenHeight = 915, devicePixelRatio = 2.625,
+        hardwareConcurrency = 9, deviceMemory = 8,
+        webGlVendor = "ARM",
+        webGlRenderer = "ANGLE (ARM, Mali-G715s MC10, OpenGL ES 3.2)",
+        webGl = GL_MALI_G715,
+        webGpuVendor = "arm", webGpuArchitecture = "valhall",
+        fonts = GOOGLE_FONTS,
+        seedDelta = delta
+    )
+
+    private fun pixel9(delta: Int) = FpDevice(
+        id = "Pixel 9", deviceModel = "Google Pixel 9",
+        uaModel = "Pixel 9", userAgent = ua("Pixel 9"),
+        // Tensor G4: EIGHT cores (1+3+4 — one fewer than the
+        // G3's nine, a spec-sheet fact a cross-check reads
+        // early) and a Mali-G715 MC7. The panel is 1080×2424
+        // at DPR 2.625 → 412×924 (public viewport references).
+        // The capability table is the G715 family's, carried
+        // over exactly as the Pixel 7a entry carries it for
+        // the G710 string — family-level design values, not
+        // diffed against a physical Pixel 9 (same standing
+        // caveat as FP-LIE-12).
+        screenWidth = 412, screenHeight = 924, devicePixelRatio = 2.625,
+        hardwareConcurrency = 8, deviceMemory = 8,
+        webGlVendor = "ARM",
+        webGlRenderer = "ANGLE (ARM, Mali-G715 MC7, OpenGL ES 3.2)",
+        webGl = GL_MALI_G715,
+        webGpuVendor = "arm", webGpuArchitecture = "valhall",
+        fonts = GOOGLE_FONTS,
+        seedDelta = delta
+    )
+
+    private fun pixel7(delta: Int) = FpDevice(
+        id = "Pixel 7", deviceModel = "Google Pixel 7",
+        uaModel = "Pixel 7", userAgent = ua("Pixel 7"),
+        // Tensor G2 (eight cores) and the same Mali-G710 MC10
+        // + 1080×2400 @ 2.625 panel story as the Pixel 7a
+        // below; the UA claims Android 14, the version this
+        // device normally runs today (the 7a entry makes the
+        // same claim on the same basis).
+        screenWidth = 412, screenHeight = 915, devicePixelRatio = 2.625,
+        hardwareConcurrency = 8, deviceMemory = 8,
+        webGlVendor = "ARM",
+        webGlRenderer = "ANGLE (ARM, Mali-G710 MC10, OpenGL ES 3.2)",
         webGl = GL_MALI_G715,
         webGpuVendor = "arm", webGpuArchitecture = "valhall",
         fonts = GOOGLE_FONTS,
@@ -652,7 +734,11 @@ object FingerprintProfiles {
             galaxyS24("SM-S921U", 0),
             galaxyS23("SM-S911U", 1),
             pixel8Pro(2),
-            pixel8(3)
+            pixel8(3),
+            pixel8a(4),
+            pixel9(5),
+            galaxyS24Plus(6),
+            pixel7(7)
         )
     )
 
@@ -684,7 +770,11 @@ object FingerprintProfiles {
             pixel8(0),
             pixel8Pro(1),
             pixel7a(2),
-            galaxyS23("SM-S911B", 3)
+            galaxyS23("SM-S911B", 3),
+            pixel8a(4),
+            pixel9(5),
+            galaxyS24Plus(6),
+            pixel7(7)
         )
     )
 
@@ -717,7 +807,11 @@ object FingerprintProfiles {
             galaxyS23("SM-S911B", 0),
             galaxyS24("SM-S921U", 1),
             pixel8Pro(2),
-            pixel8(3)
+            pixel8(3),
+            pixel8a(4),
+            pixel9(5),
+            galaxyS24Plus(6),
+            pixel7(7)
         )
     )
 
@@ -749,7 +843,11 @@ object FingerprintProfiles {
             galaxyA54(0),
             galaxyS24("SM-S921U", 1),
             pixel8(2),
-            pixel7a(3)
+            pixel7a(3),
+            pixel8a(4),
+            pixel9(5),
+            galaxyS24Plus(6),
+            pixel7(7)
         )
     )
 
