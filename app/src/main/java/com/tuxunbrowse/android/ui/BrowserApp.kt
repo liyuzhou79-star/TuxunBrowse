@@ -6221,9 +6221,8 @@ private fun HomeContent(
         )
     ) {
         item(span = { GridItemSpan(maxLineSpan) }) {
-            // Brand area: the app icon on a primary-coloured official
-            // Card, the name in headline type, and the one-line
-            // tagline from the README.
+            // Brand area: the app icon bitmap, the name in headline
+            // type, and the one-line tagline from the README.
             Card(
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer
@@ -6235,29 +6234,22 @@ private fun HomeContent(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.padding(16.dp)
                 ) {
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.primary
-                        )
-                    ) {
-                        // The launcher foreground's strokes are fixed
-                        // white in the drawable, which is invisible on
-                        // the dark scheme's light primary — render it as
-                        // an Icon tinted with onPrimary, the official
-                        // content colour paired with primary in both
-                        // schemes (white on blue, navy on light blue).
-                        Icon(
-                            painter = androidx.compose.ui.res.painterResource(
-                                com.tuxunbrowse.android.R.drawable
-                                    .ic_launcher_foreground
-                            ),
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onPrimary,
-                            modifier = Modifier
-                                .size(56.dp)
-                                .padding(6.dp)
-                        )
-                    }
+                    // The final launcher artwork (v0.219.0) is a
+                    // full-colour bitmap with its own purple ground —
+                    // show the bitmap copy from drawable-nodpi as-is.
+                    // Never load the mipmap launcher resource as a
+                    // painter here: it resolves to the adaptive-icon
+                    // XML, which painterResource cannot load and
+                    // crashes the first frame on Android 8+.
+                    FoundationImage(
+                        painter = androidx.compose.ui.res.painterResource(
+                            com.tuxunbrowse.android.R.drawable.app_icon
+                        ),
+                        contentDescription = null,
+                        modifier = Modifier
+                            .size(56.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                    )
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(
                             "TuxunBrowse",
