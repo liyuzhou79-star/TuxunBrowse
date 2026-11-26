@@ -344,7 +344,7 @@ class FingerprintScriptTest {
         val sg = FingerprintScript.payload(
             FingerprintProfiles.resolve("SG", null)
         )
-        assertTrue(sg.contains("b.charging = true"))
+        assertTrue(sg.contains("def(b, 'charging', true)"))
         // v0.158.0: chargingTime is derived from the level —
         // 0 would only be true at a full battery, and SG's story
         // is charging at 0.91.
@@ -352,8 +352,8 @@ class FingerprintScriptTest {
         val us = FingerprintScript.payload(
             FingerprintProfiles.resolve("US", null)
         )
-        assertTrue(us.contains("b.charging = false"))
-        assertTrue(us.contains("b.chargingTime = Infinity"))
+        assertTrue(us.contains("def(b, 'charging', false)"))
+        assertTrue(us.contains("def(b, 'chargingTime', Infinity)"))
     }
 
     // v0.165.0 startup audit: the payload is memoised per

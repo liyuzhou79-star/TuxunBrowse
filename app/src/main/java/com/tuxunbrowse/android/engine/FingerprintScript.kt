@@ -1626,11 +1626,12 @@ object FingerprintScript {
       // Attributes ride def() getters (v0.220.0): plain
       // assignment THREW here — the prototype's WebIDL
       // attributes are read-only, and this payload is strict
-      // mode, so `b.charging = …` raised TypeError and
-      // getBattery() itself crashed on call. defineProperty
-      // shadows cleanly, the on* handlers get real get/set
-      // pairs, and the listener methods are non-enumerable
-      // stubs, so the object carries no own enumerable keys.
+      // mode, so assigning a level or a charging flag raised
+      // TypeError and getBattery() itself crashed on call.
+      // defineProperty shadows cleanly, the on* handlers get
+      // real get/set pairs, and the listener methods are
+      // non-enumerable stubs, so the object carries no own
+      // enumerable keys.
       var b = Object.create(
         window.BatteryManager ? BatteryManager.prototype
           : Object.prototype);
