@@ -1045,6 +1045,59 @@ fun BrowserApp(
 
     fun activeTab(): BrowserTab? = tabs.firstOrNull { it.id == activeTabId }
 
+    // ---- Recents snapshot protection (v0.217.0 privacy audit) ----
+    // The thumbnail Android shows in the Recents/Overview list is
+    // a screenshot the system takes when the app leaves the
+    // foreground. Until this version nothing kept private
+    // contexts out of it: an incognito tab's page — or the whole
+    // fingerprint shell — sat readable in the app switcher for
+    // anyone who picked up the phone. The in-app thumbnail
+    // guards only cover the app's own tab grid, never this one.
+    // setRecentsScreenshotEnabled (API 33+) is the surgical
+    // tool: it withholds ONLY the system snapshot and leaves the
+    // user's own screenshots working — FLAG_SECURE would block
+    // those too, and fingerprint-mode testing lives on
+    // screenshots, so it is deliberately not used. Below API 33
+    // there is no snapshot-only switch; that gap is recorded in
+    // the checkpoint rather than papered over with FLAG_SECURE.
+    // The derivation is a pure function of what is on screen —
+    // the fingerprint shell is up, or the normal group's active
+    // tab is incognito — and every switch path (tab switch,
+    // entering/leaving fingerprint mode) re-runs the effect on
+    // the next recomposition. Best-effort: no activity, no call,
+    // no crash.
+    val recentsSnapshotSensitive =
+        fingerprintMode || activeTab()?.incognito == true
+    LaunchedEffect(recentsSnapshotSensitive) {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >=
+                android.os.Build.VERSION_CODES.TIRAMISU
+            ) {
+                (context as? android.app.Activity)
+                    ?.setRecentsScreenshotEnabled(!recentsSnapshotSensitive)
+            }
+        } catch (t: Throwable) {
+            // Snapshot protection is best-effort; never crash.
+        }
+    }
+    // Same dying-window hygiene as the fullscreen flags above:
+    // never leave the snapshot withheld on a window whose UI is
+    // gone (a fresh activity defaults to enabled anyway).
+    DisposableEffect(Unit) {
+        onDispose {
+            try {
+                if (android.os.Build.VERSION.SDK_INT >=
+                    android.os.Build.VERSION_CODES.TIRAMISU
+                ) {
+                    (context as? android.app.Activity)
+                        ?.setRecentsScreenshotEnabled(true)
+                }
+            } catch (t: Throwable) {
+                // Window already gone; nothing left to restore.
+            }
+        }
+    }
+
     // ---- Auto-reload once when the network comes back (v0.70.0) ----
     // A system network callback watches for the offline -> online
     // transition. When it fires, if the ACTIVE tab is sitting on the

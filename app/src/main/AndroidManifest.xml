@@ -12,8 +12,16 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- No system backup (v0.217.0 privacy audit): with backup on
+         and no exclusion rules, Android's cloud backup and
+         device-to-device transfer would carry the app's whole
+         state (history, bookmarks, fingerprint profiles, proxy
+         book, settings) off the device by default — the opposite
+         of what a privacy browser promises. The supported way to
+         move data is the app's own backup export, which the user
+         triggers by hand and can inspect; it is unaffected. -->
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
