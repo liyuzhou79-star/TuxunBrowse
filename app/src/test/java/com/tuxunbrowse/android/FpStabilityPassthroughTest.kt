@@ -74,10 +74,19 @@ class FpStabilityPassthroughTest {
         assertTrue(
             "seed must stay a pure (region, device) constant",
             fingerprintProfilesSource().contains(
-                "val seed: Int = profile.noiseSeed * 100 +" +
-                    " device.seedDelta"
+                "?: (profile.noiseSeed * 100 +" +
+                    " device.seedDelta)"
             )
         )
+        // v0.224.0: the only other seed source is a saved
+        // entry's stored override (seedOverride) — chosen
+        // once at creation, stored, and read back verbatim.
+        // Nothing in the payload path rolls dice: the getter
+        // above is the whole derivation, and it contains no
+        // random call (the Math.random absence check at the
+        // top of this test covers the payload; the profiles
+        // file's only seed inputs are the two constants and
+        // the stored override).
     }
 
     @Test

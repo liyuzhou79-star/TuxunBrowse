@@ -90,12 +90,27 @@ class FingerprintIdentityTest {
                 base.copy(seedOverride = 424242)
             )
         )
-        // Zone and language are identity inputs too.
+        // Zone and language are identity inputs too (the US
+        // region offers two of each, so both can move inside
+        // one region without leaving its sets).
+        val usBase = FingerprintProfiles.resolve(
+            "US", "America/New_York", "SM-S921U", "en-US"
+        )
         assertFalse(
-            FingerprintIdentity.idOf(base) ==
+            FingerprintIdentity.idOf(usBase) ==
                 FingerprintIdentity.idOf(
                     FingerprintProfiles.resolve(
-                        "JP", "Asia/Tokyo", "Pixel 8", "en-US"
+                        "US", "America/Los_Angeles",
+                        "SM-S921U", "en-US"
+                    )
+                )
+        )
+        assertFalse(
+            FingerprintIdentity.idOf(usBase) ==
+                FingerprintIdentity.idOf(
+                    FingerprintProfiles.resolve(
+                        "US", "America/New_York",
+                        "SM-S921U", "es-US"
                     )
                 )
         )
