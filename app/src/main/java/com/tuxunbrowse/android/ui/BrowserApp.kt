@@ -15927,6 +15927,129 @@ private fun fpSelfCheckProbe(expJson: String): String = """
           step.toFixed(4) + 'ms（Chromium 口径 0.1ms，' +
           '隔离页 0.005ms）');
   } catch (e) { row('计时精度', 'bad', '读取失败'); }
+  try {
+    // Cross-load stability, the in-page half (v0.223.0):
+    // a real device of the claimed model answers the
+    // same probes with the same values on every load; a
+    // payload whose noise were re-rolled per load would
+    // be its own bot tell. The harness audit in this
+    // version's checkpoint chapter replays the payload
+    // in fresh realms and diffs every surface; this row
+    // is the half a page itself could run — two
+    // INDEPENDENT renders of identical content (separate
+    // canvases, separate audio buffers) must come back
+    // identical, and a repeat read of the first canvas
+    // must agree too, or the noise would be a function
+    // of something other than (profile seed, content).
+    var mkCanvas = function () {
+      var cv = document.createElement('canvas');
+      cv.width = 24; cv.height = 24;
+      var cx = cv.getContext('2d');
+      cx.fillStyle = 'rgb(120, 130, 140)';
+      cx.fillRect(0, 0, 24, 24);
+      cx.fillStyle = 'rgb(200, 90, 40)';
+      cx.fillRect(4, 4, 12, 12);
+      return cv;
+    };
+    var cvA = mkCanvas();
+    var cvB = mkCanvas();
+    var hA = hashOf(cvA.getContext('2d')
+      .getImageData(0, 0, 24, 24).data);
+    var hB = hashOf(cvB.getContext('2d')
+      .getImageData(0, 0, 24, 24).data);
+    var hA2 = hashOf(cvA.getContext('2d')
+      .getImageData(0, 0, 24, 24).data);
+    var canvasOk = hA === hB && hA === hA2;
+    var audioOk = null;
+    if (typeof OfflineAudioContext === 'function') {
+      var stabAudio = function () {
+        var oc = new OfflineAudioContext(1, 44100, 44100);
+        var b = oc.createBuffer(1, 44100, 44100);
+        var src = new Float32Array(44100);
+        for (var si = 0; si < 44100; si++) {
+          src[si] = Math.sin(si / 10) * 0.5;
+        }
+        b.copyToChannel(src, 0);
+        var d = b.getChannelData(0);
+        var q = new Array(44100);
+        for (var qi = 0; qi < 44100; qi++) {
+          q[qi] = Math.round(d[qi] * 1e9);
+        }
+        return hashOf(q);
+      };
+      audioOk = stabAudio() === stabAudio();
+    }
+    row('指纹稳定性',
+      canvasOk && audioOk !== false ? 'ok' : 'bad',
+      '同内容两次独立渲染：画布' +
+      (canvasOk ? '一致' : '不一致') + '，音频' +
+      (audioOk === null ? '无法离线渲染，未测'
+        : (audioOk ? '一致' : '不一致')) +
+      '（噪声只由档案种子与内容决定，跨刷新不变）');
+  } catch (e) { row('指纹稳定性', 'bad', '读取失败'); }
+  try {
+    // performance.memory (v0.223.0): a Chromium-only
+    // face the payload leaves to the engine — the heap
+    // figures are V8's own, sized from the host's real
+    // RAM and quantised by the engine, so there is no
+    // per-model table to grade magnitudes against.
+    // What CAN be graded is that the three numbers
+    // still describe a possible heap (used <= total
+    // <= limit): the ordering a field-by-field
+    // fabrication is what breaks.
+    if (performance.memory) {
+      var pm = performance.memory;
+      var heapOk = pm.usedJSHeapSize <= pm.totalJSHeapSize &&
+        pm.totalJSHeapSize <= pm.jsHeapSizeLimit;
+      row('性能内存', heapOk ? 'ok' : 'bad',
+        'jsHeapSizeLimit ' + pm.jsHeapSizeLimit +
+        '（引擎按真机内存给出的原值，三数须满足 ' +
+        'used≤total≤limit）');
+    } else {
+      row('性能内存', 'na', '无 performance.memory');
+    }
+  } catch (e) { row('性能内存', 'bad', '读取失败'); }
+  try {
+    // Device interfaces (v0.223.0): the WebView
+    // exposes none of the chooser-based device APIs —
+    // the embedder has no device picker or permission
+    // UX for them — while the persona's Android
+    // Chrome ships bluetooth, usb and serial (hid
+    // joins Chrome on Android only in 158, past this
+    // engine's version, so its absence matches both).
+    // The payload fabricates none of the objects: an
+    // interface whose picker can never appear would
+    // be its own tell. The row lists what is actually
+    // present, as 'na'.
+    var devPresent = ['bluetooth', 'usb', 'serial', 'hid']
+      .filter(function (k) { return k in navigator; });
+    row('设备接口', 'na',
+      devPresent.length
+        ? '在场：' + devPresent.join('、')
+        : '蓝牙、USB、串口、HID 均不在场（WebView ' +
+          '引擎面缺口；安卓 Chrome 有蓝牙／USB／串口，' +
+          'HID 在本引擎版本两边均无）');
+  } catch (e) { row('设备接口', 'na', '读取失败'); }
+  try {
+    // visualViewport (v0.223.0): the payload leaves
+    // it alone — it mirrors the REAL window the page
+    // is laid out in (size, offsets, pinch scale), so
+    // it belongs to the same structural family as the
+    // layout viewport itself: the claimed screen is
+    // the profile's, the window a page actually gets
+    // is the host's. The row shows both sizes side by
+    // side, as 'na'.
+    if (window.visualViewport) {
+      var vv = window.visualViewport;
+      row('视觉视口', 'na',
+        '视口 ' + vv.width + '×' + vv.height +
+        '，scale ' + vv.scale + '；档案屏幕 ' +
+        screen.width + '×' + screen.height +
+        '（视口跟真机窗口走，结构性）');
+    } else {
+      row('视觉视口', 'na', '无 visualViewport');
+    }
+  } catch (e) { row('视觉视口', 'na', '读取失败'); }
   var gpuSettled = false;
   var uaSettled = false;
   var mediaSettled = false;
@@ -15938,11 +16061,13 @@ private fun fpSelfCheckProbe(expJson: String): String = """
   var capsSettled = false;
   var voiceOrderSettled = false;
   var sensorBeatSettled = false;
+  var storageSettled = false;
   function maybeReport() {
     if (gpuSettled && uaSettled && mediaSettled &&
         voicesSettled && geoSettled && oriSettled &&
         battSettled && permSettled && capsSettled &&
-        voiceOrderSettled && sensorBeatSettled) {
+        voiceOrderSettled && sensorBeatSettled &&
+        storageSettled) {
       FpSelfCheck.report(JSON.stringify(rows));
     }
   }
@@ -16242,6 +16367,55 @@ private fun fpSelfCheckProbe(expJson: String): String = """
   } catch (e) {
     row('媒体能力', 'na', '读取失败');
     capsSettled = true;
+  }
+  try {
+    // Storage estimate (v0.223.0): quota and usage
+    // are the engine's own answers — Chromium sizes
+    // the per-origin quota from the HOST disk's
+    // total size (60% of it in Chrome's published
+    // model), and usage is this origin's real data
+    // in the profile's storage partition, growing as
+    // the site stores. Pinning a per-model quota
+    // would sooner or later contradict the real
+    // usage figure (and the real write limit a page
+    // can probe by filling storage), so the payload
+    // leaves the face alone; the row reports the
+    // magnitudes as 'na', never dressed as a pass.
+    if (navigator.storage && navigator.storage.estimate) {
+      var storageDone = false;
+      function storageRow(state, detail) {
+        if (storageDone) return;
+        storageDone = true;
+        row('存储估算', state, detail);
+        storageSettled = true; maybeReport();
+      }
+      setTimeout(function () {
+        storageRow('na', '查询超时');
+      }, 3000);
+      Promise.all([navigator.storage.estimate(),
+        navigator.storage.persisted
+          ? navigator.storage.persisted()
+          : Promise.resolve(false)])
+        .then(function (pair) {
+          var est = pair[0] || {};
+          storageRow('na',
+            'quota 约 ' +
+            ((est.quota || 0) / 1073741824).toFixed(1) +
+            ' GiB，usage 约 ' +
+            ((est.usage || 0) / 1048576).toFixed(1) +
+            ' MiB，persisted=' + pair[1] +
+            '（引擎按真机磁盘与本站真实数据给出，' +
+            '无逐机型基线可判）');
+        }).catch(function () {
+          storageRow('na', '查询被拒绝');
+        });
+    } else {
+      row('存储估算', 'na', '无 StorageManager');
+      storageSettled = true;
+    }
+  } catch (e) {
+    row('存储估算', 'na', '读取失败');
+    storageSettled = true;
   }
   try {
     // Sensor cadence (v0.222.0): a page can time the

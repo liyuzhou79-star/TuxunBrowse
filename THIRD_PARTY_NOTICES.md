@@ -57,4 +57,12 @@ specifications and public measurement data.
   the seeded list ordering in user_agent_utils.cc) was
   re-implemented from the public source so the claimed
   version's brand list matches what a real Chrome of that
-  version sends; no Chromium code is included.
+  version sends; the sensor event pump's nominal 50 ms
+  interval constant was likewise read from the public
+  source so the synthetic sensor cadence matches the real
+  engine's; no Chromium code is included.
+- FingerprintJS (MIT) — its public audio-fingerprinting
+  method (offline render slice, absolute-sum aggregation)
+  served as the yardstick for auditing that the payload's
+  audio noise stays orders of magnitude below the real
+  cross-device spread; no code is included.
