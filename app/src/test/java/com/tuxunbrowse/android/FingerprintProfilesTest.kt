@@ -216,6 +216,12 @@ class FingerprintProfilesTest {
         // Panel resolutions are the manufacturers' spec sheets:
         // Galaxy S24/S23 1080×2340, Pixel 8/7a 1080×2400,
         // Pixel 8 Pro 1344×2992, Galaxy A54 1080×2340.
+        // v0.225.0 additions: Pixel 8a and Pixel 7 are also
+        // 1080×2400 panels; the Pixel 9 is 1080×2424. The
+        // Galaxy S24+ panel is 1440×3120, but the entry models
+        // the stock FHD+ render mode — the resolution the
+        // device actually renders at out of the box, which is
+        // what a page can observe — so its row is 1080×2340.
         val panels = mapOf(
             "SM-S921U" to (1080 to 2340),
             "SM-S911U" to (1080 to 2340),
@@ -223,7 +229,11 @@ class FingerprintProfilesTest {
             "Pixel 8" to (1080 to 2400),
             "Pixel 8 Pro" to (1344 to 2992),
             "Pixel 7a" to (1080 to 2400),
-            "SM-A546B" to (1080 to 2340)
+            "SM-A546B" to (1080 to 2340),
+            "Pixel 8a" to (1080 to 2400),
+            "Pixel 9" to (1080 to 2424),
+            "SM-S926U" to (1080 to 2340),
+            "Pixel 7" to (1080 to 2400)
         )
         val seen = mutableSetOf<String>()
         for (profile in FingerprintProfiles.all) {
@@ -256,13 +266,19 @@ class FingerprintProfilesTest {
         // surface has no verified public values; every S24
         // slot in the library must therefore be the Snapdragon
         // U build, with the core count and GPU family that
-        // silicon really reports.
+        // silicon really reports. v0.225.0: the S24+ slots
+        // follow the same rule — SM-S926U, never an Exynos
+        // build of the Plus.
         for (profile in FingerprintProfiles.all) {
             for (device in profile.devices) {
                 if (!device.deviceModel.contains("Galaxy S24")) {
                     continue
                 }
-                assertEquals("SM-S921U", device.uaModel)
+                assertTrue(
+                    "S24-family slot ${device.id} is not a " +
+                        "Snapdragon U build",
+                    device.uaModel in setOf("SM-S921U", "SM-S926U")
+                )
                 assertEquals(8, device.hardwareConcurrency)
                 assertTrue(device.webGlRenderer.contains("Adreno"))
             }
