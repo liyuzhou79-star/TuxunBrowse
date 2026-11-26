@@ -1650,7 +1650,13 @@ fun BrowserApp(
                 ).show()
             },
             isAdHideSlotsEnabled = { store.adBlockEnabled },
-            onBlockedRequest = { store.noteBlocked() },
+            // The lifetime counter is persisted (and backed
+            // up), so incognito tabs must not feed it (v0.218.0
+            // incognito audit): what happens in an incognito
+            // tab leaves no stored trace, not even a count.
+            // The per-tab count still runs and shows in the
+            // site-info sheet while the tab lives.
+            onBlockedRequest = { if (!incognito) store.noteBlocked() },
             guardScriptProvider = {
                 !fingerprint && store.guardScriptEnabled
             },
@@ -2104,7 +2110,9 @@ fun BrowserApp(
             // site — reachable after an error-page one-time bypass
             // or a backup import). Honour it instead of silently
             // doing nothing (v0.61.0 regression fix).
-            if (newEngine == Engine.GECKO && rememberSite) {
+            if (newEngine == Engine.GECKO && rememberSite &&
+                !tab.incognito
+            ) {
                 val host = hostOf(tab.url)
                 if (host != null &&
                     compatSites.any { hostMatchesSite(host, it) }
@@ -2119,7 +2127,13 @@ fun BrowserApp(
             return
         }
         val host = hostOf(tab.url)
-        if (rememberSite && host != null) {
+        // Incognito tabs never write the per-site memory
+        // (v0.218.0 incognito audit): the switch itself still
+        // happens for this tab, but the host it sits on must
+        // not land in the normal-mode compat list — the same
+        // rule the desktop-mode memory has followed since
+        // v0.56.0 ("incognito toggles are never written down").
+        if (rememberSite && host != null && !tab.incognito) {
             when (newEngine) {
                 Engine.WEBVIEW -> addCompatSite(host)
                 Engine.GECKO -> removeCompatMemoryForHost(host)
@@ -3321,6 +3335,21 @@ fun BrowserApp(
     fun toggleSiteCompat() {
         val tab = activeTab() ?: return
         val host = hostOf(tab.url) ?: return
+        // Incognito tabs never write the per-site memory
+        // (v0.218.0 incognito audit): this toggle's whole
+        // point is the remembered list, so from an incognito
+        // tab it can only explain. Switching this tab's
+        // engine stays available in the toolbar's engine
+        // picker, which after the same audit switches
+        // without remembering.
+        if (tab.incognito) {
+            android.widget.Toast.makeText(
+                context,
+                "无痕标签里不改兼容记忆；换内核打开请用顶栏的切换内核按钮",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            return
+        }
         if (isCompatHost(host, compatSites.toSet())) {
             removeCompatMemoryForHost(host)
             if (tab.engine == Engine.WEBVIEW) {
@@ -9695,8 +9724,13 @@ private fun BrowserScreen(
                                 }
                         )
                     }
+                    // The two memory rows below are hidden for
+                    // incognito tabs (v0.218.0 incognito audit):
+                    // switchTabEngine would not honour the promise
+                    // they make, so offering them would be a lie.
                     if (currentHost != null && picked == Engine.WEBVIEW &&
-                        activeTab.engine == Engine.GECKO
+                        activeTab.engine == Engine.GECKO &&
+                        !activeTab.incognito
                     ) {
                         item {
                             ListItem(
@@ -9717,7 +9751,9 @@ private fun BrowserScreen(
                             )
                         }
                     }
-                    if (currentHost != null && picked == Engine.GECKO && currentHostIsCompat) {
+                    if (currentHost != null && picked == Engine.GECKO &&
+                        currentHostIsCompat && !activeTab.incognito
+                    ) {
                         item {
                             ListItem(
                                 headlineContent = { Text("取消这个网站的自动兼容记忆") },
