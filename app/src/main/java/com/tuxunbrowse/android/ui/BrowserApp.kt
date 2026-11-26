@@ -311,6 +311,12 @@ import com.tuxunbrowse.android.engine.FingerprintProtection
 import com.tuxunbrowse.android.engine.FingerprintScript
 import com.tuxunbrowse.android.engine.ResolvedFingerprint
 import com.tuxunbrowse.android.engine.GeckoHolder
+import com.tuxunbrowse.android.engine.GeckoTranslateBridge
+import com.tuxunbrowse.android.engine.TranslatePhase
+import com.tuxunbrowse.android.engine.translateErrorCodeOf
+import com.tuxunbrowse.android.engine.translateErrorText
+import com.tuxunbrowse.android.engine.resolveTranslateTarget
+import org.mozilla.geckoview.TranslationsController
 import com.tuxunbrowse.android.engine.GuardScript
 import com.tuxunbrowse.android.engine.SniffKind
 import com.tuxunbrowse.android.engine.SniffedResource
@@ -341,6 +347,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.mozilla.geckoview.GeckoSession
+import org.mozilla.geckoview.GeckoResult
 
 private enum class Screen { PICKER, BROWSER, BOOKMARKS, HISTORY, SETTINGS, DOWNLOADS, CLEAR_DATA, SNIFF }
 
@@ -857,6 +864,8 @@ fun BrowserApp(
     var sniffTabId by remember { mutableStateOf(-1) }
     // The tab waiting on the screenshot save/share dialog.
     var screenshotTab by remember { mutableStateOf<BrowserTab?>(null) }
+    // The Gecko tab the translate sheet is open for (v0.226.0).
+    var translateTab by remember { mutableStateOf<BrowserTab?>(null) }
 
     /**
      * Hand link text to TuxunDown through its only public entry: an
@@ -2958,7 +2967,9 @@ fun BrowserApp(
                 doNotTrackEnabled = store.doNotTrackEnabled,
                 globalPrivacyControlEnabled =
                     store.globalPrivacyControlEnabled,
-                webRtcDisabled = store.webRtcDisabled
+                webRtcDisabled = store.webRtcDisabled,
+                translateTargetLanguage =
+                    store.translateTargetLanguage.takeIf { it.isNotBlank() }
             ),
             compatSites = store.loadCompatSites().sorted(),
             desktopSites = store.loadDesktopSites().sorted(),
@@ -3105,6 +3116,12 @@ fun BrowserApp(
             store.globalPrivacyControlEnabled = it
         }
         s.webRtcDisabled?.let { store.webRtcDisabled = it }
+        // Translation target (v0.226.0): plain Store write — the
+        // translate sheet resolves it against the engine's
+        // supported list when it opens.
+        s.translateTargetLanguage?.let {
+            store.translateTargetLanguage = it
+        }
         if (s.trackingProtectionLevel != null ||
             s.globalPrivacyControlEnabled != null
         ) {
@@ -4667,6 +4684,28 @@ fun BrowserApp(
                         }
                     }
                 },
+                onTranslatePage = {
+                    val tab = activeTab() ?: return@BrowserScreen
+                    when {
+                        tab.isHome -> android.widget.Toast.makeText(
+                            context, "先打开一个网页再翻译",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                        // The WebView has no translation API at
+                        // all (v0.226.0 feasibility record): the
+                        // honest answer is the same shape as the
+                        // reader-mode / sniffer ones — switch
+                        // engines first. The translate sheet only
+                        // ever opens for a Gecko tab.
+                        tab.engine != Engine.GECKO ->
+                            android.widget.Toast.makeText(
+                                context,
+                                "翻译只支持火狐内核，系统 WebView 标签请先切换内核再用",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        else -> translateTab = tab
+                    }
+                },
                 onOpenSniffer = {
                     val tab = activeTab()
                     when {
@@ -6005,6 +6044,435 @@ fun BrowserApp(
             }
         )
     }
+
+    // Page translation sheet (v0.226.0): only ever opened for a
+    // Gecko tab — the menu handler refuses WebView tabs first.
+    val trTab = translateTab
+    if (trTab != null) {
+        TranslateSheet(
+            tab = trTab,
+            store = store,
+            onDismiss = { translateTab = null }
+        )
+    }
+}
+
+/**
+ * Pick a translation target language from the engine's own
+ * list (v0.226.0). Shared by the translate sheet and the
+ * settings translation page; [languages] are the engine's
+ * Language{code, localizedDisplayName} entries, so the names
+ * shown are the engine's own localisations, never a hand-kept
+ * table that could drift from what can actually be translated.
+ */
+@Composable
+internal fun TranslateLanguagePickerDialog(
+    languages: List<TranslationsController.Language>,
+    currentCode: String?,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("翻译成哪种语言") },
+        text = {
+            LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
+                items(languages) { lang ->
+                    ListItem(
+                        headlineContent = {
+                            Text(
+                                lang.localizedDisplayName
+                                    .ifBlank { lang.code }
+                            )
+                        },
+                        trailingContent =
+                            if (lang.code == currentCode) {
+                                {
+                                    Icon(
+                                        Icons.Filled.Check,
+                                        contentDescription = "当前选择"
+                                    )
+                                }
+                            } else {
+                                null
+                            },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onPick(lang.code) }
+                    )
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
+}
+
+/**
+ * The translate sheet (v0.226.0): opened from the menu for a
+ * Gecko tab only. Everything it states comes from the engine —
+ * the detected page language and its supported flag from the
+ * tab's translations delegate mirror, the language lists and
+ * model states from RuntimeTranslation, the pair's download
+ * size from checkPairDownloadSize. The API has no progress
+ * callback, so a working translation shows an indeterminate
+ * indicator and the download size is quoted before starting
+ * instead of pretending a percentage exists.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TranslateSheet(
+    tab: BrowserTab,
+    store: Store,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    var support by remember(tab.id) {
+        mutableStateOf<
+            TranslationsController.RuntimeTranslation.TranslationSupport?
+            >(null)
+    }
+    var supportFailed by remember(tab.id) { mutableStateOf(false) }
+    var models by remember(tab.id) {
+        mutableStateOf<
+            List<TranslationsController.RuntimeTranslation.LanguageModel>?
+            >(null)
+    }
+    var targetOverride by remember(tab.id) { mutableStateOf<String?>(null) }
+    var showTargetPicker by remember { mutableStateOf(false) }
+    var pairSize by remember(tab.id) { mutableStateOf<Long?>(null) }
+
+    LaunchedEffect(tab.id) {
+        GeckoTranslateBridge.fetchSupportedLanguages { s ->
+            if (s == null) supportFailed = true else support = s
+        }
+        GeckoTranslateBridge.fetchModelStates { m -> models = m }
+    }
+    val toLanguages = support?.toLanguages ?: emptyList()
+    val fromLanguages = support?.fromLanguages ?: emptyList()
+    val systemTag = remember { java.util.Locale.getDefault().toLanguageTag() }
+    val resolvedTarget = resolveTranslateTarget(
+        targetOverride ?: store.translateTargetLanguage,
+        systemTag,
+        toLanguages.map { it.code }
+    )
+    val detected = tab.translateDetectedLanguage
+    val detectedSupported = tab.translateDetectedSupported
+    fun displayName(
+        code: String?,
+        langs: List<TranslationsController.Language>
+    ): String = langs.firstOrNull { it.code == code }
+        ?.localizedDisplayName?.ifBlank { code }
+        ?: code ?: ""
+
+    // Quote the pair's download size up front when either side's
+    // model is missing (the progress itself cannot be quoted —
+    // see the header note).
+    LaunchedEffect(detected, resolvedTarget, models) {
+        pairSize = null
+        val from = detected
+        val to = resolvedTarget
+        val known = models
+        if (from != null && to != null && known != null) {
+            val fromReady = known.firstOrNull {
+                it.language.code == from
+            }?.isDownloaded == true
+            val toReady = known.firstOrNull {
+                it.language.code == to
+            }?.isDownloaded == true
+            if (!fromReady || !toReady) {
+                GeckoTranslateBridge.fetchPairDownloadSize(from, to) { size ->
+                    pairSize = size
+                }
+            }
+        }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState()
+    ) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 640.dp)
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            item {
+                Text("翻译网页", style = MaterialTheme.typography.titleLarge)
+            }
+            item {
+                Text(
+                    "翻译在设备本地完成，网页内容不会发给任何服务器。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            when {
+                supportFailed -> item {
+                    ListItem(
+                        headlineContent = {
+                            Text("翻译引擎没能启动，请关掉这个面板再试一次")
+                        }
+                    )
+                }
+                support == null -> item {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.padding(vertical = 12.dp)
+                    ) {
+                        CircularProgressIndicator()
+                        Text("正在准备翻译引擎…")
+                    }
+                }
+                else -> {
+                    when {
+                        detected == null -> item {
+                            ListItem(
+                                headlineContent = {
+                                    Text("正在识别这个页面的语言…")
+                                },
+                                supportingContent = {
+                                    Text("页面文字太少时可能识别不出来")
+                                }
+                            )
+                        }
+                        !detectedSupported -> item {
+                            ListItem(
+                                headlineContent = {
+                                    Text(
+                                        "这个页面是" +
+                                            displayName(detected, fromLanguages) +
+                                            "，暂时不在能翻译的语言里"
+                                    )
+                                }
+                            )
+                        }
+                        else -> {
+                            item {
+                                ListItem(
+                                    headlineContent = {
+                                        Text(
+                                            "页面语言：" +
+                                                displayName(
+                                                    detected, fromLanguages
+                                                )
+                                        )
+                                    }
+                                )
+                            }
+                            item {
+                                ListItem(
+                                    headlineContent = {
+                                        Text(
+                                            "翻译成：" +
+                                                displayName(
+                                                    resolvedTarget, toLanguages
+                                                )
+                                        )
+                                    },
+                                    trailingContent = {
+                                        TextButton(
+                                            onClick = { showTargetPicker = true }
+                                        ) { Text("换一个") }
+                                    },
+                                    modifier = Modifier.clickable {
+                                        showTargetPicker = true
+                                    }
+                                )
+                            }
+                            if (detected == resolvedTarget) {
+                                item {
+                                    ListItem(
+                                        headlineContent = {
+                                            Text("页面已经是这个语言了，不用翻译")
+                                        }
+                                    )
+                                }
+                            } else {
+                                val size = pairSize
+                                if (size != null && size > 0) {
+                                    item {
+                                        ListItem(
+                                            headlineContent = {
+                                                Text(
+                                                    "语言包还没下载，开始翻译时会先下载" +
+                                                        "（约 " +
+                                                        formatStorageSize(size) +
+                                                        "）"
+                                                )
+                                            }
+                                        )
+                                    }
+                                }
+                                when (tab.translatePhase) {
+                                    TranslatePhase.WORKING -> {
+                                        item {
+                                            Column(
+                                                verticalArrangement =
+                                                    Arrangement.spacedBy(8.dp),
+                                                modifier = Modifier
+                                                    .padding(vertical = 8.dp)
+                                            ) {
+                                                LinearProgressIndicator(
+                                                    modifier =
+                                                        Modifier.fillMaxWidth()
+                                                )
+                                                Text(
+                                                    "正在翻译…第一次翻译要先下载语言包，会慢一些",
+                                                    style = MaterialTheme
+                                                        .typography.bodyMedium
+                                                )
+                                            }
+                                        }
+                                    }
+                                    TranslatePhase.TRANSLATED -> {
+                                        item {
+                                            ListItem(
+                                                headlineContent = {
+                                                    Text(
+                                                        "已经翻译成" +
+                                                            displayName(
+                                                                tab
+                                                                    .translatedToLanguage,
+                                                                toLanguages
+                                                            )
+                                                    )
+                                                }
+                                            )
+                                        }
+                                        item {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    if (!tab
+                                                            .restoreOriginalPage { msg ->
+                                                                android.widget.Toast
+                                                                    .makeText(
+                                                                        context,
+                                                                        msg,
+                                                                        android.widget
+                                                                            .Toast
+                                                                            .LENGTH_LONG
+                                                                    ).show()
+                                                            }
+                                                    ) {
+                                                        android.widget.Toast
+                                                            .makeText(
+                                                                context,
+                                                                "没能切回原文，请重新加载页面",
+                                                                android.widget.Toast
+                                                                    .LENGTH_SHORT
+                                                            ).show()
+                                                    }
+                                                },
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) { Text("显示原文") }
+                                        }
+                                    }
+                                    TranslatePhase.FAILED -> {
+                                        item {
+                                            ListItem(
+                                                headlineContent = {
+                                                    Text(
+                                                        tab.translateFailure
+                                                            ?: "翻译没成功，请重试",
+                                                        color = MaterialTheme
+                                                            .colorScheme.error
+                                                    )
+                                                }
+                                            )
+                                        }
+                                        item {
+                                            Button(
+                                                onClick = {
+                                                    val from = detected
+                                                    val to = resolvedTarget
+                                                    if (from != null &&
+                                                        to != null &&
+                                                        !tab.translatePage(
+                                                            from, to
+                                                        ) { msg ->
+                                                            android.widget.Toast
+                                                                .makeText(
+                                                                    context,
+                                                                    msg,
+                                                                    android.widget
+                                                                        .Toast
+                                                                        .LENGTH_LONG
+                                                                ).show()
+                                                        }
+                                                    ) {
+                                                        android.widget.Toast
+                                                            .makeText(
+                                                                context,
+                                                                "翻译没能开始，请重试",
+                                                                android.widget.Toast
+                                                                    .LENGTH_SHORT
+                                                            ).show()
+                                                    }
+                                                },
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) { Text("再试一次") }
+                                        }
+                                    }
+                                    TranslatePhase.IDLE -> {
+                                        item {
+                                            Button(
+                                                onClick = {
+                                                    val from = detected
+                                                    val to = resolvedTarget
+                                                    if (from != null &&
+                                                        to != null &&
+                                                        !tab.translatePage(
+                                                            from, to
+                                                        ) { msg ->
+                                                            android.widget.Toast
+                                                                .makeText(
+                                                                    context,
+                                                                    msg,
+                                                                    android.widget
+                                                                        .Toast
+                                                                        .LENGTH_LONG
+                                                                ).show()
+                                                        }
+                                                    ) {
+                                                        android.widget.Toast
+                                                            .makeText(
+                                                                context,
+                                                                "翻译没能开始，请重试",
+                                                                android.widget.Toast
+                                                                    .LENGTH_SHORT
+                                                            ).show()
+                                                    }
+                                                },
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) { Text("开始翻译") }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (showTargetPicker) {
+        TranslateLanguagePickerDialog(
+            languages = toLanguages,
+            currentCode = resolvedTarget,
+            onPick = { code ->
+                targetOverride = code
+                showTargetPicker = false
+            },
+            onDismiss = { showTargetPicker = false }
+        )
+    }
 }
 
 /**
@@ -7010,6 +7478,7 @@ private fun BrowserScreen(
     onExitFullscreen: () -> Unit,
     onToggleReaderMode: () -> Unit,
     onPrintPage: () -> Unit,
+    onTranslatePage: () -> Unit = {},
     onOpenSniffer: () -> Unit,
     onScreenshot: () -> Unit,
     onOpenDownloads: () -> Unit,
@@ -8508,6 +8977,11 @@ private fun BrowserScreen(
                 "显示阅读模式"
             },
             onClick = { showMenu = false; onToggleReaderMode() }
+        )
+        MenuPanelItem(
+            icon = Icons.Filled.Translate,
+            label = "翻译网页",
+            onClick = { showMenu = false; onTranslatePage() }
         )
         MenuPanelItem(
             icon = Icons.Filled.AddToHomeScreen,
@@ -14675,6 +15149,17 @@ private fun FingerprintShell(
             }
         )
         MenuPanelItem(
+            icon = Icons.Filled.Translate,
+            label = "翻译网页",
+            conflict = true,
+            onClick = {
+                showFpMenu = false
+                fpConflictToast(
+                    "翻译是火狐内核的功能，要给火狐下载语言包，那是档案之外的流量"
+                )
+            }
+        )
+        MenuPanelItem(
             icon = Icons.Filled.Fingerprint,
             label = "切换档案",
             onClick = { showFpMenu = false; showPicker = true }
@@ -18113,6 +18598,54 @@ private fun SettingsScreen(
     var themeMode by remember(refreshTick) { mutableStateOf(store.themeMode) }
     var readerFont by remember(refreshTick) { mutableStateOf(store.readerFontSize) }
     var readerBg by remember(refreshTick) { mutableStateOf(store.readerBackground) }
+    var translateTarget by remember(refreshTick) {
+        mutableStateOf(store.translateTargetLanguage)
+    }
+    // Translation page (v0.226.0): the engine's language list
+    // and model states, loaded when the page opens — the static
+    // translations API needs a live Gecko runtime, ensured on
+    // entry; a runtime that will not start lands on the honest
+    // failure row instead of a spinner forever.
+    var translateSupport by remember {
+        mutableStateOf<
+            TranslationsController.RuntimeTranslation.TranslationSupport?
+            >(null)
+    }
+    var translateModels by remember {
+        mutableStateOf<
+            List<TranslationsController.RuntimeTranslation.LanguageModel>?
+            >(null)
+    }
+    var translateModelsFailed by remember { mutableStateOf(false) }
+    var translateModelsTick by remember { mutableStateOf(0) }
+    var modelBusy by remember {
+        mutableStateOf<Map<String, GeckoResult<Void>>>(emptyMap())
+    }
+    var pendingModelDelete by remember {
+        mutableStateOf<
+            TranslationsController.RuntimeTranslation.LanguageModel?
+            >(null)
+    }
+    var showTranslateTargetPicker by remember { mutableStateOf(false) }
+    LaunchedEffect(settingsPage, translateModelsTick) {
+        if (settingsPage == "translate") {
+            if (GeckoHolder.ensure(settingsContext) == null) {
+                translateModelsFailed = true
+            } else {
+                GeckoTranslateBridge.fetchSupportedLanguages { s ->
+                    translateSupport = s
+                }
+                GeckoTranslateBridge.fetchModelStates { m ->
+                    if (m == null) {
+                        translateModelsFailed = true
+                    } else {
+                        translateModels = m
+                        translateModelsFailed = false
+                    }
+                }
+            }
+        }
+    }
     // Settings is a two-level menu now: a home list of six
     // categories, each opening its own sub-page. Back from a
     // sub-page returns here; back from home leaves settings.
@@ -18314,6 +18847,7 @@ private fun SettingsScreen(
                             "privacy" -> "隐私与数据"
                             "download" -> "下载"
                             "adblock" -> "广告拦截"
+                            "translate" -> "翻译"
                             "about" -> "关于"
                             else -> "设置"
                         }
@@ -18375,6 +18909,7 @@ private fun SettingsScreen(
                         Triple("privacy", "隐私与数据", Icons.Filled.Lock),
                         Triple("download", "下载", Icons.Filled.Download),
                         Triple("adblock", "广告拦截", Icons.Filled.VisibilityOff),
+                        Triple("translate", "翻译", Icons.Filled.Translate),
                         Triple("about", "关于", Icons.Filled.Info)
                     )
                 ) { (key, label, icon) ->
@@ -18981,6 +19516,12 @@ private fun SettingsScreen(
                             }
                         )
                         ListItem(
+                            headlineContent = { Text("网页翻译") },
+                            supportingContent = {
+                                Text("在设备本地翻译，语言包按需下载，网页内容不发给服务器")
+                            }
+                        )
+                        ListItem(
                             headlineContent = { Text("独立的 Cookie 罐") },
                             supportingContent = {
                                 Text("和系统 WebView 分开存；无痕是真隔离")
@@ -19326,6 +19867,192 @@ private fun SettingsScreen(
                 }
             }
             }
+            if (targetPage == "translate") {
+            item { GroupDivider() }
+            item {
+                Text(
+                    "翻译在设备本地完成，网页内容不会发给任何服务器；" +
+                        "语言包由火狐内核管理，保存在浏览器内部，普通和无痕模式共用。",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            item {
+                val toLangs = translateSupport?.toLanguages ?: emptyList()
+                val targetName = if (translateTarget.isBlank()) {
+                    "跟随系统语言"
+                } else {
+                    toLangs.firstOrNull { it.code == translateTarget }
+                        ?.localizedDisplayName?.ifBlank { translateTarget }
+                        ?: translateTarget
+                }
+                ListItem(
+                    headlineContent = { Text("翻译目标语言") },
+                    supportingContent = { Text(targetName) },
+                    modifier = Modifier.clickable {
+                        if (toLangs.isNotEmpty()) {
+                            showTranslateTargetPicker = true
+                        } else {
+                            android.widget.Toast.makeText(
+                                settingsContext,
+                                "语言列表还没加载出来，请稍后再试",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                )
+            }
+            item { GroupDivider() }
+            item {
+                Text("语言模型", style = MaterialTheme.typography.titleMedium)
+            }
+            val modelList = translateModels
+            when {
+                translateModelsFailed -> {
+                    item {
+                        ListItem(
+                            headlineContent = {
+                                Text("语言模型没读出来，火狐内核可能还没启动好")
+                            },
+                            trailingContent = {
+                                TextButton(onClick = {
+                                    translateModelsFailed = false
+                                    translateModelsTick++
+                                }) { Text("重试") }
+                            }
+                        )
+                    }
+                }
+                modelList == null -> {
+                    item {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.padding(vertical = 12.dp)
+                        ) {
+                            CircularProgressIndicator()
+                            Text("正在读取语言模型…")
+                        }
+                    }
+                }
+                else -> {
+                    val downloaded = modelList.filter {
+                        it.isDownloaded == true
+                    }
+                    val available = modelList.filter {
+                        it.isDownloaded != true
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = {
+                                Text(
+                                    "已下载 ${downloaded.size} 个，共 " +
+                                        formatStorageSize(
+                                            downloaded.sumOf { it.size }
+                                        )
+                                )
+                            }
+                        )
+                    }
+                    items(downloaded) { model ->
+                        ListItem(
+                            headlineContent = {
+                                Text(
+                                    model.language.localizedDisplayName
+                                        .ifBlank { model.language.code }
+                                )
+                            },
+                            supportingContent = {
+                                Text(formatStorageSize(model.size))
+                            },
+                            trailingContent = {
+                                TextButton(onClick = {
+                                    pendingModelDelete = model
+                                }) { Text("删除") }
+                            }
+                        )
+                    }
+                    if (available.isNotEmpty()) {
+                        item {
+                            Text(
+                                "还没下载的语言",
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                        }
+                        items(available) { model ->
+                            val code = model.language.code
+                            val pending = modelBusy[code]
+                            ListItem(
+                                headlineContent = {
+                                    Text(
+                                        model.language.localizedDisplayName
+                                            .ifBlank { code }
+                                    )
+                                },
+                                trailingContent = {
+                                    if (pending != null) {
+                                        Row(
+                                            verticalAlignment =
+                                                Alignment.CenterVertically,
+                                            horizontalArrangement =
+                                                Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(18.dp),
+                                                strokeWidth = 2.dp
+                                            )
+                                            TextButton(onClick = {
+                                                // Cancelling detaches
+                                                // the wait; whether the
+                                                // engine aborts the
+                                                // in-flight fetch is not
+                                                // promised by the API.
+                                                try {
+                                                    pending.cancel()
+                                                } catch (t: Throwable) {
+                                                    // Already done.
+                                                }
+                                                modelBusy = modelBusy - code
+                                            }) { Text("取消") }
+                                        }
+                                    } else {
+                                        TextButton(onClick = {
+                                            val result =
+                                                GeckoTranslateBridge
+                                                    .downloadLanguageModel(
+                                                        code
+                                                    ) { e ->
+                                                        modelBusy =
+                                                            modelBusy - code
+                                                        if (e == null) {
+                                                            translateModelsTick++
+                                                        } else {
+                                                            android.widget.Toast
+                                                                .makeText(
+                                                                    settingsContext,
+                                                                    translateErrorText(
+                                                                        translateErrorCodeOf(
+                                                                            e
+                                                                        )
+                                                                    ),
+                                                                    android.widget
+                                                                        .Toast
+                                                                        .LENGTH_LONG
+                                                                ).show()
+                                                        }
+                                                    }
+                                            if (result != null) {
+                                                modelBusy =
+                                                    modelBusy + (code to result)
+                                            }
+                                        }) { Text("下载") }
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+            }
             if (targetPage == "about") {
             item {
                 // Brand header (v0.92.0), laid out after the
@@ -19608,6 +20335,118 @@ private fun SettingsScreen(
             dismissButton = {
                 TextButton(onClick = { updateAvailable = null }) {
                     Text("以后再说")
+                }
+            }
+        )
+    }
+    if (showTranslateTargetPicker) {
+        val toLangs = translateSupport?.toLanguages ?: emptyList()
+        AlertDialog(
+            onDismissRequest = { showTranslateTargetPicker = false },
+            title = { Text("翻译目标语言") },
+            text = {
+                LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
+                    item {
+                        ListItem(
+                            headlineContent = { Text("跟随系统语言") },
+                            trailingContent =
+                                if (translateTarget.isBlank()) {
+                                    {
+                                        Icon(
+                                            Icons.Filled.Check,
+                                            contentDescription = "当前选择"
+                                        )
+                                    }
+                                } else {
+                                    null
+                                },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    translateTarget = ""
+                                    store.translateTargetLanguage = ""
+                                    showTranslateTargetPicker = false
+                                }
+                        )
+                    }
+                    items(toLangs) { lang ->
+                        ListItem(
+                            headlineContent = {
+                                Text(
+                                    lang.localizedDisplayName
+                                        .ifBlank { lang.code }
+                                )
+                            },
+                            trailingContent =
+                                if (lang.code == translateTarget) {
+                                    {
+                                        Icon(
+                                            Icons.Filled.Check,
+                                            contentDescription = "当前选择"
+                                        )
+                                    }
+                                } else {
+                                    null
+                                },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    translateTarget = lang.code
+                                    store.translateTargetLanguage = lang.code
+                                    showTranslateTargetPicker = false
+                                }
+                        )
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showTranslateTargetPicker = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+    val modelToDelete = pendingModelDelete
+    if (modelToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { pendingModelDelete = null },
+            title = { Text("删除这个语言包？") },
+            text = {
+                Text(
+                    "会删掉" +
+                        (modelToDelete.language.localizedDisplayName
+                            .ifBlank { modelToDelete.language.code }) +
+                        "的语言包（" +
+                        formatStorageSize(modelToDelete.size) +
+                        "），下次翻译这种语言时要重新下载。"
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    pendingModelDelete = null
+                    GeckoTranslateBridge.deleteLanguageModel(
+                        modelToDelete.language.code
+                    ) { e ->
+                        if (e == null) {
+                            translateModelsTick++
+                            android.widget.Toast.makeText(
+                                settingsContext, "语言包已删除",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        } else {
+                            android.widget.Toast.makeText(
+                                settingsContext,
+                                translateErrorText(translateErrorCodeOf(e)),
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingModelDelete = null }) {
+                    Text("取消")
                 }
             }
         )

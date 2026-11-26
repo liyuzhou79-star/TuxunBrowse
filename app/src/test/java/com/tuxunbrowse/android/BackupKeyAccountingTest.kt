@@ -24,7 +24,7 @@ import java.io.File
  *
  * The audit behind this test (v0.205.0) walked the export
  * call site, backupToJson, parseBackup and applyBackup
- * field by field: the 18 settings, the four lists and the
+ * field by field: the 19 settings, the four lists and the
  * blocked total are written, parsed and applied
  * symmetrically; the three fingerprint families the task
  * named （我的档案 / 逐组合代理簿 / 保护开关） are out by
@@ -59,6 +59,7 @@ class BackupKeyAccountingTest {
         "startup_restore" to Disposition.BACKUP,
         "download_mode" to Disposition.BACKUP,
         "history_retention" to Disposition.BACKUP,
+        "translate_target_lang" to Disposition.BACKUP,
         // Lists + blocked total.
         "bookmarks" to Disposition.BACKUP,
         "bookmark_folders" to Disposition.BACKUP,
@@ -145,7 +146,7 @@ class BackupKeyAccountingTest {
             .substringBefore("fun parseBackup")
         val parser = src.substringAfter("fun parseBackup")
             .substringBefore("fun bookmarksToJson")
-        // The 18 settings-slice JSON names: each must be
+        // The 19 settings-slice JSON names: each must be
         // written by backupToJson and read by parseBackup —
         // a field present on only one side is a silent loss.
         val fields = listOf(
@@ -155,7 +156,8 @@ class BackupKeyAccountingTest {
             "webDarkMode", "readerFontSize", "readerBackground",
             "httpsFirstEnabled", "guardScriptEnabled",
             "trackingProtectionLevel", "doNotTrackEnabled",
-            "globalPrivacyControlEnabled", "webRtcDisabled"
+            "globalPrivacyControlEnabled", "webRtcDisabled",
+            "translateTargetLanguage"
         )
         for (field in fields) {
             assertTrue(

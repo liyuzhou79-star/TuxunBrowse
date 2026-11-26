@@ -54,6 +54,7 @@ import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.GeckoView
 import org.mozilla.geckoview.GeckoViewPrintDocumentAdapter
 import org.mozilla.geckoview.StorageController
+import org.mozilla.geckoview.TranslationsController
 import org.mozilla.geckoview.WebRequestError
 import org.mozilla.geckoview.WebResponse
 
@@ -982,6 +983,24 @@ class BrowserTab(
     var findInfo by mutableStateOf("")
 
     /**
+     * Page-translation state (v0.226.0, Gecko tabs only — the
+     * WebView has no translation API at all). Fed by the
+     * session's translations delegate: the engine detects the
+     * page language on its own and reports state changes, so
+     * these fields are a mirror of the engine's truth, never
+     * the app's guess. [translateDetectedLanguage] is the BCP 47
+     * tag of the current page (null until the engine reports
+     * one); [translatedToLanguage] is the target of the live
+     * translation; [translateFailure] is the plain-language
+     * reason of the last failure.
+     */
+    var translatePhase by mutableStateOf(TranslatePhase.IDLE)
+    var translateDetectedLanguage by mutableStateOf<String?>(null)
+    var translateDetectedSupported by mutableStateOf(false)
+    var translatedToLanguage by mutableStateOf<String?>(null)
+    var translateFailure by mutableStateOf<String?>(null)
+
+    /**
      * Sequence number of this tab's latest Gecko find request
      * (v0.213.0). Gecko find results arrive asynchronously, one
      * GeckoResult per find() call; the counter may only be
@@ -1561,6 +1580,97 @@ class BrowserTab(
                 },
                 {
                     mainHandler.post { onAsyncFailure?.invoke() }
+                }
+            )
+            true
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * Translate the current page with the Gecko engine's own
+     * translator (v0.226.0). SessionTranslation.translate and
+     * the TranslationOptions.downloadModel flag both exist in
+     * the pinned GeckoView 132 AAR (javap-verified): with
+     * downloadModel on, a missing language model is fetched as
+     * part of the same call, and the returned GeckoResult only
+     * completes when the translation is done (or answers with a
+     * TranslationsException whose code [translateErrorText]
+     * turns into a plain-language reason). Progress is also
+     * mirrored by the translations delegate into
+     * [translatePhase]; this method's own result settles the
+     * phase when the delegate has not already. Returns false
+     * when the tab has no live Gecko session to ask.
+     */
+    fun translatePage(
+        fromLanguage: String,
+        toLanguage: String,
+        onFailure: (String) -> Unit
+    ): Boolean {
+        val session = geckoSession ?: return false
+        translatePhase = TranslatePhase.WORKING
+        translateFailure = null
+        return try {
+            val options = TranslationsController.SessionTranslation
+                .TranslationOptions.Builder()
+                .downloadModel(true)
+                .build()
+            session.sessionTranslation.translate(
+                TranslationsController.SessionTranslation
+                    .TranslationPair(fromLanguage, toLanguage),
+                options
+            ).accept(
+                {
+                    // A late answer from a dead/rebuilt session
+                    // must not touch the new session's state —
+                    // the same liveness guard as printPage.
+                    if (geckoSession === session &&
+                        translatePhase == TranslatePhase.WORKING
+                    ) {
+                        translatedToLanguage = toLanguage
+                        translatePhase = TranslatePhase.TRANSLATED
+                    }
+                },
+                { e ->
+                    if (geckoSession === session) {
+                        val message =
+                            translateErrorText(translateErrorCodeOf(e))
+                        translatePhase = TranslatePhase.FAILED
+                        translateFailure = message
+                        onFailure(message)
+                    }
+                }
+            )
+            true
+        } catch (t: Throwable) {
+            translatePhase = TranslatePhase.FAILED
+            translateFailure = "翻译没能开始，请重试"
+            false
+        }
+    }
+
+    /**
+     * Undo [translatePage]: the engine restores the page's
+     * original language. Failures go through [onFailure] with
+     * the same plain-language mapping.
+     */
+    fun restoreOriginalPage(onFailure: (String) -> Unit): Boolean {
+        val session = geckoSession ?: return false
+        return try {
+            session.sessionTranslation.restoreOriginalPage().accept(
+                {
+                    if (geckoSession === session) {
+                        translatePhase = TranslatePhase.IDLE
+                        translatedToLanguage = null
+                    }
+                },
+                { e ->
+                    if (geckoSession === session) {
+                        onFailure(
+                            translateErrorText(translateErrorCodeOf(e))
+                        )
+                    }
                 }
             )
             true
@@ -3277,6 +3387,14 @@ class BrowserTab(
                 // Same find-state reset as the WebView side
                 // (v0.124.0): a new page kills the find session.
                 resetFindState()
+                // A new page also ends any translation of the old
+                // one (v0.226.0): the engine re-detects the new
+                // page's language and reports it through the
+                // translations delegate; the detected tag itself
+                // is left for that report to replace.
+                translatePhase = TranslatePhase.IDLE
+                translatedToLanguage = null
+                translateFailure = null
             }
 
             override fun onProgressChange(s: GeckoSession, p: Int) {
@@ -3324,6 +3442,52 @@ class BrowserTab(
                     }
                 }
             }
+        // Page translation (v0.226.0): the engine detects the
+        // page language itself and pushes state changes here —
+        // detected languages, the live translation pair, errors.
+        // The tab only mirrors them into snapshot state for the
+        // translate sheet; the engine's offer callback is
+        // deliberately left at its default no-op, so nothing
+        // ever pops a translation prompt on its own (the menu
+        // entry is the one entry point).
+        session.setTranslationsSessionDelegate(
+            object : TranslationsController.SessionTranslation.Delegate {
+                override fun onTranslationStateChange(
+                    s: GeckoSession,
+                    state: TranslationsController.SessionTranslation
+                        .TranslationState
+                ) {
+                    state.detectedLanguages?.let { detected ->
+                        translateDetectedLanguage = detected.docLangTag
+                        translateDetectedSupported =
+                            detected.isDocLangTagSupported == true
+                    }
+                    val error = state.error
+                    val pair = state.requestedTranslationPair
+                    when {
+                        !error.isNullOrBlank() -> {
+                            translatePhase = TranslatePhase.FAILED
+                            translateFailure = "翻译没成功，请重试"
+                        }
+                        pair != null -> {
+                            translatedToLanguage = pair.toLanguage
+                            translatePhase =
+                                if (state.hasVisibleChange == true) {
+                                    TranslatePhase.TRANSLATED
+                                } else {
+                                    TranslatePhase.WORKING
+                                }
+                        }
+                        translatePhase == TranslatePhase.TRANSLATED -> {
+                            // Pair cleared without an error: the
+                            // page was restored or replaced.
+                            translatePhase = TranslatePhase.IDLE
+                            translatedToLanguage = null
+                        }
+                    }
+                }
+            }
+        )
         // GeckoView 132 reports page titles on ContentDelegate, not on
         // NavigationDelegate (where older versions had them).
         session.contentDelegate = object : GeckoSession.ContentDelegate {

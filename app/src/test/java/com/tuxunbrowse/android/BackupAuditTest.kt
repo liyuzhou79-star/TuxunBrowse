@@ -49,7 +49,8 @@ class FullBackupRoundTripAuditTest {
             trackingProtectionLevel = TrackingProtectionLevel.STRICT,
             doNotTrackEnabled = true,
             globalPrivacyControlEnabled = true,
-            webRtcDisabled = true
+            webRtcDisabled = true,
+            translateTargetLanguage = "zh-Hans"
         )
         val json = backupToJson(
             listOf(Bookmark("甲站", "https://a.example", pinned = true, folder = "工作")),
@@ -62,7 +63,7 @@ class FullBackupRoundTripAuditTest {
         )
         val data = parseBackup(json)!!
         assertEquals(settings, data.settings)
-        assertEquals(18, data.settings.overwriteSummary().size)
+        assertEquals(19, data.settings.overwriteSummary().size)
         assertEquals(listOf("compat.example"), data.compatSites)
         assertEquals(listOf("desk.example"), data.desktopSites)
         assertEquals(listOf("工作", "空夹"), data.bookmarkFolders)

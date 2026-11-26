@@ -1189,6 +1189,18 @@ class Store(private val context: Context) {
         get() = SearchEngine.fromId(safeString(KEY_SEARCH_ENGINE, null))
         set(value) = prefs.edit().putString(KEY_SEARCH_ENGINE, value.id).apply()
 
+    /**
+     * Page-translation target language (v0.226.0): a GeckoView
+     * translations language code (e.g. "zh-Hans"), or "" to
+     * follow the system language. Written by the settings
+     * translation page, read when a translate sheet opens, and
+     * carried by the full backup like the other settings.
+     */
+    var translateTargetLanguage: String
+        get() = safeString(KEY_TRANSLATE_TARGET, null) ?: ""
+        set(value) =
+            prefs.edit().putString(KEY_TRANSLATE_TARGET, value).apply()
+
     /** App UI theme mode (app chrome only; web content is separate). */
     var themeMode: ThemeMode
         get() = ThemeMode.fromId(safeString(KEY_THEME_MODE, null))
@@ -2013,6 +2025,7 @@ class Store(private val context: Context) {
         private const val KEY_FP_CUSTOM = "fp_custom"
         private const val KEY_FP_PROTECT = "fp_protect"
         private const val KEY_FP_PROXY = "fp_proxy"
+        private const val KEY_TRANSLATE_TARGET = "translate_target_lang"
         private const val KEY_FP_PROXIES = "fp_proxies"
         private const val KEY_FP_STORAGE_OWNER =
             "fp_storage_legacy_owner"
@@ -2153,7 +2166,13 @@ data class BackupSettings(
     val trackingProtectionLevel: TrackingProtectionLevel? = null,
     val doNotTrackEnabled: Boolean? = null,
     val globalPrivacyControlEnabled: Boolean? = null,
-    val webRtcDisabled: Boolean? = null
+    val webRtcDisabled: Boolean? = null,
+    // Added in v0.226.0: page-translation target language code
+    // ("" never written — the exporter passes null for
+    // follow-system, so an absent field keeps meaning
+    // follow-system on every version). Same optional-on-read
+    // treatment as the v0.51.0 additions.
+    val translateTargetLanguage: String? = null
 ) {
     /** Plain-language list of what applying these settings would overwrite. */
     fun overwriteSummary(): List<String> {
@@ -2176,6 +2195,7 @@ data class BackupSettings(
         if (doNotTrackEnabled != null) out.add("不要追踪开关")
         if (globalPrivacyControlEnabled != null) out.add("不出售或分享资料开关")
         if (webRtcDisabled != null) out.add("停用 WebRTC 开关")
+        if (translateTargetLanguage != null) out.add("翻译目标语言")
         return out
     }
 }
@@ -2265,6 +2285,9 @@ fun backupToJson(
     }
     settings.webRtcDisabled?.let {
         settingsObj.put("webRtcDisabled", it)
+    }
+    settings.translateTargetLanguage?.let {
+        settingsObj.put("translateTargetLanguage", it)
     }
     val compatArr = JSONArray()
     compatSites.forEach { compatArr.put(it) }
@@ -2433,7 +2456,8 @@ fun parseBackup(raw: String): BackupData? {
             doNotTrackEnabled = boolOf("doNotTrackEnabled"),
             globalPrivacyControlEnabled =
                 boolOf("globalPrivacyControlEnabled"),
-            webRtcDisabled = boolOf("webRtcDisabled")
+            webRtcDisabled = boolOf("webRtcDisabled"),
+            translateTargetLanguage = strOf("translateTargetLanguage")
         )
     }
     // Compat sites (v0.51.0): plain host names only — anything with
