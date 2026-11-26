@@ -15611,6 +15611,104 @@ private fun fpSelfCheckProbe(expJson: String): String = """
       h1 === h2 ? '两次读取一致' : '两次读取不一致');
   } catch (e) { row('画布稳定性', 'bad', '读取失败'); }
   try {
+    // Function & descriptor shapes (v0.220.0, the lie-
+    // detection audit): the wrappers must be shaped like
+    // the natives — prototype attributes enumerable, the
+    // connection accessor on the prototype (not the
+    // instance), getBattery inherited not owned, and the
+    // Intl statics carrying their real name in toString
+    // (a .bind() copy reports 'bound …' and an anonymous
+    // native-code string).
+    var shapeBad = '';
+    function shape(cond, label) {
+      if (!cond && !shapeBad) shapeBad = label;
+    }
+    var uaDesc = Object.getOwnPropertyDescriptor(
+      Navigator.prototype, 'userAgent');
+    shape(!!uaDesc && uaDesc.enumerable === true &&
+      typeof uaDesc.get === 'function', 'UA 描述符');
+    shape(!Object.getOwnPropertyDescriptor(
+        navigator, 'connection') &&
+      !!Object.getOwnPropertyDescriptor(
+        Navigator.prototype, 'connection'), '连接位置');
+    shape(!Object.getOwnPropertyDescriptor(
+        navigator, 'getBattery'), '电量方法位置');
+    shape(!Object.getOwnPropertyDescriptor(
+        window, 'matchMedia'), 'matchMedia 位置');
+    var slo = Intl.DateTimeFormat.supportedLocalesOf;
+    shape(Function.prototype.toString.call(slo) ===
+      'function supportedLocalesOf() { [native code] }',
+      'Intl 静态函数名');
+    var gid = CanvasRenderingContext2D.prototype
+      .getImageData;
+    shape(Function.prototype.toString.call(gid) ===
+      'function getImageData() { [native code] }',
+      'getImageData 形态');
+    row('函数形态', shapeBad ? 'bad' : 'ok',
+      shapeBad ? shapeBad + '与原生不一致'
+        : '描述符与函数形态对版');
+  } catch (e) { row('函数形态', 'bad', '读取失败'); }
+  try {
+    // Fabricated-object shapes (v0.220.0): the objects the
+    // payload builds (UA data, fake media query lists)
+    // must be instances of the real interfaces and carry
+    // no own enumerable keys, like the natives.
+    var uadOk = true;
+    var uadDetail = '';
+    if (window.NavigatorUAData) {
+      var uad = navigator.userAgentData;
+      uadOk = !!uad && uad instanceof NavigatorUAData &&
+        Object.keys(uad).length === 0;
+      uadDetail = uadOk ? '' : 'UA 数据对象形态不对';
+    }
+    var mqlOk = true;
+    if (window.MediaQueryList && window.matchMedia) {
+      var mql = window.matchMedia('(color-gamut: srgb)');
+      mqlOk = mql instanceof MediaQueryList &&
+        Object.keys(mql).length === 0;
+      if (!mqlOk && !uadDetail) {
+        uadDetail = '媒体查询对象形态不对';
+      }
+    }
+    row('伪装对象形态', uadOk && mqlOk ? 'ok' : 'bad',
+      uadOk && mqlOk ? '真接口原型、无多余键'
+        : uadDetail);
+  } catch (e) { row('伪装对象形态', 'bad', '读取失败'); }
+  try {
+    // Canvas noise shape (v0.220.0): the noise is keyed by
+    // pixel content, so two DIFFERENT flat fills must NOT
+    // share one deviation lattice — a shared lattice is
+    // what a calibration image maps and re-verifies. No
+    // deviations at all means the noise is off or absent:
+    // reported 'na', never dressed up as a pass.
+    function flatDev(r, g, b) {
+      var c2 = document.createElement('canvas');
+      c2.width = 96; c2.height = 96;
+      var x2 = c2.getContext('2d');
+      x2.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+      x2.fillRect(0, 0, 96, 96);
+      var dd = x2.getImageData(0, 0, 96, 96).data;
+      var s = [];
+      for (var i = 0; i + 3 < dd.length; i += 4) {
+        if (dd[i] !== r || dd[i + 1] !== g) s.push(i);
+      }
+      return s;
+    }
+    var devA = flatDev(128, 128, 128);
+    var devB = flatDev(64, 200, 90);
+    if (devA.length === 0 && devB.length === 0) {
+      row('画布噪声形态', 'na',
+        '未检出噪声（保护关闭或噪声未生效）');
+    } else {
+      var sameLattice =
+        JSON.stringify(devA) === JSON.stringify(devB);
+      row('画布噪声形态', sameLattice ? 'bad' : 'ok',
+        sameLattice
+          ? '两种图案共用同一噪声格（可被校准图测出）'
+          : '噪声随图案内容而变');
+    }
+  } catch (e) { row('画布噪声形态', 'bad', '读取失败'); }
+  try {
     // The pair must agree with each other AND with the value
     // the persona claims (v0.194.0): every profile here is an
     // Android 14 device, where Chrome's inline PDF rollout
@@ -15641,9 +15739,12 @@ private fun fpSelfCheckProbe(expJson: String): String = """
   var voicesSettled = false;
   var geoSettled = false;
   var oriSettled = false;
+  var battSettled = false;
+  var permSettled = false;
   function maybeReport() {
     if (gpuSettled && uaSettled && mediaSettled &&
-        voicesSettled && geoSettled && oriSettled) {
+        voicesSettled && geoSettled && oriSettled &&
+        battSettled && permSettled) {
       FpSelfCheck.report(JSON.stringify(rows));
     }
   }
@@ -15814,6 +15915,85 @@ private fun fpSelfCheckProbe(expJson: String): String = """
   } catch (e) {
     row('方向事件', 'bad', '读取失败');
     oriSettled = true;
+  }
+  try {
+    // Battery shape (v0.220.0): getBattery must resolve —
+    // it used to throw on the fabricated object's readonly
+    // prototype attributes — and it must resolve to THE
+    // same manager every call, an instance of the real
+    // interface with no own enumerable keys.
+    if (navigator.getBattery) {
+      var battDone = false;
+      function battRow(state, detail) {
+        if (battDone) return;
+        battDone = true;
+        row('电池形态', state, detail);
+        battSettled = true; maybeReport();
+      }
+      setTimeout(function () {
+        battRow('na', '查询超时');
+      }, 3000);
+      Promise.all([navigator.getBattery(),
+        navigator.getBattery()]).then(function (pair) {
+        var b = pair[0];
+        var shapeOk = !window.BatteryManager ||
+          b instanceof BatteryManager;
+        var keysOk = Object.keys(b).length === 0;
+        var valOk = typeof b.level === 'number' &&
+          typeof b.charging === 'boolean';
+        battRow(
+          pair[0] === pair[1] && shapeOk && keysOk && valOk
+            ? 'ok' : 'bad',
+          '两次调用' +
+          (pair[0] === pair[1] ? '同一对象' : '不同对象') +
+          '，形态 ' + (shapeOk ? '真接口' : '普通对象') +
+          '，电量 ' + b.level);
+      }).catch(function () {
+        battRow('bad', 'getBattery 调用失败');
+      });
+    } else {
+      row('电池形态', 'na', '无 getBattery');
+      battSettled = true;
+    }
+  } catch (e) {
+    row('电池形态', 'bad', '读取失败');
+    battSettled = true;
+  }
+  try {
+    // Permission-status shape (v0.220.0): the status the
+    // consistency wrapper returns must be an instance of
+    // the real PermissionStatus interface with no own
+    // enumerable keys, not a plain literal.
+    if (navigator.permissions &&
+        navigator.permissions.query) {
+      var permDone = false;
+      function permRow(state, detail) {
+        if (permDone) return;
+        permDone = true;
+        row('权限对象形态', state, detail);
+        permSettled = true; maybeReport();
+      }
+      setTimeout(function () {
+        permRow('na', '查询超时');
+      }, 3000);
+      navigator.permissions.query({ name: 'notifications' })
+        .then(function (st) {
+          var shapeOk = !window.PermissionStatus ||
+            st instanceof PermissionStatus;
+          var keysOk = Object.keys(st).length === 0;
+          permRow(shapeOk && keysOk ? 'ok' : 'bad',
+            '形态 ' + (shapeOk ? '真接口' : '普通对象') +
+            '，状态 ' + st.state);
+        }).catch(function () {
+          permRow('na', '查询被拒绝');
+        });
+    } else {
+      row('权限对象形态', 'na', '无 permissions');
+      permSettled = true;
+    }
+  } catch (e) {
+    row('权限对象形态', 'bad', '读取失败');
+    permSettled = true;
   }
   try {
     // Speech voices (v0.201.0): the list must be the PROFILE

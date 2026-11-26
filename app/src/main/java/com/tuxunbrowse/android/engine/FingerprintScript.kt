@@ -223,10 +223,20 @@ object FingerprintScript {
   // byte, a different hash — with a visibly different
   // density.) The rule is a pure function of (seed, buffer
   // position): repeated reads of the same pixels agree.
+  // Content-keyed (v0.220.0): the hash also mixes the pixel's
+  // own RGB, so the deviation lattice is a function of the
+  // IMAGE, not a fixed grid. A position-only lattice can be
+  // mapped with one flat calibration image and then verified
+  // against any second image — proof of synthetic noise.
+  // Keyed by content, a calibration on one colour predicts
+  // nothing about another, while identical pixels at the
+  // same position still draw the identical delta, so repeat
+  // reads and cross-path reads keep agreeing.
   function noiseBytes(d) {
     if (!FP_OPT_CANVAS) return;
     for (var i = 0; i + 3 < d.length; i += 4) {
-      var h = hash(SEED * 1000003 + i);
+      var h = hash(SEED * 1000003 + i +
+        d[i] * 7 + d[i + 1] * 13 + d[i + 2] * 17);
       if (h % 211 === 0) {
         var delta = (h % 2 === 0) ? 1 : -1;
         d[i] = Math.max(0, Math.min(255, d[i] + delta));
@@ -299,6 +309,65 @@ object FingerprintScript {
       });
     } catch (e) {}
   }
+  // Install a wrapped method where the native one lives: on
+  // the PROTOTYPE behind the instance the API hangs off
+  // (v0.220.0). setMethod(instance, ...) leaves an own data
+  // property where a descriptor sweep expects none — the
+  // native is inherited, so the wrapper is installed on the
+  // prototype and read back through the instance; any failure
+  // falls back to the instance install rather than losing
+  // the wrapper.
+  function setMethodOn(instance, name, fn) {
+    try {
+      var proto = Object.getPrototypeOf(instance);
+      if (proto && proto !== Object.prototype) {
+        Object.defineProperty(proto, name, {
+          value: fn, writable: true,
+          enumerable: false, configurable: true
+        });
+        if (instance[name] === fn) return;
+      }
+    } catch (e) {}
+    setMethod(instance, name, fn);
+  }
+  // An on* event-handler attribute with a real backing store
+  // (v0.220.0): fabricated interface objects (battery,
+  // permission status, media query list) need handler props
+  // a page can set and read back, shaped like the native
+  // get/set pair instead of a plain data slot.
+  function defHandler(obj, prop) {
+    try {
+      var store = { fn: null };
+      var get = function () { return store.fn; };
+      Object.defineProperty(get, 'name',
+        { value: 'get ' + prop, configurable: true });
+      FP_TOSTRING.set(get,
+        'function get ' + prop + '() { [native code] }');
+      var set = function (fn) {
+        store.fn = (typeof fn === 'function') ? fn : null;
+      };
+      Object.defineProperty(set, 'name',
+        { value: 'set ' + prop, configurable: true });
+      FP_TOSTRING.set(set,
+        'function set ' + prop + '() { [native code] }');
+      Object.defineProperty(obj, prop, {
+        get: get, set: set, configurable: true
+      });
+    } catch (e) {}
+  }
+  // A method on a fabricated object, shaped like a native
+  // prototype method: non-enumerable data property with the
+  // name/length/toString registry applied (v0.220.0). Plain
+  // assignment would leave an enumerable own property where
+  // natives have none.
+  function stubMethod(obj, name, len, impl) {
+    try {
+      Object.defineProperty(obj, name, {
+        value: fixFnAs(impl, name, len),
+        writable: true, configurable: true
+      });
+    } catch (e) {}
+  }
   function section(fn) { try { fn(); } catch (e) {} }
 
   section(function () {
@@ -321,12 +390,33 @@ object FingerprintScript {
     def(nav, 'hardwareConcurrency', ${d.hardwareConcurrency});
     def(nav, 'deviceMemory', ${d.deviceMemory});
     var brands = [$brandsJs];
-    var uaData = {
-      brands: brands, mobile: true, platform: '${FingerprintProfiles.UA_PLATFORM}',
-      getHighEntropyValues: function (hints) {
+    var fullBrands = [$fullBrandsJs];
+    // Native brand lists are frozen solid (v0.220.0): the
+    // array and its entries refuse writes, so a page that
+    // pokes at them and reads back a changed value would
+    // know the object was script-made.
+    brands.forEach(function (b) { Object.freeze(b); });
+    Object.freeze(brands);
+    fullBrands.forEach(function (b) { Object.freeze(b); });
+    Object.freeze(fullBrands);
+    // Built on the real NavigatorUAData prototype
+    // (v0.220.0): a plain literal failed instanceof and
+    // Object.prototype.toString, and its five enumerable
+    // keys were a sweep-visible tell — the fabricated-object
+    // lesson the geolocation section learned in v0.208.0,
+    // applied here. Attributes ride def() getters and the
+    // two methods are non-enumerable stubMethod slots, so
+    // the object carries no own enumerable keys.
+    var uaData = window.NavigatorUAData
+      ? Object.create(NavigatorUAData.prototype) : {};
+    def(uaData, 'brands', brands);
+    def(uaData, 'mobile', true);
+    def(uaData, 'platform', '${FingerprintProfiles.UA_PLATFORM}');
+    stubMethod(uaData, 'getHighEntropyValues', 1,
+      function (hints) {
         var all = {
           architecture: '${FingerprintProfiles.UA_ARCHITECTURE}', bitness: '${FingerprintProfiles.UA_BITNESS}', brands: brands,
-          fullVersionList: [$fullBrandsJs],
+          fullVersionList: fullBrands,
           mobile: true, model: ${jsStr(d.uaModel)}, platform: '${FingerprintProfiles.UA_PLATFORM}',
           platformVersion: '14.0.0', uaFullVersion: '${resolved.chromeFullVersion}',
           formFactors: ['Mobile'], wow64: false
@@ -334,14 +424,10 @@ object FingerprintScript {
         var out = { brands: brands, mobile: true, platform: '${FingerprintProfiles.UA_PLATFORM}' };
         (hints || []).forEach(function (h) { if (h in all) out[h] = all[h]; });
         return Promise.resolve(out);
-      },
-      toJSON: function () {
-        return { brands: brands, mobile: true, platform: '${FingerprintProfiles.UA_PLATFORM}' };
-      }
-    };
-    fixFnAs(uaData.getHighEntropyValues,
-      'getHighEntropyValues', 1);
-    fixFnAs(uaData.toJSON, 'toJSON', 0);
+      });
+    stubMethod(uaData, 'toJSON', 0, function () {
+      return { brands: brands, mobile: true, platform: '${FingerprintProfiles.UA_PLATFORM}' };
+    });
     def(nav, 'userAgentData', uaData);
   });
 
@@ -394,7 +480,31 @@ object FingerprintScript {
     // panel pipeline that reports otherwise.
     def(scr, 'colorDepth', 24);
     def(scr, 'pixelDepth', 24);
-    def(window, 'devicePixelRatio', ${d.devicePixelRatio});
+    // devicePixelRatio lives on the Window prototype as a
+    // WebIDL attribute (v0.220.0): pinning it on the window
+    // object itself left an own accessor where the native
+    // has none. Install on the prototype with the native
+    // enumerable flag; fall back to the plain def() on the
+    // window when the prototype cannot be reached.
+    (function () {
+      var ratio = ${d.devicePixelRatio};
+      try {
+        var wp = Object.getPrototypeOf(window);
+        if (!wp) throw new Error('no proto');
+        var getter = function () { return ratio; };
+        Object.defineProperty(getter, 'name',
+          { value: 'get devicePixelRatio',
+            configurable: true });
+        FP_TOSTRING.set(getter,
+          'function get devicePixelRatio()' +
+          ' { [native code] }');
+        Object.defineProperty(wp, 'devicePixelRatio', {
+          get: getter, enumerable: true, configurable: true
+        });
+        if (window.devicePixelRatio === ratio) return;
+      } catch (e) {}
+      def(window, 'devicePixelRatio', ratio);
+    })();
     // Touch points (v0.150.0, behaviour surface): Android Chrome
     // reports 5 on the profile devices and on phones generally.
     // The host value would usually agree — but "usually" is how
@@ -419,6 +529,17 @@ object FingerprintScript {
       (asUTC - Math.floor(date.getTime() / 1000) * 1000) / 60000);
   }
   section(function () {
+    // supportedLocalesOf without .bind (v0.220.0): a bound
+    // function reports name 'bound supportedLocalesOf' and
+    // stringifies as 'function () { [native code] }' — the
+    // missing name is a one-line tell on every Intl wrapper.
+    // A named wrapper registered with fixFnAs carries the
+    // native name, length and toString instead.
+    function fpSLO(orig) {
+      return fixFnAs(function () {
+        return orig.supportedLocalesOf.apply(orig, arguments);
+      }, 'supportedLocalesOf', 1);
+    }
     function FpDTF(locales, options) {
       var opts = options ? Object.assign({}, options) : {};
       if (!opts.timeZone) opts.timeZone = TZ;
@@ -427,7 +548,13 @@ object FingerprintScript {
       return new OrigDTF(loc, opts);
     }
     FpDTF.prototype = OrigDTF.prototype;
-    FpDTF.supportedLocalesOf = OrigDTF.supportedLocalesOf.bind(OrigDTF);
+    // Non-enumerable like the native static (v0.220.0):
+    // plain assignment would leave the name enumerable on
+    // the constructor.
+    Object.defineProperty(FpDTF, 'supportedLocalesOf', {
+      value: fpSLO(OrigDTF), writable: true,
+      enumerable: false, configurable: true
+    });
     fixFn(FpDTF, OrigDTF);
     setMethod(Intl, 'DateTimeFormat', FpDTF);
     var OrigNF = Intl.NumberFormat;
@@ -437,7 +564,10 @@ object FingerprintScript {
       return new OrigNF(loc, options);
     }
     FpNF.prototype = OrigNF.prototype;
-    FpNF.supportedLocalesOf = OrigNF.supportedLocalesOf.bind(OrigNF);
+    Object.defineProperty(FpNF, 'supportedLocalesOf', {
+      value: fpSLO(OrigNF), writable: true,
+      enumerable: false, configurable: true
+    });
     fixFn(FpNF, OrigNF);
     setMethod(Intl, 'NumberFormat', FpNF);
     // The rest of the Intl family (v0.163.0): the two wrappers
@@ -464,8 +594,11 @@ object FingerprintScript {
         }
         FpIntlCtor.prototype = Orig.prototype;
         if (Orig.supportedLocalesOf) {
-          FpIntlCtor.supportedLocalesOf =
-            Orig.supportedLocalesOf.bind(Orig);
+          Object.defineProperty(FpIntlCtor,
+            'supportedLocalesOf', {
+              value: fpSLO(Orig), writable: true,
+              enumerable: false, configurable: true
+            });
         }
         fixFn(FpIntlCtor, Orig);
         setMethod(Intl, name, FpIntlCtor);
@@ -697,13 +830,21 @@ object FingerprintScript {
         num(6, 0)));
     }
     FpDate.prototype = OrigDate.prototype;
-    FpDate.now = fixFn(function () { return OrigDate.now(); },
-      OrigDate.now);
-    FpDate.UTC = fixFn(function () {
+    // Statics as non-enumerable data properties (v0.220.0):
+    // plain assignment left now/UTC/parse enumerable on the
+    // constructor, where the native's are not —
+    // Object.keys(Date) is empty on a real engine.
+    function fpDateStatic(name, fn) {
+      Object.defineProperty(FpDate, name, {
+        value: fixFn(fn, OrigDate[name]),
+        writable: true, enumerable: false, configurable: true
+      });
+    }
+    fpDateStatic('now', function () { return OrigDate.now(); });
+    fpDateStatic('UTC', function () {
       return OrigDate.UTC.apply(null, arguments);
-    }, OrigDate.UTC);
-    FpDate.parse = fixFn(function (s) { return fpParse(s); },
-      OrigDate.parse);
+    });
+    fpDateStatic('parse', function (s) { return fpParse(s); });
     fixFn(FpDate, OrigDate);
     setMethod(window, 'Date', FpDate);
   });
@@ -945,7 +1086,7 @@ object FingerprintScript {
       return { families: out, sawSyntax: sawSyntax };
     }
     var origFontCheck = document.fonts.check.bind(document.fonts);
-    setMethod(document.fonts, 'check',
+    setMethodOn(document.fonts, 'check',
       fixFnAs(function (font, text) {
       try {
         var parsed = familiesOf(font);
@@ -1062,11 +1203,19 @@ object FingerprintScript {
                   rangeMax: real.rangeMax, precision: 10 };
               }
               if (!pin) return real;
+              // def() getters, not assignments (v0.220.0):
+              // the real object's prototype carries READONLY
+              // WebIDL attributes, so plain assignment in this
+              // strict-mode payload THREW on every pinned
+              // answer — the wrapper itself crashed on the
+              // exact probe it exists to answer. defineProperty
+              // shadows the prototype cleanly and leaves no
+              // enumerable own keys.
               var fmt = Object.create(
                 Object.getPrototypeOf(real) || Object.prototype);
-              fmt.rangeMin = pin.rangeMin;
-              fmt.rangeMax = pin.rangeMax;
-              fmt.precision = pin.precision;
+              def(fmt, 'rangeMin', pin.rangeMin);
+              def(fmt, 'rangeMax', pin.rangeMax);
+              def(fmt, 'precision', pin.precision);
               return fmt;
             }, origSPF));
         }
@@ -1150,7 +1299,7 @@ object FingerprintScript {
       return v;
     });
     var origGetVoices = speechSynthesis.getVoices;
-    setMethod(speechSynthesis, 'getVoices',
+    setMethodOn(speechSynthesis, 'getVoices',
       fixFn(function () { return list.slice(); }, origGetVoices));
     setTimeout(function () {
       try {
@@ -1174,17 +1323,31 @@ object FingerprintScript {
     var HDR = ${p.dynamicRangeHigh};
     var order = { srgb: 0, p3: 1, rec2020: 2 };
     var origMM = window.matchMedia.bind(window);
+    // The fake MediaQueryList is built on the real
+    // prototype (v0.220.0): a plain literal failed
+    // instanceof and Object.prototype.toString and carried
+    // eight enumerable keys where a native MQL carries
+    // none — on the very queries (color-gamut) fingerprint
+    // probes ask first. Attributes ride def() getters, the
+    // onchange pair has a backing store, and the listener
+    // methods are non-enumerable stubs (the answers are
+    // static per profile, so no change event ever fires,
+    // exactly like a native gamut query on a fixed panel).
     function fakeMQL(query, matches) {
-      return {
-        matches: matches, media: query, onchange: null,
-        addListener: function () {}, removeListener: function () {},
-        addEventListener: function () {},
-        removeEventListener: function () {},
-        dispatchEvent: function () { return false; }
-      };
+      var mql = window.MediaQueryList
+        ? Object.create(MediaQueryList.prototype) : {};
+      def(mql, 'matches', matches);
+      def(mql, 'media', String(query));
+      defHandler(mql, 'onchange');
+      stubMethod(mql, 'addListener', 1, function () {});
+      stubMethod(mql, 'removeListener', 1, function () {});
+      stubMethod(mql, 'addEventListener', 2, function () {});
+      stubMethod(mql, 'removeEventListener', 2, function () {});
+      stubMethod(mql, 'dispatchEvent', 1,
+        function () { return true; });
+      return mql;
     }
-    setMethod(window, 'matchMedia',
-      fixFnAs(function (query) {
+    var fpMatchMedia = fixFnAs(function (query) {
         var q = String(query).replace(/\s+/g, '');
         var g = /^\(color-gamut:(srgb|p3|rec2020)\)$/.exec(q);
         if (g) return fakeMQL(query, order[g[1]] <= order[GAMUT]);
@@ -1202,7 +1365,25 @@ object FingerprintScript {
         var fc = /^\(forced-colors:(active|none)\)$/.exec(q);
         if (fc) return fakeMQL(query, fc[1] === 'none');
         return origMM(query);
-      }, 'matchMedia', 1));
+      }, 'matchMedia', 1);
+    // matchMedia is a Window-prototype method (v0.220.0):
+    // installing on the window object left an own property
+    // where the native is inherited. Install on the
+    // prototype and read back; fall back to the window
+    // install if the prototype refuses.
+    (function () {
+      try {
+        var wp = Object.getPrototypeOf(window);
+        if (wp) {
+          Object.defineProperty(wp, 'matchMedia', {
+            value: fpMatchMedia, writable: true,
+            enumerable: false, configurable: true
+          });
+          if (window.matchMedia === fpMatchMedia) return;
+        }
+      } catch (e) {}
+      setMethod(window, 'matchMedia', fpMatchMedia);
+    })();
   });
 
   section(function () {
@@ -1226,7 +1407,15 @@ object FingerprintScript {
     // Infinity (the spec's 4g row caps downlink at ∞, and
     // Chromium reports Infinity as the max for wifi).
     def(conn, 'downlinkMax', Infinity);
-    def(navigator, 'connection', conn);
+    // The accessor itself moves to Navigator.prototype
+    // (v0.220.0): the native connection attribute lives
+    // there, and def() on the existing prototype attribute
+    // keeps its native enumerable flag through the
+    // defineProperty merge. Pinning it on the instance left
+    // an own accessor a descriptor sweep could find.
+    var navT = window.Navigator ? Navigator.prototype
+      : navigator;
+    def(navT, 'connection', conn);
   });
 
   section(function () {
@@ -1245,14 +1434,16 @@ object FingerprintScript {
       def(d, 'kind', kind);
       def(d, 'label', '');
       def(d, 'groupId', group);
-      d.toJSON = function () {
+      // Non-enumerable method slot (v0.220.0): plain
+      // assignment left 'toJSON' in Object.keys(device)
+      // where a native device carries no own keys at all.
+      stubMethod(d, 'toJSON', 0, function () {
         return { deviceId: id, kind: kind, label: '', groupId: group };
-      };
-      fixFnAs(d.toJSON, 'toJSON', 0);
+      });
       return d;
     }
     var origEnumDevices = navigator.mediaDevices.enumerateDevices;
-    setMethod(navigator.mediaDevices, 'enumerateDevices',
+    setMethodOn(navigator.mediaDevices, 'enumerateDevices',
       fixFn(function () {
         return Promise.resolve([
           device('audioinput', 'default', 'fp-audio'),
@@ -1366,7 +1557,18 @@ object FingerprintScript {
         if (seen[channel]) return data;
         seen[channel] = true;
         for (var i = 0; i < data.length; i += 997) {
-          var h = hash(SEED * 7919 + i + channel * 104729);
+          // Content-keyed like the canvas rule (v0.220.0):
+          // the hash mixes a coarse grid of the sample's own
+          // value, and it decides BOTH whether this stride
+          // point is touched and the delta's sign — so two
+          // DIFFERENT signals share neither a deviation index
+          // lattice nor a sign pattern a calibration render
+          // could map and re-verify. Identical renders still
+          // draw identical treatment (and the WeakMap above
+          // pins the first read regardless).
+          var h = hash(SEED * 7919 + i + channel * 104729 +
+            Math.round(data[i] * 32768));
+          if ((h >>> 16) % 3 === 0) continue;
           data[i] = data[i] + ((h % 2 === 0) ? 1e-7 : -1e-7);
         }
       } catch (e) {}
@@ -1406,8 +1608,14 @@ object FingerprintScript {
   section(function () {
     if (!FP_OPT_BATTERY) return;
     if (!('getBattery' in navigator)) return;
-    setMethod(navigator, 'getBattery',
+    // One manager per page (v0.220.0): the spec's promise
+    // resolves to THE battery manager, so two calls must
+    // hand back the identical object — a fresh object per
+    // call failed an === check any page can run.
+    var cachedBattery = null;
+    setMethodOn(navigator, 'getBattery',
       fixFnAs(function () {
+      if (cachedBattery) return Promise.resolve(cachedBattery);
       // The story must agree with itself (v0.158.0): chargingTime
       // is "seconds until full", so 0 is only true at level 1 —
       // a charging profile at 0.91 claiming 0 contradicts itself.
@@ -1415,23 +1623,30 @@ object FingerprintScript {
       // The object is built on the real BatteryManager prototype
       // when the engine exposes one, like the voices/devices
       // objects, so instanceof does not give it away.
+      // Attributes ride def() getters (v0.220.0): plain
+      // assignment THREW here — the prototype's WebIDL
+      // attributes are read-only, and this payload is strict
+      // mode, so `b.charging = …` raised TypeError and
+      // getBattery() itself crashed on call. defineProperty
+      // shadows cleanly, the on* handlers get real get/set
+      // pairs, and the listener methods are non-enumerable
+      // stubs, so the object carries no own enumerable keys.
       var b = Object.create(
         window.BatteryManager ? BatteryManager.prototype
           : Object.prototype);
-      b.charging = ${p.batteryCharging};
-      b.chargingTime = ${if (p.batteryCharging) "Math.round((1 - " + p.batteryLevel + ") * 3600)" else "Infinity"};
-      b.dischargingTime = Infinity;
-      b.level = ${p.batteryLevel};
-      b.onchargingchange = null;
-      b.onchargingtimechange = null;
-      b.ondischargingtimechange = null;
-      b.onlevelchange = null;
-      b.addEventListener = function () {};
-      b.removeEventListener = function () {};
-      b.dispatchEvent = function () { return false; };
-      fixFnAs(b.addEventListener, 'addEventListener', 2);
-      fixFnAs(b.removeEventListener, 'removeEventListener', 2);
-      fixFnAs(b.dispatchEvent, 'dispatchEvent', 1);
+      def(b, 'charging', ${p.batteryCharging});
+      def(b, 'chargingTime', ${if (p.batteryCharging) "Math.round((1 - " + p.batteryLevel + ") * 3600)" else "Infinity"});
+      def(b, 'dischargingTime', Infinity);
+      def(b, 'level', ${p.batteryLevel});
+      defHandler(b, 'onchargingchange');
+      defHandler(b, 'onchargingtimechange');
+      defHandler(b, 'ondischargingtimechange');
+      defHandler(b, 'onlevelchange');
+      stubMethod(b, 'addEventListener', 2, function () {});
+      stubMethod(b, 'removeEventListener', 2, function () {});
+      stubMethod(b, 'dispatchEvent', 1,
+        function () { return true; });
+      cachedBattery = b;
       return Promise.resolve(b);
       }, 'getBattery', 0));
   });
@@ -1475,7 +1690,7 @@ object FingerprintScript {
         merged.iceTransportPolicy = 'relay';
         var pc = new OrigRTC(merged);
         var origAdd = pc.addEventListener.bind(pc);
-        pc.addEventListener = function (type, listener, opts) {
+        var fpAddEventListener = function (type, listener, opts) {
           if (type === 'icecandidate' &&
               typeof listener === 'function') {
             var wrappedListener = function (ev) {
@@ -1486,13 +1701,21 @@ object FingerprintScript {
           }
           return origAdd(type, listener, opts);
         };
-        fixFnAs(pc.addEventListener, 'addEventListener', 2);
+        fixFnAs(fpAddEventListener, 'addEventListener', 2);
+        // Non-enumerable own slot (v0.220.0): plain
+        // assignment put 'addEventListener' into
+        // Object.keys(pc) where a native connection object
+        // has no own enumerable keys at all.
+        Object.defineProperty(pc, 'addEventListener', {
+          value: fpAddEventListener, writable: true,
+          enumerable: false, configurable: true
+        });
         var iceDesc = Object.getOwnPropertyDescriptor(
           Object.getPrototypeOf(pc), 'onicecandidate');
         if (iceDesc && iceDesc.set) {
           var userHandler = null;
           Object.defineProperty(pc, 'onicecandidate', {
-            configurable: true, enumerable: true,
+            configurable: true, enumerable: false,
             get: function () { return userHandler; },
             set: function (fn) {
               userHandler = fn;
@@ -1512,8 +1735,19 @@ object FingerprintScript {
       }
       FpRTCPeerConnection.prototype = OrigRTC.prototype;
       if (OrigRTC.generateCertificate) {
-        FpRTCPeerConnection.generateCertificate =
-          OrigRTC.generateCertificate.bind(OrigRTC);
+        // Named wrapper, not .bind (v0.220.0): the bound
+        // copy reported name 'bound generateCertificate'
+        // and an anonymous native-code string. Installed
+        // non-enumerable like the native static.
+        Object.defineProperty(FpRTCPeerConnection,
+          'generateCertificate', {
+            value: fixFnAs(function () {
+              return OrigRTC.generateCertificate
+                .apply(OrigRTC, arguments);
+            }, 'generateCertificate', 1),
+            writable: true, enumerable: false,
+            configurable: true
+          });
       }
       fixFn(FpRTCPeerConnection, OrigRTC);
       // Native constructors sit on the global as writable,
@@ -1536,11 +1770,21 @@ object FingerprintScript {
       }
     }
     if (navigator.mediaDevices) {
-      def(navigator.mediaDevices, 'getUserMedia',
-        fixFnAs(function () {
-          return Promise.reject(new DOMException(
-            'Permission denied', 'NotAllowedError'));
-        }, 'getUserMedia', 0));
+      // A real prototype METHOD (v0.220.0): this used to be
+      // a def() accessor on the mediaDevices instance
+      // returning a length-0 function — the native is a
+      // writable data property on MediaDevices.prototype
+      // with length 1, and a descriptor read on either the
+      // instance or the prototype could tell. fixFn copies
+      // the native name and length from the original.
+      var origGUM = navigator.mediaDevices.getUserMedia;
+      if (origGUM) {
+        setMethodOn(navigator.mediaDevices, 'getUserMedia',
+          fixFn(function () {
+            return Promise.reject(new DOMException(
+              'Permission denied', 'NotAllowedError'));
+          }, origGUM));
+      }
     }
   });
 
@@ -1590,35 +1834,66 @@ object FingerprintScript {
         t === 'devicemotion' ||
         t === 'deviceorientationabsolute';
     }
-    setMethod(window, 'addEventListener',
-      fixFn(function (t, fn) {
+    var fpWinAdd = fixFn(function (t, fn) {
         if (isSensorType(t) && typeof fn === 'function') {
           if (listeners[t].indexOf(fn) < 0) listeners[t].push(fn);
           return;
         }
         return origAdd.apply(window, arguments);
-      }, window.addEventListener));
-    setMethod(window, 'removeEventListener',
-      fixFn(function (t, fn) {
+      }, window.addEventListener);
+    var fpWinRemove = fixFn(function (t, fn) {
         if (isSensorType(t)) {
           var i = listeners[t].indexOf(fn);
           if (i >= 0) listeners[t].splice(i, 1);
           return;
         }
         return origRemove.apply(window, arguments);
-      }, window.removeEventListener));
+      }, window.removeEventListener);
+    // Window-prototype placement (v0.220.0): addEventListener
+    // & friends are EventTarget-prototype methods the window
+    // INHERITS, and the on* handler attributes are Window-
+    // prototype accessors — installing either on the window
+    // object itself left own properties where natives have
+    // none. Install on the prototype with readback, and fall
+    // back to the window only if the prototype refuses.
+    var winProto = null;
+    try { winProto = Object.getPrototypeOf(window); }
+    catch (e) {}
+    function onWinProto(name, descriptor) {
+      if (!winProto) return false;
+      try {
+        Object.defineProperty(winProto, name, descriptor);
+        return !!Object.getOwnPropertyDescriptor(
+          winProto, name);
+      } catch (e) { return false; }
+    }
+    if (!onWinProto('addEventListener', {
+      value: fpWinAdd, writable: true,
+      enumerable: false, configurable: true
+    }) || window.addEventListener !== fpWinAdd) {
+      setMethod(window, 'addEventListener', fpWinAdd);
+    }
+    if (!onWinProto('removeEventListener', {
+      value: fpWinRemove, writable: true,
+      enumerable: false, configurable: true
+    }) || window.removeEventListener !== fpWinRemove) {
+      setMethod(window, 'removeEventListener', fpWinRemove);
+    }
     ['deviceorientation', 'devicemotion',
       'deviceorientationabsolute'].forEach(function (t) {
-      try {
-        Object.defineProperty(window, 'on' + t, {
-          get: function () { return propHandlers[t]; },
-          set: function (fn) {
-            propHandlers[t] =
-              (typeof fn === 'function') ? fn : null;
-          },
-          configurable: true, enumerable: true
-        });
-      } catch (e) {}
+      var descriptor = {
+        get: function () { return propHandlers[t]; },
+        set: function (fn) {
+          propHandlers[t] =
+            (typeof fn === 'function') ? fn : null;
+        },
+        configurable: true, enumerable: true
+      };
+      if (!onWinProto('on' + t, descriptor)) {
+        try {
+          Object.defineProperty(window, 'on' + t, descriptor);
+        } catch (e) {}
+      }
     });
     var betaBase = 62 + (hash(SEED) % 10);
     var gammaBase = (hash(SEED * 3) % 7) - 3;
@@ -1756,13 +2031,21 @@ object FingerprintScript {
     if (!permsProto || !permsProto.query) return;
     var origQuery = permsProto.query;
     function fpPermissionStatus(name, state) {
-      return Promise.resolve({
-        name: name, state: state,
-        onchange: null,
-        addEventListener: function () {},
-        removeEventListener: function () {},
-        dispatchEvent: function () { return false; }
-      });
+      // Built on the real PermissionStatus prototype
+      // (v0.220.0): the plain literal failed instanceof and
+      // carried six enumerable keys where a native status
+      // carries none — on the exact object the consistency
+      // section exists to make believable.
+      var st = window.PermissionStatus
+        ? Object.create(PermissionStatus.prototype) : {};
+      def(st, 'name', name);
+      def(st, 'state', state);
+      defHandler(st, 'onchange');
+      stubMethod(st, 'addEventListener', 2, function () {});
+      stubMethod(st, 'removeEventListener', 2, function () {});
+      stubMethod(st, 'dispatchEvent', 1,
+        function () { return true; });
+      return Promise.resolve(st);
     }
     setMethod(permsProto, 'query', fixFn(function (desc) {
       if (desc && desc.name === 'notifications') {
